@@ -12,3 +12,6 @@ actions-runner/
 
 .watchdog_last_run
 bot_heartbeat
+
+bot_state.json
+notified.json
