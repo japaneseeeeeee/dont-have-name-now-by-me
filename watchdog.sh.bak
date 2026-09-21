@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# aircraft-alert watchdog
+# monitor.py が異常に長時間(MAX_RUNTIME秒以上)動き続けていたら
+# ハングしたとみなして強制終了する。
+#
+# launchd から5分おきに実行される想定。
+#
+
+MAX_RUNTIME=300  # これ以上動き続けていたらハング扱い(秒)
+LOG="$HOME/aircraft-alert/watchdog.log"
+
+# monitor.py を実行しているプロセスのPIDを探す
+PID=$(pgrep -f "aircraft-alert/monitor.py")
+
+if [ -n "$PID" ]; then
+    # 経過秒数を取得(etimes は秒数のみを返す)
+    ETIME=$(ps -p "$PID" -o etimes= | tr -d ' ')
+
+    if [ -n "$ETIME" ] && [ "$ETIME" -gt "$MAX_RUNTIME" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [WARN] monitor.py (PID $PID) が ${ETIME}秒 経過しておりハングと判断。強制終了します。" >> "$LOG"
+        kill -9 "$PID"
+    fi
+fi

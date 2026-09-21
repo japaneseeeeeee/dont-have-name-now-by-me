@@ -1,0 +1,14 @@
+.env
+
+# Local files
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+actions-runner/
+*.log
+
+*.log
+
+.watchdog_last_run
+bot_heartbeat
