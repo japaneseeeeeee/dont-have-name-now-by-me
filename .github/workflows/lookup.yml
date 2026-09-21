@@ -1,0 +1,23 @@
+name: Aircraft Lookup
+
+on:
+  repository_dispatch:
+    types: [lookup]
+
+permissions:
+  contents: write
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run aircraft lookup
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          LOOKUP_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        run: python3 lookup_action.py

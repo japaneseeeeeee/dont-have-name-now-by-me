@@ -149,18 +149,18 @@ function optionsOf(interaction) {
 async function runCommand(interaction, env) {
   const o = optionsOf(interaction);
   switch (interaction.data.name) {
-    case "add": return cmdAdd(o, env);
+    case "add": return cmdAdd(o, env, interaction);
     case "remove": return cmdRemove(o, env);
     case "find": return cmdFind(o, env);
     case "list": return cmdList(o, env);
-    case "flight": return cmdFlight(o, env);
+    case "flight": return cmdFlight(o, env, interaction);
     default: return { content: "未対応のコマンドです。" };
   }
 }
 
 // ============ コマンド ============
 
-async function cmdAdd(o, env) {
+async function cmdAdd(o, env, interaction) {
   const tail = String(o.tail || "").trim().toUpperCase();
   let icao24 = o.icao24 ? String(o.icao24).trim() : null;
   let typeName = o.type ? String(o.type).trim() : null;
@@ -176,7 +176,7 @@ async function cmdAdd(o, env) {
     icao24 = await lookupIcao24(tail);
     if (!icao24) {
       // すぐには見つからない → GitHub Actionsで、60万機のデータベースを使って詳しく検索する
-      return startSlowLookup(env, "add", [tail, ...(typeName ? [typeName] : [])], {
+      return startSlowLookup(env, "add", [tail, ...(typeName ? [typeName] : [])], interaction, {
         failure: `⚠️ \`${tail}\` のicao24が自動取得できませんでした。` +
           `\`/add tail:${tail} icao24:<icao24>\` の形で手動指定してください。`,
       });
@@ -254,7 +254,7 @@ async function cmdList(o, env) {
   return { content: `📋 watchlist 全${items.length}機(ページ ${page}/${pages})\n${lines.join("\n")}${footer}`.slice(0, 1990) };
 }
 
-async function cmdFlight(o, env) {
+async function cmdFlight(o, env, interaction) {
   const query = String(o.query || "").trim();
   if (!query) return { content: "⚠️ 使い方: `/flight query:<便名 / コールサイン / 登録記号 / icao24>`" };
 
@@ -268,7 +268,7 @@ async function cmdFlight(o, env) {
 
   // 登録記号らしい入力は、GitHub Actionsで詳しく検索する(hexdb.ioに載っていない機体を探すため)
   if (looksLikeRegistration(query)) {
-    return startSlowLookup(env, "flight", [query], { failure: notFoundText(query) });
+    return startSlowLookup(env, "flight", [query], interaction, { failure: notFoundText(query) });
   }
   return { content: notFoundText(query) };
 }
@@ -291,11 +291,11 @@ function looksLikeRegistration(query) {
 
 // ============ 詳しい検索(GitHub Actionsに依頼) ============
 
-async function startSlowLookup(env, op, args, { failure }) {
+async function startSlowLookup(env, op, args, interaction, { failure }) {
   const r = await gh(env, "/dispatches", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ event_type: "lookup", client_payload: { op, args } }),
+    body: JSON.stringify({ event_type: "lookup", client_payload: { op, args, channel_id: interaction.channel_id } }),
   });
   if (r.status !== 204) {
     console.error("dispatch failed:", r.status, await r.text());
