@@ -35,10 +35,10 @@ CLIENT_SECRET = os.environ.get("OPENSKY_CLIENT_SECRET")
 
 # 監視する範囲
 BBOX = {
-    "lamin": 20,
-    "lomin": 113,
-    "lamax": 46,
-    "lomax": 154,
+    "lamin": 34.0,
+    "lomin": 138.2,
+    "lamax": 37.5,
+    "lomax": 143.1,
 }
 
 AIRPORT_NAME = "日本周辺"
