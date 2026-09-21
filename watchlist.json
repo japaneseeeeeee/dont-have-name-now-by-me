@@ -1038,5 +1038,9 @@
     "868056": {
         "label": "JA738J",
         "type": "BOEING 777-300ER (B77W)"
+    },
+    "86d996": {
+        "label": "JA834J",
+        "type": "BOEING 787-8 Dreamliner (B788)"
     }
 }
