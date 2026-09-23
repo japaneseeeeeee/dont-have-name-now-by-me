@@ -188,18 +188,86 @@ def lookup_live_callsign(query):
     return None
 
 
+
+def lookup_flight_route(callsign):
+    """ADSBDBから便名・航空会社・出発地・到着地を取得する。"""
+    callsign = str(callsign or "").strip().upper()
+
+    if not callsign:
+        return None
+
+    url = (
+        "https://api.adsbdb.com/v0/callsign/"
+        + urllib.parse.quote(callsign)
+    )
+
+    print(f"Route lookup: {callsign}")
+
+    try:
+        raw = request(url)
+        data = json.loads(raw)
+        return data.get("response", {}).get("flightroute")
+    except urllib.error.HTTPError as e:
+        print(f"Route HTTP error: {e.code} ({callsign})")
+    except Exception as e:
+        print(f"Route lookup failed: {type(e).__name__}: {e}")
+
+    return None
+
 def format_live_aircraft(ac):
     callsign = str(ac.get("flight") or "").strip() or "不明"
     registration = ac.get("r") or "不明"
     icao24 = str(ac.get("hex") or "").lower() or "不明"
     aircraft_type = ac.get("desc") or ac.get("t") or "不明"
 
-    lines = [
-        f"✈️ **{callsign}** の現在情報",
+    route = lookup_flight_route(callsign) if callsign != "不明" else None
+
+    lines = []
+
+    if route:
+        callsign_icao = route.get("callsign_icao") or callsign
+        callsign_iata = route.get("callsign_iata")
+
+        if callsign_iata:
+            lines.append(f"✈️ **{callsign_iata} / {callsign_icao}**")
+        else:
+            lines.append(f"✈️ **{callsign_icao}**")
+
+        airline = route.get("airline") or {}
+        airline_name = airline.get("name")
+        if airline_name:
+            lines.append(f"航空会社: {airline_name}")
+
+        origin = route.get("origin") or {}
+        destination = route.get("destination") or {}
+
+        if origin and destination:
+            origin_name = origin.get("municipality") or origin.get("name") or "不明"
+            destination_name = (
+                destination.get("municipality")
+                or destination.get("name")
+                or "不明"
+            )
+
+            origin_iata = origin.get("iata_code") or "---"
+            origin_icao = origin.get("icao_code") or "----"
+            destination_iata = destination.get("iata_code") or "---"
+            destination_icao = destination.get("icao_code") or "----"
+
+            lines.append(
+                f"区間: {origin_name} ({origin_iata}/{origin_icao})"
+                f" → {destination_name} ({destination_iata}/{destination_icao})"
+            )
+
+        lines.append("")
+    else:
+        lines.append(f"✈️ **{callsign}** の現在情報")
+
+    lines.extend([
         f"登録記号: `{registration}`",
         f"icao24: `{icao24}`",
         f"機種: {aircraft_type}",
-    ]
+    ])
 
     alt = ac.get("alt_baro")
     if alt == "ground":
