@@ -16,7 +16,13 @@
 
 const UA = "aircraft-alert-worker/1.0";
 const DISCORD_API = "https://discord.com/api/v10";
-const ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"];
+// 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
+// 同じADS-B形式を返す複数の提供元を順に照会する。
+const ADSB_API_BASES = [
+  "https://api.adsb.lol",
+  "https://api.airplanes.live",
+  "https://api.adsb.one",
+];
 const PAGE_SIZE = 20;
 const HEX6 = /^[0-9a-fA-F]{6}$/;
 const UNKNOWN_TYPE = "不明";
@@ -69,7 +75,7 @@ export default {
       if (allowed && interaction.channel_id !== allowed) {
         return json({ type: 4, data: { content: "このチャンネルでは使えません。", flags: 64 } });
       }
-      if (["add", "remove"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
+      if (["add", "remove", "priority", "special", "special-list"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
         return json({
           type: 4,
           data: { content: "⛔ このコマンドはサーバー管理者だけが使用できます。", flags: 64 },
@@ -168,9 +174,50 @@ async function runCommand(interaction, env) {
     case "remove": return cmdRemove(o, env);
     case "find": return cmdFind(o, env);
     case "list": return cmdList(o, env);
+    case "info": return cmdInfo(o, env);
     case "flight": return cmdFlight(o, env, interaction);
+    case "priority": return cmdPriority(o, env);
+    case "special": return cmdSpecial(o, env);
+    case "special-list": return cmdSpecialList(env);
     default: return { content: "未対応のコマンドです。" };
   }
+}
+
+async function cmdSpecial(o, env) {
+  const aircraft = String(o.aircraft || "").trim();
+  const match = String(o.duration || "24h").trim().match(/^(\d+)(m|h|d)$/i);
+  if (!aircraft || !match) return { content: "⚠️ 期間は `30m` / `24h` / `7d` の形式で指定してください。" };
+  const seconds = Number(match[1]) * ({m:60,h:3600,d:86400}[match[2].toLowerCase()]);
+  const result = await updateWatchlist(env, (wl) => {
+    const id = wl[aircraft.toLowerCase()] !== undefined ? aircraft.toLowerCase() : Object.keys(wl).find((x) => normalize(wl[x]).label.toUpperCase() === aircraft.toUpperCase());
+    if (!id) return { changed:false };
+    const entry = normalize(wl[id]);
+    wl[id] = { label:entry.label, type:entry.type, priority:"SPECIAL", priority_after_special:entry.priority || "NORMAL", special_until:Date.now()/1000 + seconds };
+    return { changed:true, id, label:entry.label, until:Math.floor(Date.now()/1000 + seconds) };
+  }, `watchlist: special ${aircraft}`);
+  return result.changed ? { content:`🚨 \`${result.label}\` (${result.id}) を <t:${result.until}:F> まで **SPECIAL** に設定しました。` } : { content:`⚠️ \`${aircraft}\` はwatchlistに見つかりませんでした。` };
+}
+
+async function cmdSpecialList(env) {
+  const { data } = await readWatchlist(env);
+  const items = Object.entries(data).filter(([, value]) => String(value?.priority || "NORMAL").toUpperCase() === "SPECIAL");
+  if (!items.length) return { content: "SPECIAL登録機はありません。" };
+  return { content: `🚨 SPECIAL登録機\n${items.map(([id, value]) => `\`${normalize(value).label}\` (${id})`).join("\n")}`.slice(0, 1990) };
+}
+
+async function cmdPriority(o, env) {
+  const aircraft = String(o.aircraft || "").trim();
+  const level = String(o.level || "").trim().toUpperCase();
+  if (!aircraft || !["NORMAL", "WATCH", "SPECIAL"].includes(level)) return { content: "⚠️ aircraft と level を指定してください。" };
+  const result = await updateWatchlist(env, (wl) => {
+    const key = aircraft.toLowerCase();
+    const id = wl[key] !== undefined ? key : Object.keys(wl).find((x) => normalize(wl[x]).label.toUpperCase() === aircraft.toUpperCase());
+    if (!id) return { changed: false };
+    const entry = normalize(wl[id]);
+    wl[id] = { label: entry.label, type: entry.type, priority: level };
+    return { changed: true, id, label: entry.label };
+  }, `watchlist: priority ${aircraft} ${level}`);
+  return result.changed ? { content: `✅ \`${result.label}\` (${result.id}) を **${level}** に設定しました。` } : { content: `⚠️ \`${aircraft}\` はwatchlistに見つかりませんでした。` };
 }
 
 // ============ コマンド ============
@@ -253,6 +300,45 @@ async function cmdFind(o, env) {
   return { content: text };
 }
 
+async function cmdInfo(o, env) {
+  const query = String(o.aircraft || "").trim().toUpperCase();
+  if (!query) return { content: "⚠️ 使い方: `/info aircraft:<登録記号 / icao24>`" };
+
+  const compact = query.replace(/[\s-]/g, "");
+  const { data } = await readWatchlist(env);
+  let icao24 = HEX6.test(compact) ? compact.toLowerCase() : null;
+  let entry = icao24 ? data[icao24] : null;
+
+  if (!entry) {
+    const found = Object.entries(data).find(([id, value]) =>
+      id.toUpperCase() === compact || normalize(value).label.toUpperCase() === query,
+    );
+    if (found) {
+      [icao24, entry] = found;
+    }
+  }
+  if (!icao24) icao24 = await lookupIcao24(query);
+  if (!icao24) return { content: `❓ \`${query}\` の機体情報は見つかりませんでした。` };
+
+  const normalized = entry ? normalize(entry) : { label: query, type: UNKNOWN_TYPE };
+  const details = await lookupAircraftDetails(icao24);
+  const type = normalized.type !== UNKNOWN_TYPE ? normalized.type : details.type || UNKNOWN_TYPE;
+  const priority = String(entry?.priority || "NORMAL").toUpperCase();
+  const year = details.year || "不明";
+  const age = aircraftAge(details.year);
+  return {
+    content: `✈️ **機体情報**\n` +
+      `登録記号: \`${normalized.label}\`\n` +
+      `icao24: \`${icao24}\`\n` +
+      `機種: ${type}\n` +
+      `製造年: ${year}${age ? `（機齢 約${age}年）` : ""}\n` +
+      `運航会社: ${details.operator || "不明"}\n` +
+      `登録国: ${details.country || "不明"}\n` +
+      `通知レベル: **${priority}**` +
+      (entry ? "\nwatchlist: 登録済み" : "\nwatchlist: 未登録"),
+  };
+}
+
 async function cmdList(o, env) {
   const { data } = await readWatchlist(env);
   const items = Object.entries(data)
@@ -281,6 +367,22 @@ async function cmdFlight(o, env, interaction) {
     return { embeds };
   }
 
+  // 位置情報が一時的に受信できない便でも、運航DBに予定区間があれば返す。
+  // 便名(IATA)の場合は、対応するICAOコールサインも照会する。
+  const routeResults = await Promise.all(
+    callsignCandidates(query).map(async (callsign) => ({ callsign, route: await fetchRoute(callsign) })),
+  );
+  const routeResult = routeResults.find((result) => result.route);
+  if (routeResult) {
+    const { callsign, route } = routeResult;
+    const name = route.flightIata || callsign;
+    return {
+      content: `✈️ **${name}** の運航情報\n` +
+        `予定区間: ${formatAirport(route.origin)} → ${formatAirport(route.destination)}\n` +
+        "現在の位置情報は受信できません。予定区間のみ表示しています。",
+    };
+  }
+
   // 登録記号らしい入力は、GitHub Actionsで詳しく検索する(hexdb.ioに載っていない機体を探すため)
   if (looksLikeRegistration(query)) {
     return startSlowLookup(env, "flight", [query], interaction, { failure: notFoundText(query) });
@@ -291,7 +393,7 @@ async function cmdFlight(o, env, interaction) {
 function notFoundText(query) {
   return `❓ 「${query}」に一致する機体は、いまのADS-Bでは見つかりませんでした。` +
     "離陸前・着陸後、受信範囲外、または便名とコールサインが違う便の可能性があります" +
-    "(`JAL123` のコールサインや、`HS-TYV` の登録記号でも試せます)。";
+    "（便名・コールサイン・登録記号・icao24で検索できます）。";
 }
 
 // 「JL123」「JAL123」のような便名・コールサインでなければ、登録記号とみなす
@@ -403,7 +505,8 @@ function normalize(value) {
 
 // ============ 機体情報の検索 ============
 
-async function fetchJson(url, timeoutMs = 8000) {
+// Discordの応答期限内に必ず返すため、外部APIの待機時間は短くする。
+async function fetchJson(url, timeoutMs = 4000) {
   try {
     const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(timeoutMs) });
     return r.ok ? await r.json() : null;
@@ -416,7 +519,7 @@ async function lookupIcao24(registration) {
   try {
     const r = await fetch(`https://hexdb.io/api/v1/aircraft/reg-icao/${encodeURIComponent(registration)}`, {
       headers: { "user-agent": UA },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(1200),
     });
     if (!r.ok) return null;
     const text = (await r.text()).trim();
@@ -427,11 +530,28 @@ async function lookupIcao24(registration) {
 }
 
 async function lookupAircraftType(icao24) {
-  const data = await fetchJson(`https://hexdb.io/api/v1/aircraft/${icao24}`, 5000);
+  const data = await fetchJson(`https://hexdb.io/api/v1/aircraft/${icao24}`, 1200);
   if (!data) return null;
   const maker = data.Manufacturer || "";
   const type = data.Type || data.ICAOTypeCode || "";
   return `${maker} ${type}`.trim() || null;
+}
+
+async function lookupAircraftDetails(icao24) {
+  const data = await fetchJson(`https://hexdb.io/api/v1/aircraft/${icao24}`, 1200);
+  if (!data) return {};
+  return {
+    type: `${data.Manufacturer || ""} ${data.Type || data.ICAOTypeCode || ""}`.trim() || null,
+    year: String(data.Year || data.YearOfManufacture || data.FirstRegistered || "").match(/^\d{4}/)?.[0] || null,
+    operator: data.RegisteredOwnerOperatorName || data.RegisteredOwnerOperator || data.RegisteredOwner || null,
+    country: data.RegisteredOwnerCountry || data.RegisteredOwnerNationality || null,
+  };
+}
+
+function aircraftAge(year) {
+  const value = Number(year);
+  const currentYear = new Date().getUTCFullYear();
+  return Number.isInteger(value) && value > 1900 && value <= currentYear ? currentYear - value : null;
 }
 
 function callsignCandidates(text) {
@@ -444,18 +564,17 @@ function callsignCandidates(text) {
 }
 
 async function adsbLookup(kind, value) {
-  for (const base of ADSB_API_BASES) {
-    const data = await fetchJson(`${base}/v2/${kind}/${encodeURIComponent(value)}`);
-    if (data && Array.isArray(data.ac) && data.ac.length > 0) return data.ac;
-  }
-  return [];
+  const results = await Promise.all(
+    ADSB_API_BASES.map((base) => fetchJson(`${base}/v2/${kind}/${encodeURIComponent(value)}`)),
+  );
+  const data = results.find((item) => item && Array.isArray(item.ac) && item.ac.length > 0);
+  return data ? data.ac : [];
 }
 
 async function findLive(text) {
-  for (const callsign of callsignCandidates(text)) {
-    const found = await adsbLookup("callsign", callsign);
-    if (found.length > 0) return found;
-  }
+  const callsignResults = await Promise.all(callsignCandidates(text).map((callsign) => adsbLookup("callsign", callsign)));
+  const callsignFound = callsignResults.find((found) => found.length > 0);
+  if (callsignFound) return callsignFound;
   const compact = text.replace(/[\s-]/g, "");
   if (HEX6.test(compact)) {
     const found = await adsbLookup("hex", compact.toLowerCase());
@@ -472,7 +591,7 @@ async function findLive(text) {
 async function fetchRoute(callsign) {
   const cs = (callsign || "").trim();
   if (!cs) return null;
-  const data = await fetchJson(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`, 5000);
+  const data = await fetchJson(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`, 1200);
   const fr = data && data.response && typeof data.response === "object" ? data.response.flightroute : null;
   if (!fr || !fr.origin || !fr.destination) return null;
   return { origin: fr.origin, destination: fr.destination, flightIata: fr.callsign_iata };
