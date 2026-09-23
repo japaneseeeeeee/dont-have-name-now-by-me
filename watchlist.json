@@ -1041,5 +1041,9 @@
     "7380c5": {
         "label": "4X-EDF",
         "type": "BOEING 787-9 Dreamliner (B789)"
+    },
+    "841ff4": {
+        "label": "JA08XJ",
+        "type": "AIRBUS A-350-900 (A359)"
     }
 }
