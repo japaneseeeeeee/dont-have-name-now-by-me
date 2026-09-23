@@ -69,6 +69,9 @@ RENOTIFY_ON_GROUND = False
 
 COLOR_AIRBORNE = 0x3498DB  # 青
 COLOR_GROUND = 0x2ECC71    # 緑
+COLOR_WATCH = 0xF39C12     # オレンジ
+COLOR_SPECIAL = 0xE74C3C   # 赤
+PRIORITIES = {"NORMAL", "WATCH", "SPECIAL"}
 
 # ============ ここまで CONFIG ============
 
@@ -79,6 +82,26 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("aircraft-alert")
+
+
+def normalize_priority(value):
+    """不正値や旧形式を安全に NORMAL として扱う。"""
+    priority = str(value or "NORMAL").upper()
+    return priority if priority in PRIORITIES else "NORMAL"
+
+
+def effective_priority(entry, now=None):
+    """期限付きSPECIALを考慮した現在の優先度を返す。"""
+    priority = normalize_priority(entry.get("priority"))
+    if priority != "SPECIAL" or not entry.get("special_until"):
+        return priority
+    try:
+        expires_at = float(entry["special_until"])
+    except (TypeError, ValueError):
+        return priority
+    if (time.time() if now is None else now) < expires_at:
+        return "SPECIAL"
+    return normalize_priority(entry.get("priority_after_special"))
 
 
 def request_with_retry(method, url, **kwargs):
@@ -117,10 +140,12 @@ def load_watchlist():
         if isinstance(value, dict):
             label = value.get("label", icao24)
             aircraft_type = value.get("type") or UNKNOWN_TYPE
+            priority = effective_priority(value)
         else:
             label = value
             aircraft_type = UNKNOWN_TYPE
-        watchlist[icao24] = {"label": label, "type": aircraft_type}
+            priority = "NORMAL"
+        watchlist[icao24] = {"label": label, "type": aircraft_type, "priority": priority}
 
     return watchlist
 
@@ -261,6 +286,7 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
     """OpenSkyの state vector から Discord Embed(dict)を組み立てる。"""
     label = entry["label"]
     aircraft_type = entry["type"]
+    priority = effective_priority(entry)
 
     callsign = (aircraft[1] or "").strip()
     lon, lat = aircraft[5], aircraft[6]
@@ -274,6 +300,15 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
         {"name": "機種", "value": aircraft_type, "inline": True},
         {"name": "コールサイン", "value": f"`{callsign or '不明'}`", "inline": True},
         {"name": "icao24", "value": f"`{icao24}`", "inline": True},
+        {"name": "通知レベル", "value": priority, "inline": True},
+        {
+            "name": "検出理由",
+            "value": (
+                f"{priority} 登録機が{AIRPORT_NAME}の監視範囲内で"
+                + ("継続して検出されました" if repeat else "初めて検出されました")
+            ),
+            "inline": False,
+        },
     ]
 
     if route:
@@ -311,14 +346,22 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
                 "inline": True,
             })
 
+    if priority == "SPECIAL":
+        title_prefix, color = "🚨 SPECIAL AIRCRAFT", COLOR_SPECIAL
+    elif priority == "WATCH":
+        title_prefix, color = "🟠 WATCH AIRCRAFT", COLOR_WATCH
+    else:
+        title_prefix = "✈️"
+        color = COLOR_GROUND if on_ground else COLOR_AIRBORNE
+
     embed = {
-        "title": f"✈️ {label} を検知" + ("(範囲内に継続中)" if repeat else ""),
+        "title": f"{title_prefix} {label} を検知" + ("(範囲内に継続中)" if repeat else ""),
         "url": f"https://globe.adsbexchange.com/?icao={icao24}",
         "description": (
             f"**{'地上(到着/駐機中)' if on_ground else '飛行中'}** · {AIRPORT_NAME}"
             + (f"\n位置: {lat:.3f}, {lon:.3f}" if lat is not None and lon is not None else "")
         ),
-        "color": COLOR_GROUND if on_ground else COLOR_AIRBORNE,
+        "color": color,
         "fields": fields,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -336,6 +379,7 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
 def notify_discord(icao24, entry, aircraft, repeat=False):
     label = entry["label"]
     aircraft_type = entry["type"]
+    priority = effective_priority(entry)
 
     photo = fetch_photo(icao24)
     route = fetch_route((aircraft[1] or "").strip())
@@ -343,7 +387,11 @@ def notify_discord(icao24, entry, aircraft, repeat=False):
 
     payload = {
         # スマホのプッシュ通知プレビューはcontentが表示されるため入れておく
-        "content": f"✈️ **{label}** ({aircraft_type}) を検知" + ("(範囲内に継続中)" if repeat else ""),
+        "content": (
+            ("🚨 **SPECIAL**" if priority == "SPECIAL" else "🟠 **WATCH**" if priority == "WATCH" else "✈️")
+            + f" **{label}** ({aircraft_type}) を検知"
+            + ("(範囲内に継続中)" if repeat else "")
+        ),
         "embeds": [embed],
     }
     try:

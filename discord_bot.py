@@ -41,6 +41,7 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 import requests
+from discord import app_commands
 from discord.ext import commands, tasks
 
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
@@ -93,6 +94,8 @@ _IATA_FLIGHT_RE = re.compile(r"^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$")
 PREFIX = "!"
 PAGE_SIZE = 20
 HEX6 = re.compile(r"^[0-9a-fA-F]{6}$")
+PRIORITIES = {"NORMAL", "WATCH", "SPECIAL"}
+_DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
 
 USAGE = {
     "add": "!add <登録記号> [icao24] [機種]",
@@ -107,7 +110,19 @@ logger = logging.getLogger("aircraft-bot")
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+
+
+class AircraftBot(commands.Bot):
+    async def setup_hook(self):
+        try:
+            synced = await self.tree.sync()
+            logger.info("スラッシュコマンドを%d件同期しました", len(synced))
+        except discord.HTTPException as exc:
+            # Discord側の一時障害でも、既存の !add / !remove 等は起動させる。
+            logger.error("スラッシュコマンドの同期に失敗しました: %s", exc)
+
+
+bot = AircraftBot(command_prefix=PREFIX, intents=intents)
 
 
 # ============ watchlist の読み書き ============
@@ -138,6 +153,75 @@ def normalize(value):
     if isinstance(value, dict):
         return value.get("label", "?"), value.get("type") or "不明"
     return str(value), "不明"
+
+
+def normalize_priority(value):
+    priority = str(value or "NORMAL").upper()
+    return priority if priority in PRIORITIES else "NORMAL"
+
+
+def effective_priority(value, now=None):
+    """旧形式を含むwatchlist値の、期限を考慮した現在の優先度。"""
+    if not isinstance(value, dict):
+        return "NORMAL"
+    priority = normalize_priority(value.get("priority"))
+    if priority != "SPECIAL" or not value.get("special_until"):
+        return priority
+    try:
+        expires_at = float(value["special_until"])
+    except (TypeError, ValueError):
+        return priority
+    if (time.time() if now is None else now) < expires_at:
+        return "SPECIAL"
+    return normalize_priority(value.get("priority_after_special"))
+
+
+def find_watchlist_entry(watchlist, aircraft):
+    """icao24または登録記号の完全一致で (icao24, value) を返す。"""
+    key = aircraft.strip().lower()
+    if key in watchlist:
+        return key, watchlist[key]
+    target = aircraft.replace("-", "").replace(" ", "").upper()
+    for icao24, value in watchlist.items():
+        label, _ = normalize(value)
+        if label.replace("-", "").replace(" ", "").upper() == target:
+            return icao24, value
+    return None
+
+
+def as_entry(value, icao24):
+    """文字列の旧形式も、追加情報を保持できるdict形式にする。"""
+    if isinstance(value, dict):
+        return dict(value)
+    return {"label": str(value or icao24), "type": "不明"}
+
+
+def clear_expired_special(entry, now=None):
+    """期限切れSPECIALを元の優先度へ戻す。変更した場合はTrue。"""
+    if not isinstance(entry, dict) or not entry.get("special_until"):
+        return False
+    try:
+        expired = float(entry["special_until"]) <= (time.time() if now is None else now)
+    except (TypeError, ValueError):
+        expired = False
+    if not expired:
+        return False
+    entry["priority"] = normalize_priority(entry.pop("priority_after_special", "NORMAL"))
+    entry.pop("special_until", None)
+    return True
+
+
+def parse_duration(value):
+    """24h / 30m / 7d を秒へ変換する。"""
+    match = _DURATION_RE.fullmatch(value.strip())
+    if not match:
+        raise ValueError("期間は `30m`、`24h`、`7d` の形式で指定してください。")
+    amount = int(match.group(1))
+    multiplier = {"m": 60, "h": 3600, "d": 86400}[match.group(2).lower()]
+    seconds = amount * multiplier
+    if amount < 1 or seconds > 365 * 86400:
+        raise ValueError("期間は1分以上365日以内で指定してください。")
+    return seconds
 
 
 # ============ 検索(すべて同期関数。呼び出し側で to_thread する) ============
@@ -554,7 +638,7 @@ async def add_aircraft(ctx, tail: str, icao24: str = None, *, type_name: str = N
         await ctx.send(f"ℹ️ `{label}` ({icao24}) は既に登録済みです。")
         return
 
-    watchlist[icao24] = {"label": tail, "type": type_name}
+    watchlist[icao24] = {"label": tail, "type": type_name, "priority": "NORMAL"}
     save_watchlist(watchlist)
     await ctx.send(f"✅ `{tail}` ({icao24} / {type_name}) をwatchlistに追加しました。")
 
@@ -589,7 +673,9 @@ async def find_aircraft(ctx, keyword: str):
     for icao24, value in watchlist.items():
         label, type_name = normalize(value)
         if keyword_upper in label.upper() or keyword_upper in icao24.upper():
-            matches.append(f"`{label}` ({icao24} / {type_name})")
+            matches.append(
+                f"`{label}` ({icao24} / {type_name} / {effective_priority(value)})"
+            )
 
     if not matches:
         await ctx.send(f"「{keyword}」に一致する機体はありません。")
@@ -617,7 +703,10 @@ async def list_aircraft(ctx, page: int = 1):
     page = max(1, min(page, pages))
     chunk = items[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
 
-    lines = [f"`{label}` ({icao24} / {type_name})" for label, type_name, icao24 in chunk]
+    lines = [
+        f"`{label}` ({icao24} / {type_name} / {effective_priority(watchlist[icao24])})"
+        for label, type_name, icao24 in chunk
+    ]
     header = f"📋 watchlist 全{total}機(ページ {page}/{pages})"
     footer = f"\n次のページ: `!list {page + 1}`" if page < pages else ""
     await ctx.send((header + "\n" + "\n".join(lines) + footer)[:1990])
@@ -639,6 +728,128 @@ async def flight_lookup(ctx, *, query: str):
             route = await asyncio.to_thread(fetch_route, ac.get("flight"))
             embeds.append(build_flight_embed(ac, route))
     await ctx.send(embeds=embeds)
+
+
+# ============ 管理者用スラッシュコマンド ============
+
+async def require_administrator(interaction: discord.Interaction) -> bool:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if interaction.guild is None or permissions is None or not permissions.administrator:
+        await interaction.response.send_message(
+            "⛔ このコマンドはサーバー管理者だけが使用できます。", ephemeral=True
+        )
+        return False
+    return True
+
+
+@bot.tree.command(name="priority", description="登録機の通知レベルを変更します(管理者専用)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(aircraft="登録記号またはicao24", level="通知レベル")
+@app_commands.choices(level=[
+    app_commands.Choice(name="NORMAL", value="NORMAL"),
+    app_commands.Choice(name="WATCH", value="WATCH"),
+    app_commands.Choice(name="SPECIAL", value="SPECIAL"),
+])
+async def priority_command(
+    interaction: discord.Interaction,
+    aircraft: str,
+    level: app_commands.Choice[str],
+):
+    if not await require_administrator(interaction):
+        return
+    watchlist = load_watchlist()
+    found = find_watchlist_entry(watchlist, aircraft)
+    if not found:
+        await interaction.response.send_message(
+            f"⚠️ `{aircraft}` はwatchlistに見つかりませんでした。", ephemeral=True
+        )
+        return
+    icao24, value = found
+    entry = as_entry(value, icao24)
+    entry["priority"] = level.value
+    entry.pop("special_until", None)
+    entry.pop("priority_after_special", None)
+    watchlist[icao24] = entry
+    save_watchlist(watchlist)
+    label, _ = normalize(entry)
+    await interaction.response.send_message(
+        f"✅ `{label}` ({icao24}) を **{level.value}** に設定しました。", ephemeral=True
+    )
+
+
+@bot.tree.command(name="special", description="登録機を期限付きSPECIALにします(管理者専用)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(aircraft="登録記号またはicao24", duration="期間。例: 24h / 30m / 7d")
+async def special_command(
+    interaction: discord.Interaction,
+    aircraft: str,
+    duration: str = "24h",
+):
+    if not await require_administrator(interaction):
+        return
+    try:
+        seconds = parse_duration(duration)
+    except ValueError as exc:
+        await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
+        return
+    watchlist = load_watchlist()
+    found = find_watchlist_entry(watchlist, aircraft)
+    if not found:
+        await interaction.response.send_message(
+            f"⚠️ `{aircraft}` はwatchlistに見つかりませんでした。", ephemeral=True
+        )
+        return
+    icao24, value = found
+    entry = as_entry(value, icao24)
+    previous = (
+        entry.get("priority_after_special")
+        if effective_priority(entry) == "SPECIAL"
+        else effective_priority(entry)
+    )
+    entry["priority"] = "SPECIAL"
+    entry["priority_after_special"] = normalize_priority(previous)
+    entry["special_until"] = time.time() + seconds
+    watchlist[icao24] = entry
+    save_watchlist(watchlist)
+    label, _ = normalize(entry)
+    expires = int(entry["special_until"])
+    await interaction.response.send_message(
+        f"🚨 `{label}` ({icao24}) を <t:{expires}:F> まで **SPECIAL** に設定しました。",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="special-list", description="SPECIAL登録機の一覧を表示します(管理者専用)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def special_list_command(interaction: discord.Interaction):
+    if not await require_administrator(interaction):
+        return
+    watchlist = load_watchlist()
+    changed = False
+    specials = []
+    for icao24, value in watchlist.items():
+        entry = as_entry(value, icao24)
+        if clear_expired_special(entry):
+            watchlist[icao24] = entry
+            changed = True
+        if effective_priority(entry) != "SPECIAL":
+            continue
+        label, type_name = normalize(entry)
+        until = entry.get("special_until")
+        expiry = f" · <t:{int(float(until))}:R>まで" if until else " · 期限なし"
+        specials.append(f"`{label}` ({icao24} / {type_name}){expiry}")
+    if changed:
+        save_watchlist(watchlist)
+    if not specials:
+        message = "SPECIAL登録機はありません。"
+    else:
+        message = "🚨 **SPECIAL登録機**\n" + "\n".join(specials)
+        if len(message) > 1900:
+            message = message[:1870] + "\n…一覧が長いため省略しました。"
+    await interaction.response.send_message(message, ephemeral=True)
 
 
 if __name__ == "__main__":
