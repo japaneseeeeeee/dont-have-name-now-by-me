@@ -355,18 +355,12 @@ async function cmdList(o, env) {
 
 async function cmdFlight(o, env, interaction) {
   const query = String(o.query || "").trim();
-  if (!query) return { content: "⚠️ 使い方: `/flight query:<便名 / コールサイン / 登録記号 / icao24>`" };
-
-  const aircraft = await findLive(query);
-  if (aircraft.length > 0) {
-    const embeds = await Promise.all(
-      aircraft.slice(0, 3).map(async (ac) => buildFlightEmbed(ac, await fetchRoute(ac.flight))),
-    );
-    return { embeds };
+  if (!query) {
+    return { content: "⚠️ 使い方: `/flight query:<便名 / コールサイン / 登録記号 / icao24>`" };
   }
 
-  // CloudflareからADS-Bを取得できなかった場合は、
-  // GitHub Actions側でリアルタイム検索を続行する。
+  // /flight のリアルタイムADS-B検索はGitHub Actions側で実行する。
+  // Cloudflareからadsb.lolへアクセスすると429になるため直接検索しない。
   return startSlowLookup(
     env,
     "flight",
