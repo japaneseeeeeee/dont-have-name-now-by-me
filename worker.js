@@ -20,8 +20,6 @@ const DISCORD_API = "https://discord.com/api/v10";
 // 同じADS-B形式を返す複数の提供元を順に照会する。
 const ADSB_API_BASES = [
   "https://api.adsb.lol",
-  "https://api.airplanes.live",
-  "https://api.adsb.one",
 ];
 const PAGE_SIZE = 20;
 const HEX6 = /^[0-9a-fA-F]{6}$/;
@@ -387,7 +385,13 @@ async function cmdFlight(o, env, interaction) {
   if (looksLikeRegistration(query)) {
     return startSlowLookup(env, "flight", [query], interaction, { failure: notFoundText(query) });
   }
-  return { content: notFoundText(query) };
+  return startSlowLookup(
+    env,
+    "flight",
+    [query],
+    interaction,
+    { failure: notFoundText(query) },
+  );
 }
 
 function notFoundText(query) {
@@ -508,9 +512,17 @@ function normalize(value) {
 // Discordの応答期限内に必ず返すため、外部APIの待機時間は短くする。
 async function fetchJson(url, timeoutMs = 4000) {
   try {
-    const r = await fetch(url, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(timeoutMs) });
-    return r.ok ? await r.json() : null;
-  } catch {
+    const r = await fetch(url, {
+      headers: { "user-agent": UA },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!r.ok) {
+      console.error("fetchJson HTTP error:", r.status, url);
+      return null;
+    }
+    return await r.json();
+  } catch (err) {
+    console.error("fetchJson failed:", url, err?.name, err?.message);
     return null;
   }
 }
@@ -572,9 +584,10 @@ async function adsbLookup(kind, value) {
 }
 
 async function findLive(text) {
-  const callsignResults = await Promise.all(callsignCandidates(text).map((callsign) => adsbLookup("callsign", callsign)));
-  const callsignFound = callsignResults.find((found) => found.length > 0);
-  if (callsignFound) return callsignFound;
+  for (const callsign of callsignCandidates(text)) {
+    const found = await adsbLookup("callsign", callsign);
+    if (found.length > 0) return found;
+  }
   const compact = text.replace(/[\s-]/g, "");
   if (HEX6.test(compact)) {
     const found = await adsbLookup("hex", compact.toLowerCase());

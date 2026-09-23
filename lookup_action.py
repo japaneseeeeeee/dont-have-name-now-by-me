@@ -4,6 +4,7 @@ import json
 import gzip
 import urllib.request
 import urllib.error
+import urllib.parse
 
 REPO = os.environ["GITHUB_REPOSITORY"]
 TOKEN = os.environ["GITHUB_TOKEN"]
@@ -127,6 +128,108 @@ def add_to_watchlist(icao24, registration, type_name):
     return True
 
 
+
+# IATA航空会社コード → ICAOコールサイン
+IATA_TO_ICAO = {
+    "JL": "JAL",
+    "NH": "ANA",
+    "MM": "APJ",
+    "GK": "JJP",
+    "BC": "SKY",
+    "7G": "SFJ",
+    "NU": "JTA",
+    "HD": "ADO",
+    "IJ": "SJO",
+    "6J": "SNJ",
+    "FW": "IBX",
+    "OC": "ORC",
+    "3X": "JAC",
+}
+
+
+def callsign_candidates(text):
+    import re
+
+    value = str(text).strip().upper().replace(" ", "").replace("-", "")
+    candidates = []
+
+    m = re.fullmatch(r"([A-Z0-9]{2})(\d{1,4}[A-Z]?)", value)
+    if m and m.group(1) in IATA_TO_ICAO:
+        candidates.append(IATA_TO_ICAO[m.group(1)] + m.group(2))
+
+    candidates.append(value)
+    return list(dict.fromkeys(candidates))
+
+
+def lookup_live_callsign(query):
+    """adsb.lol から現在飛行中の機体を検索する。"""
+    for callsign in callsign_candidates(query):
+        url = (
+            "https://api.adsb.lol/v2/callsign/"
+            + urllib.parse.quote(callsign)
+        )
+
+        print(f"ADS-B lookup: {callsign}")
+
+        try:
+            raw = request(url)
+            data = json.loads(raw)
+        except urllib.error.HTTPError as e:
+            print(f"ADS-B HTTP error: {e.code} ({callsign})")
+            continue
+        except Exception as e:
+            print(f"ADS-B lookup failed: {type(e).__name__}: {e}")
+            continue
+
+        aircraft = data.get("ac") or []
+        if aircraft:
+            return aircraft[0]
+
+    return None
+
+
+def format_live_aircraft(ac):
+    callsign = str(ac.get("flight") or "").strip() or "不明"
+    registration = ac.get("r") or "不明"
+    icao24 = str(ac.get("hex") or "").lower() or "不明"
+    aircraft_type = ac.get("desc") or ac.get("t") or "不明"
+
+    lines = [
+        f"✈️ **{callsign}** の現在情報",
+        f"登録記号: `{registration}`",
+        f"icao24: `{icao24}`",
+        f"機種: {aircraft_type}",
+    ]
+
+    alt = ac.get("alt_baro")
+    if alt == "ground":
+        lines.append("状態: 地上")
+    elif isinstance(alt, (int, float)):
+        lines.append(f"高度: {round(alt):,} ft")
+
+    speed = ac.get("gs")
+    if isinstance(speed, (int, float)):
+        lines.append(
+            f"速度: {round(speed * 1.852):,} km/h "
+            f"({round(speed):,} kt)"
+        )
+
+    track = ac.get("track")
+    if isinstance(track, (int, float)):
+        lines.append(f"進行方向: {round(track)}°")
+
+    lat = ac.get("lat")
+    lon = ac.get("lon")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        lines.append(f"位置: {lat:.4f}, {lon:.4f}")
+        lines.append(
+            "地図: "
+            f"https://globe.adsbexchange.com/?icao={icao24}"
+        )
+
+    return "\n".join(lines)
+
+
 def main():
     payload = json.loads(os.environ["LOOKUP_PAYLOAD"])
 
@@ -177,24 +280,35 @@ def main():
         return
 
     if op == "flight":
-        registration = str(args[0]).strip().upper()
-        found = lookup_tar1090(registration)
+        query = str(args[0]).strip().upper()
 
-        if not found:
+        # まずリアルタイムADS-Bを検索
+        live = lookup_live_callsign(query)
+
+        if live:
             discord_send(
                 channel_id,
-                f"❓ `{registration}` の機体情報をデータベースから取得できませんでした。",
+                format_live_aircraft(live),
             )
             return
 
-        icao24, type_name, canonical_reg = found
+        # 登録記号の場合はtar1090の機体DBも検索
+        found = lookup_tar1090(query)
+
+        if found:
+            icao24, type_name, canonical_reg = found
+            discord_send(
+                channel_id,
+                f"🔎 `{canonical_reg}` の機体情報を確認しました。\n"
+                f"icao24: `{icao24}`\n"
+                f"機種: {type_name}\n"
+                f"現在位置はADS-Bで確認できませんでした。",
+            )
+            return
 
         discord_send(
             channel_id,
-            f"🔎 `{canonical_reg}` の機体情報を確認しました。\n"
-            f"icao24: `{icao24}`\n"
-            f"機種: {type_name}\n"
-            f"現在位置はADS-Bで確認できませんでした。",
+            f"❓ `{query}` の現在のADS-B情報を取得できませんでした。",
         )
         return
 
