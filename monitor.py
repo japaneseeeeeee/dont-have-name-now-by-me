@@ -458,14 +458,6 @@ def build_embed(
         },
     ]
 
-    if route:
-        flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
-        fields.append({
-            "name": "区間(参考・一致未確認)",
-            "value": f"{flight}{format_airport(route['origin'])} → {format_airport(route['destination'])}",
-            "inline": False,
-        })
-
     if not on_ground:
         if altitude is not None:
             fields.append({
@@ -529,8 +521,8 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     priority = effective_priority(entry)
 
     photo = fetch_photo(icao24)
-    route = fetch_route((aircraft[1] or "").strip())
-    embed = build_embed(icao24, entry, aircraft, photo, route, repeat, region_name)
+    # 外部経路DBは同じコールサインの別便を返すことがあるため、監視通知には表示しない。
+    embed = build_embed(icao24, entry, aircraft, photo, None, repeat, region_name)
 
     payload = {
         # スマホのプッシュ通知プレビューはcontentが表示されるため入れておく
@@ -547,7 +539,7 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
             "Discord通知: %s (%s / %s) %s 写真=%s 区間=%s",
             response.status_code, f"{region_name}/{label}", aircraft_type,
             "再通知" if repeat else "初回",
-            "あり" if photo else "なし", "あり" if route else "なし",
+            "あり" if photo else "なし", "非表示",
         )
     except requests.exceptions.RequestException as exc:
         logger.error("Discord通知に失敗しました(%s): %s", label, exc)

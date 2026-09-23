@@ -29,7 +29,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("SPECIAL", embed["title"])
         self.assertTrue(any(field["name"] == "検出理由" for field in embed["fields"]))
 
-    def test_route_is_labeled_as_unverified_reference(self):
+    def test_route_is_hidden_from_monitor_alert(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
         route = {
             "origin": {"iata_code": "MXP", "municipality": "Milan"},
@@ -40,7 +40,7 @@ class PriorityTests(unittest.TestCase):
             "abc123", {"label": "JA0001", "type": "TEST"}, aircraft, route=route,
         )
         names = [field["name"] for field in embed["fields"]]
-        self.assertIn("区間(参考・一致未確認)", names)
+        self.assertFalse(any(name.startswith("区間") for name in names))
 
     def test_major_cities_are_classified_into_expected_regions(self):
         cities = {
