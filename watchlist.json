@@ -382,6 +382,9 @@
   },
   "87c003": {
     "label": "80-1112",
+    "priority": "SPECIAL",
+    "priority_after_special": "NORMAL",
+    "special_until": 1790263390.699,
     "type": "Boeing 777 300ER"
   },
   "89404d": {
