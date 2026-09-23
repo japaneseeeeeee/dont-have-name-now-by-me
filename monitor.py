@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -426,6 +427,57 @@ def format_airport(airport):
     return f"{place} ({code})" if place else code
 
 
+def haversine_km(lat1, lon1, lat2, lon2):
+    """2地点間の大圏距離(km)。"""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 6371.0 * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1 - a)))
+
+
+def _latlon_vector(lat, lon):
+    phi, lam = math.radians(lat), math.radians(lon)
+    return (math.cos(phi) * math.cos(lam), math.cos(phi) * math.sin(lam), math.sin(phi))
+
+
+def _vector_latlon(vector):
+    x, y, z = vector
+    return math.degrees(math.atan2(z, math.hypot(x, y))), math.degrees(math.atan2(y, x))
+
+
+def route_matches_position(route, lat, lon, max_distance_km=600):
+    """現在位置が空港間の大圏経路から大きく外れていないか判定する。"""
+    if not route or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return False
+    try:
+        origin = route["origin"]
+        destination = route["destination"]
+        lat1, lon1 = float(origin["latitude"]), float(origin["longitude"])
+        lat2, lon2 = float(destination["latitude"]), float(destination["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    start = _latlon_vector(lat1, lon1)
+    end = _latlon_vector(lat2, lon2)
+    dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(start, end))))
+    omega = math.acos(dot)
+    sin_omega = math.sin(omega)
+    samples = 72
+    nearest = float("inf")
+    for index in range(samples + 1):
+        fraction = index / samples
+        if abs(sin_omega) < 1e-9:
+            vector = tuple((1 - fraction) * a + fraction * b for a, b in zip(start, end))
+        else:
+            left = math.sin((1 - fraction) * omega) / sin_omega
+            right = math.sin(fraction * omega) / sin_omega
+            vector = tuple(left * a + right * b for a, b in zip(start, end))
+        sample_lat, sample_lon = _vector_latlon(vector)
+        nearest = min(nearest, haversine_km(lat, lon, sample_lat, sample_lon))
+    return nearest <= max_distance_km
+
+
 def build_embed(
     icao24, entry, aircraft, photo=None, route=None, repeat=False,
     region_name=AIRPORT_NAME,
@@ -457,6 +509,14 @@ def build_embed(
             "inline": False,
         },
     ]
+
+    if route and route_matches_position(route, lat, lon):
+        flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
+        fields.append({
+            "name": "区間(推定)",
+            "value": f"{flight}{format_airport(route['origin'])} → {format_airport(route['destination'])}",
+            "inline": False,
+        })
 
     if not on_ground:
         if altitude is not None:
@@ -521,8 +581,9 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     priority = effective_priority(entry)
 
     photo = fetch_photo(icao24)
-    # 外部経路DBは同じコールサインの別便を返すことがあるため、監視通知には表示しない。
-    embed = build_embed(icao24, entry, aircraft, photo, None, repeat, region_name)
+    route = fetch_route((aircraft[1] or "").strip())
+    route_verified = route if route_matches_position(route, aircraft[6], aircraft[5]) else None
+    embed = build_embed(icao24, entry, aircraft, photo, route_verified, repeat, region_name)
 
     payload = {
         # スマホのプッシュ通知プレビューはcontentが表示されるため入れておく
@@ -539,7 +600,7 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
             "Discord通知: %s (%s / %s) %s 写真=%s 区間=%s",
             response.status_code, f"{region_name}/{label}", aircraft_type,
             "再通知" if repeat else "初回",
-            "あり" if photo else "なし", "非表示",
+            "あり" if photo else "なし", "あり" if route_verified else "不一致/なし",
         )
     except requests.exceptions.RequestException as exc:
         logger.error("Discord通知に失敗しました(%s): %s", label, exc)

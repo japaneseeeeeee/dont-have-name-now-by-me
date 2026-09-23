@@ -29,7 +29,7 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("SPECIAL", embed["title"])
         self.assertTrue(any(field["name"] == "検出理由" for field in embed["fields"]))
 
-    def test_route_is_hidden_from_monitor_alert(self):
+    def test_route_is_hidden_when_position_does_not_match(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
         route = {
             "origin": {"iata_code": "MXP", "municipality": "Milan"},
@@ -41,6 +41,37 @@ class PriorityTests(unittest.TestCase):
         )
         names = [field["name"] for field in embed["fields"]]
         self.assertFalse(any(name.startswith("区間") for name in names))
+
+    def test_route_is_shown_when_position_matches(self):
+        aircraft = ["abc123", "ANA1", None, None, None, 132.0, 30.0, 1000, False, 100, 30, 0]
+        route = {
+            "origin": {
+                "iata_code": "OKA", "municipality": "Naha",
+                "latitude": 26.1958, "longitude": 127.646,
+            },
+            "destination": {
+                "iata_code": "NGO", "municipality": "Tokoname",
+                "latitude": 34.8584, "longitude": 136.805,
+            },
+            "flight_iata": "NH304",
+        }
+        embed = monitor.build_embed(
+            "abc123", {"label": "JA0001", "type": "TEST"}, aircraft, route=route,
+        )
+        names = [field["name"] for field in embed["fields"]]
+        self.assertIn("区間(推定)", names)
+
+    def test_known_bad_delta_routes_are_rejected(self):
+        dal88 = {
+            "origin": {"latitude": 33.6367, "longitude": -84.428101},
+            "destination": {"latitude": 49.012798, "longitude": 2.55},
+        }
+        dal173 = {
+            "origin": {"latitude": 45.6306, "longitude": 8.72811},
+            "destination": {"latitude": 40.639801, "longitude": -73.7789},
+        }
+        self.assertFalse(monitor.route_matches_position(dal88, 34.123, 138.378))
+        self.assertFalse(monitor.route_matches_position(dal173, 37.297, 137.255))
 
     def test_major_cities_are_classified_into_expected_regions(self):
         cities = {
