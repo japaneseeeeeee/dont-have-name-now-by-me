@@ -461,7 +461,7 @@ def build_embed(
     if route:
         flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
         fields.append({
-            "name": "区間(予定)",
+            "name": "区間(参考・一致未確認)",
             "value": f"{flight}{format_airport(route['origin'])} → {format_airport(route['destination'])}",
             "inline": False,
         })
