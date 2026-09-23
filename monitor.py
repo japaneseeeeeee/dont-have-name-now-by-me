@@ -24,24 +24,74 @@ def load_env_file(path):
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-load_env_file(os.path.join(BASE_DIR, ".env"))
+# self-hosted GitHub Actionsのチェックアウトから実行するときも、Mac本体に保存した
+# Webhook設定を利用する。AIRCRAFT_ENV_FILEを指定すれば別の場所にも移行できる。
+PRIMARY_ENV_PATH = os.path.expanduser(
+    os.environ.get("AIRCRAFT_ENV_FILE", "~/aircraft-alert/.env")
+)
+load_env_file(PRIMARY_ENV_PATH)
+if os.path.abspath(PRIMARY_ENV_PATH) != os.path.join(BASE_DIR, ".env"):
+    load_env_file(os.path.join(BASE_DIR, ".env"))
 
 # ============ CONFIG ============
 
 # 秘密情報は .env(または環境変数)から読む。コードには書かない。
-WEBHOOK_URL = os.environ.get("AIRCRAFT_WEBHOOK_URL")
 CLIENT_ID = os.environ.get("OPENSKY_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("OPENSKY_CLIENT_SECRET")
+JAPAN_WEBHOOK_URL = os.environ.get("AIRCRAFT_WEBHOOK_URL")
 
-# 監視する範囲
-BBOX = {
-    "lamin": 34.0,
-    "lomin": 138.2,
-    "lamax": 37.5,
-    "lomax": 143.1,
+# 日本全体を1回だけ取得し、最も近い地方の監視範囲へ振り分ける。
+JAPAN_BBOX = {
+    "lamin": 23.5,
+    "lomin": 122.0,
+    "lamax": 46.0,
+    "lomax": 146.0,
 }
 
-AIRPORT_NAME = "日本周辺"
+# 従来の「日本周辺」早期警戒範囲。全国取得した結果から切り出すためAPI追加取得はしない。
+EARLY_WARNING_BBOX = (34.0, 138.2, 37.5, 143.1)
+
+REGIONS = {
+    "hokkaido": {
+        "name": "北海道", "env": "AIRCRAFT_WEBHOOK_HOKKAIDO",
+        "bbox": (41.2, 139.0, 45.8, 146.0),
+    },
+    "tohoku": {
+        "name": "東北", "env": "AIRCRAFT_WEBHOOK_TOHOKU",
+        "bbox": (36.7, 138.5, 41.6, 142.5),
+    },
+    "kanto": {
+        # 関東は既存の別GitHubリポジトリが通知しているため、ここでは送信しない。
+        "name": "関東", "env": None,
+        "bbox": (34.7, 138.0, 37.3, 141.8),
+    },
+    "chubu": {
+        "name": "中部", "env": "AIRCRAFT_WEBHOOK_CHUBU",
+        "bbox": (34.0, 135.3, 38.7, 140.0),
+    },
+    "kinki": {
+        "name": "近畿", "env": "AIRCRAFT_WEBHOOK_KINKI",
+        "bbox": (33.2, 134.0, 36.0, 137.0),
+    },
+    "chugoku_shikoku": {
+        "name": "中国・四国", "env": "AIRCRAFT_WEBHOOK_CHUGOKU_SHIKOKU",
+        "bbox": (32.5, 130.5, 35.8, 135.2),
+    },
+    "kyushu": {
+        "name": "九州", "env": "AIRCRAFT_WEBHOOK_KYUSHU",
+        "bbox": (29.0, 128.0, 34.5, 132.2),
+    },
+    "okinawa": {
+        "name": "沖縄", "env": "AIRCRAFT_WEBHOOK_OKINAWA",
+        "bbox": (23.5, 122.0, 29.0, 131.5),
+    },
+}
+
+for region in REGIONS.values():
+    region["webhook"] = os.environ.get(region["env"]) if region["env"] else None
+
+# 既存関数を直接利用するコード向けの既定表示。
+AIRPORT_NAME = "関東"
 
 WATCHLIST_PATH = os.path.join(BASE_DIR, "watchlist.json")
 
@@ -102,6 +152,33 @@ def effective_priority(entry, now=None):
     if (time.time() if now is None else now) < expires_at:
         return "SPECIAL"
     return normalize_priority(entry.get("priority_after_special"))
+
+
+def classify_region(lat, lon):
+    """緯度経度を地方キーへ振り分ける。範囲が重なる場合は中心に最も近い地方を選ぶ。"""
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    candidates = []
+    for key, region in REGIONS.items():
+        lamin, lomin, lamax, lomax = region["bbox"]
+        if not (lamin <= lat <= lamax and lomin <= lon <= lomax):
+            continue
+        lat_span = lamax - lamin
+        lon_span = lomax - lomin
+        lat_center = (lamin + lamax) / 2
+        lon_center = (lomin + lomax) / 2
+        distance = ((lat - lat_center) / lat_span) ** 2 + ((lon - lon_center) / lon_span) ** 2
+        candidates.append((distance, key))
+    return min(candidates)[1] if candidates else None
+
+
+def is_inside_bbox(aircraft, bbox):
+    """OpenSky state vectorに位置があり、指定範囲内ならTrue。"""
+    lat, lon = aircraft[6], aircraft[5]
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return False
+    lamin, lomin, lamax, lomax = bbox
+    return lamin <= lat <= lamax and lomin <= lon <= lomax
 
 
 def request_with_retry(method, url, **kwargs):
@@ -209,6 +286,73 @@ def find_new_detections(states, watchlist, notified, now):
     return to_notify, notified, present
 
 
+def find_new_region_detections(states, watchlist, notified, now):
+    """登録機を地方へ振り分け、地方ごとに重複通知を管理する。"""
+    notified = dict(notified)
+    present = set()
+    to_notify = []
+
+    for aircraft in states:
+        icao24 = (aircraft[0] or "").strip().lower()
+        if icao24 not in watchlist:
+            continue
+        region_key = classify_region(aircraft[6], aircraft[5])
+        if region_key is None:
+            continue
+        state_key = f"{region_key}:{icao24}"
+        present.add(state_key)
+
+        # 旧形式の通知時刻も初回だけ引き継ぎ、切替直後の重複通知を防ぐ。
+        last = notified.get(state_key, notified.get(icao24))
+        on_ground = bool(aircraft[8])
+        if last is None:
+            to_notify.append((region_key, icao24, aircraft, False))
+            notified[state_key] = now
+        elif now - last >= RENOTIFY_SECONDS and (RENOTIFY_ON_GROUND or not on_ground):
+            to_notify.append((region_key, icao24, aircraft, True))
+            notified[state_key] = now
+        elif state_key not in notified:
+            notified[state_key] = last
+
+    region_prefixes = tuple(f"{key}:" for key in REGIONS)
+    notified = {
+        key: timestamp for key, timestamp in notified.items()
+        if not key.startswith(region_prefixes)
+        or key in present
+        or now - timestamp < RENOTIFY_SECONDS
+    }
+    return to_notify, notified, present
+
+
+def find_new_area_detections(states, watchlist, notified, now, scope):
+    """日本周辺など、地方とは別の監視範囲の重複通知を管理する。"""
+    notified = dict(notified)
+    present = set()
+    to_notify = []
+    prefix = f"{scope}:"
+    for aircraft in states:
+        icao24 = (aircraft[0] or "").strip().lower()
+        if icao24 not in watchlist:
+            continue
+        state_key = f"{prefix}{icao24}"
+        present.add(state_key)
+        last = notified.get(state_key, notified.get(icao24))
+        on_ground = bool(aircraft[8])
+        if last is None:
+            to_notify.append((icao24, aircraft, False))
+            notified[state_key] = now
+        elif now - last >= RENOTIFY_SECONDS and (RENOTIFY_ON_GROUND or not on_ground):
+            to_notify.append((icao24, aircraft, True))
+            notified[state_key] = now
+        elif state_key not in notified:
+            notified[state_key] = last
+    notified = {
+        key: timestamp for key, timestamp in notified.items()
+        if not key.startswith(prefix) or key in present or now - timestamp < RENOTIFY_SECONDS
+    }
+    return to_notify, notified, present
+
+
 # ============ 通知(Embed) ============
 
 _COMPASS = ["北", "北東", "東", "南東", "南", "南西", "西", "北西"]
@@ -282,7 +426,10 @@ def format_airport(airport):
     return f"{place} ({code})" if place else code
 
 
-def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
+def build_embed(
+    icao24, entry, aircraft, photo=None, route=None, repeat=False,
+    region_name=AIRPORT_NAME,
+):
     """OpenSkyの state vector から Discord Embed(dict)を組み立てる。"""
     label = entry["label"]
     aircraft_type = entry["type"]
@@ -304,7 +451,7 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
         {
             "name": "検出理由",
             "value": (
-                f"{priority} 登録機が{AIRPORT_NAME}の監視範囲内で"
+                f"{priority} 登録機が{region_name}の監視範囲内で"
                 + ("継続して検出されました" if repeat else "初めて検出されました")
             ),
             "inline": False,
@@ -358,7 +505,7 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
         "title": f"{title_prefix} {label} を検知" + ("(範囲内に継続中)" if repeat else ""),
         "url": f"https://globe.adsbexchange.com/?icao={icao24}",
         "description": (
-            f"**{'地上(到着/駐機中)' if on_ground else '飛行中'}** · {AIRPORT_NAME}"
+            f"**{'地上(到着/駐機中)' if on_ground else '飛行中'}** · {region_name}"
             + (f"\n位置: {lat:.3f}, {lon:.3f}" if lat is not None and lon is not None else "")
         ),
         "color": color,
@@ -376,14 +523,14 @@ def build_embed(icao24, entry, aircraft, photo=None, route=None, repeat=False):
     return embed
 
 
-def notify_discord(icao24, entry, aircraft, repeat=False):
+def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=False):
     label = entry["label"]
     aircraft_type = entry["type"]
     priority = effective_priority(entry)
 
     photo = fetch_photo(icao24)
     route = fetch_route((aircraft[1] or "").strip())
-    embed = build_embed(icao24, entry, aircraft, photo, route, repeat)
+    embed = build_embed(icao24, entry, aircraft, photo, route, repeat, region_name)
 
     payload = {
         # スマホのプッシュ通知プレビューはcontentが表示されるため入れておく
@@ -395,10 +542,10 @@ def notify_discord(icao24, entry, aircraft, repeat=False):
         "embeds": [embed],
     }
     try:
-        response = request_with_retry("post", WEBHOOK_URL, json=payload)
+        response = request_with_retry("post", webhook_url, json=payload)
         logger.info(
             "Discord通知: %s (%s / %s) %s 写真=%s 区間=%s",
-            response.status_code, label, aircraft_type,
+            response.status_code, f"{region_name}/{label}", aircraft_type,
             "再通知" if repeat else "初回",
             "あり" if photo else "なし", "あり" if route else "なし",
         )
@@ -409,13 +556,12 @@ def notify_discord(icao24, entry, aircraft, repeat=False):
 def main():
     logger.info("チェック開始")
 
-    missing = [
-        name for name, value in (
-            ("AIRCRAFT_WEBHOOK_URL", WEBHOOK_URL),
-            ("OPENSKY_CLIENT_ID", CLIENT_ID),
-            ("OPENSKY_CLIENT_SECRET", CLIENT_SECRET),
-        ) if not value
-    ]
+    missing = [name for name, value in (
+        ("OPENSKY_CLIENT_ID", CLIENT_ID),
+        ("OPENSKY_CLIENT_SECRET", CLIENT_SECRET),
+        ("AIRCRAFT_WEBHOOK_URL", JAPAN_WEBHOOK_URL),
+        *((region["env"], region["webhook"]) for region in REGIONS.values() if region["env"]),
+    ) if not value]
     if missing:
         logger.error(".env に次の設定がありません: %s", ", ".join(missing))
         return
@@ -448,7 +594,7 @@ def main():
     headers = {"Authorization": f"Bearer {access_token}"}
 
     try:
-        response = request_with_retry("get", url, params=BBOX, headers=headers)
+        response = request_with_retry("get", url, params=JAPAN_BBOX, headers=headers)
     except requests.exceptions.RequestException as exc:
         logger.error("API取得に失敗しました(リトライ上限到達): %s", exc)
         return
@@ -459,15 +605,34 @@ def main():
 
     data = response.json()
     states = data.get("states") or []
-    to_notify, notified, currently_present = find_new_detections(
+    to_notify, notified, currently_present = find_new_region_detections(
         states, watchlist, notified, time.time()
     )
-    for icao24, aircraft, repeat in to_notify:
-        notify_discord(icao24, watchlist[icao24], aircraft, repeat)
+    for region_key, icao24, aircraft, repeat in to_notify:
+        region = REGIONS[region_key]
+        if not region["webhook"]:
+            continue
+        notify_discord(
+            icao24, watchlist[icao24], aircraft,
+            region["webhook"], region["name"], repeat,
+        )
+
+    early_states = [aircraft for aircraft in states if is_inside_bbox(aircraft, EARLY_WARNING_BBOX)]
+    early_notify, notified, early_present = find_new_area_detections(
+        early_states, watchlist, notified, time.time(), "japan"
+    )
+    for icao24, aircraft, repeat in early_notify:
+        notify_discord(
+            icao24, watchlist[icao24], aircraft,
+            JAPAN_WEBHOOK_URL, "日本周辺", repeat,
+        )
 
     save_notified(notified)
 
-    logger.info("チェック完了。範囲内で検知した機体: %s", currently_present or "なし")
+    logger.info(
+        "チェック完了。地方別=%s / 日本周辺=%s",
+        currently_present or "なし", early_present or "なし",
+    )
 
 
 if __name__ == "__main__":

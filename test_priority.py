@@ -29,6 +29,41 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("SPECIAL", embed["title"])
         self.assertTrue(any(field["name"] == "検出理由" for field in embed["fields"]))
 
+    def test_major_cities_are_classified_into_expected_regions(self):
+        cities = {
+            "hokkaido": (43.06, 141.35),
+            "tohoku": (38.27, 140.87),
+            "kanto": (35.68, 139.77),
+            "chubu": (35.18, 136.91),
+            "kinki": (34.69, 135.50),
+            "chugoku_shikoku": (34.39, 132.46),
+            "kyushu": (33.59, 130.40),
+            "okinawa": (26.21, 127.68),
+        }
+        for expected, (lat, lon) in cities.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(monitor.classify_region(lat, lon), expected)
+
+    def test_region_transition_can_notify_new_channel(self):
+        watchlist = {"abc123": {"label": "JA0001", "type": "TEST", "priority": "NORMAL"}}
+        kanto = ["abc123", "TEST1", None, None, None, 139.77, 35.68, 1000, False, 100, 90, 0]
+        chubu = ["abc123", "TEST1", None, None, None, 136.91, 35.18, 1000, False, 100, 90, 0]
+        first, notified, _ = monitor.find_new_region_detections([kanto], watchlist, {}, 100)
+        second, _, _ = monitor.find_new_region_detections([chubu], watchlist, notified, 110)
+        self.assertEqual(first[0][0], "kanto")
+        self.assertEqual(second[0][0], "chubu")
+
+    def test_early_warning_area_uses_independent_state(self):
+        watchlist = {"abc123": {"label": "JA0001", "type": "TEST", "priority": "NORMAL"}}
+        aircraft = ["abc123", "TEST1", None, None, None, 140.0, 35.5, 1000, False, 100, 90, 0]
+        notified = {"kanto:abc123": 100}
+        found, updated, _ = monitor.find_new_area_detections(
+            [aircraft], watchlist, notified, 110, "japan"
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("japan:abc123", updated)
+        self.assertIn("kanto:abc123", updated)
+
 
 if __name__ == "__main__":
     unittest.main()
