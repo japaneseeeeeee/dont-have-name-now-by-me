@@ -62,8 +62,7 @@ REGIONS = {
         "bbox": (36.7, 138.5, 41.6, 142.5),
     },
     "kanto": {
-        # 関東は既存の別GitHubリポジトリが通知しているため、ここでは送信しない。
-        "name": "関東", "env": None,
+        "name": "関東", "env": "AIRCRAFT_WEBHOOK_KANTO",
         "bbox": (34.7, 138.0, 37.3, 141.8),
     },
     "chubu": {
