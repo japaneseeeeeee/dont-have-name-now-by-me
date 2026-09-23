@@ -365,26 +365,8 @@ async function cmdFlight(o, env, interaction) {
     return { embeds };
   }
 
-  // 位置情報が一時的に受信できない便でも、運航DBに予定区間があれば返す。
-  // 便名(IATA)の場合は、対応するICAOコールサインも照会する。
-  const routeResults = await Promise.all(
-    callsignCandidates(query).map(async (callsign) => ({ callsign, route: await fetchRoute(callsign) })),
-  );
-  const routeResult = routeResults.find((result) => result.route);
-  if (routeResult) {
-    const { callsign, route } = routeResult;
-    const name = route.flightIata || callsign;
-    return {
-      content: `✈️ **${name}** の運航情報\n` +
-        `予定区間: ${formatAirport(route.origin)} → ${formatAirport(route.destination)}\n` +
-        "現在の位置情報は受信できません。予定区間のみ表示しています。",
-    };
-  }
-
-  // 登録記号らしい入力は、GitHub Actionsで詳しく検索する(hexdb.ioに載っていない機体を探すため)
-  if (looksLikeRegistration(query)) {
-    return startSlowLookup(env, "flight", [query], interaction, { failure: notFoundText(query) });
-  }
+  // CloudflareからADS-Bを取得できなかった場合は、
+  // GitHub Actions側でリアルタイム検索を続行する。
   return startSlowLookup(
     env,
     "flight",
@@ -393,6 +375,7 @@ async function cmdFlight(o, env, interaction) {
     { failure: notFoundText(query) },
   );
 }
+
 
 function notFoundText(query) {
   return `❓ 「${query}」に一致する機体は、いまのADS-Bでは見つかりませんでした。` +
