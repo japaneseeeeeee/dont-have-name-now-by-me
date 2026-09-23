@@ -95,6 +95,12 @@ for region in REGIONS.values():
 AIRPORT_NAME = "関東"
 
 WATCHLIST_PATH = os.path.join(BASE_DIR, "watchlist.json")
+# すべての地方で同じGitHub上のwatchlistを正とする。ネットワーク障害時だけ
+# ローカルの最後のコピーへ安全にフォールバックする。
+SHARED_WATCHLIST_URL = os.environ.get(
+    "SHARED_WATCHLIST_URL",
+    "https://raw.githubusercontent.com/japaneseeeeeee/dont-have-name-now-by-me/main/watchlist.json",
+)
 
 # 通知済みの機体を記録しておくファイル(同じ機体を何度も通知しないため)
 STATE_PATH = os.path.join(BASE_DIR, "notified.json")
@@ -209,9 +215,17 @@ def request_with_retry(method, url, **kwargs):
 
 
 def load_watchlist():
-    """watchlist.json を読み込む(文字列形式・dict形式の混在OK)。"""
-    with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    """GitHubの共通watchlistを読み込む(障害時のみローカルへフォールバック)。"""
+    try:
+        response = requests.get(SHARED_WATCHLIST_URL, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        raw = response.json()
+        if not isinstance(raw, dict):
+            raise ValueError("watchlist must be an object")
+    except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
+        with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
 
     watchlist = {}
     for icao24, value in raw.items():
