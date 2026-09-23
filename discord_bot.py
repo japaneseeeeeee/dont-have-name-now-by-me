@@ -586,6 +586,9 @@ async def on_message(message):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ このコマンドはサーバー管理者だけが使用できます。")
+        return
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
         usage = USAGE.get(ctx.command.name, f"!{ctx.command.name}")
         await ctx.send(f"⚠️ 使い方: `{usage}`")
@@ -596,6 +599,7 @@ async def on_command_error(ctx, error):
 # ============ コマンド ============
 
 @bot.command(name="add")
+@commands.has_permissions(administrator=True)
 async def add_aircraft(ctx, tail: str, icao24: str = None, *, type_name: str = None):
     tail = tail.upper()
 
@@ -644,6 +648,7 @@ async def add_aircraft(ctx, tail: str, icao24: str = None, *, type_name: str = N
 
 
 @bot.command(name="remove")
+@commands.has_permissions(administrator=True)
 async def remove_aircraft(ctx, tail_or_icao: str):
     key = tail_or_icao.lower()
     watchlist = load_watchlist()

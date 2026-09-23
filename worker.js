@@ -69,6 +69,12 @@ export default {
       if (allowed && interaction.channel_id !== allowed) {
         return json({ type: 4, data: { content: "このチャンネルでは使えません。", flags: 64 } });
       }
+      if (["add", "remove"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
+        return json({
+          type: 4,
+          data: { content: "⛔ このコマンドはサーバー管理者だけが使用できます。", flags: 64 },
+        });
+      }
       // 3秒以内に返す必要があるので、まず「考え中…」を返し、結果はあとから書き換える
       ctx.waitUntil(processCommand(interaction, env));
       return json({ type: 5 });
@@ -77,6 +83,15 @@ export default {
     return new Response("unsupported interaction", { status: 400 });
   },
 };
+
+function isAdministrator(interaction) {
+  try {
+    const permissions = BigInt(interaction.member?.permissions || "0");
+    return (permissions & 8n) === 8n;
+  } catch {
+    return false;
+  }
+}
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
