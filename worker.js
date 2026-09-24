@@ -24,6 +24,7 @@ const ADSB_API_BASES = [
 const PAGE_SIZE = 20;
 const HEX6 = /^[0-9a-fA-F]{6}$/;
 const UNKNOWN_TYPE = "不明";
+const DEFAULT_FEEDBACK_OWNER_ID = "1083347827041771561";
 const COLOR_AIRBORNE = 0x3498db;
 const COLOR_GROUND = 0x2ecc71;
 
@@ -178,8 +179,28 @@ async function runCommand(interaction, env) {
     case "special": return cmdSpecial(o, env);
     case "special-list": return cmdSpecialList(env);
     case "nationwide": return cmdNationwide(o, env);
+    case "feedback": return cmdFeedback(o, env, interaction);
     default: return { content: "未対応のコマンドです。" };
   }
+}
+
+async function cmdFeedback(o, env, interaction) {
+  const message = String(o.message || "").trim();
+  if (!message) return { content: "⚠️ 質問または改善してほしい内容を入力してください。" };
+
+  const ownerId = String(env.FEEDBACK_OWNER_ID || DEFAULT_FEEDBACK_OWNER_ID).trim();
+  const sender = interaction.member?.user || interaction.user || {};
+  const senderName = String(sender.global_name || sender.username || "匿名").replace(/[`*_~|>]/g, "");
+  const senderId = String(sender.id || "");
+  const safeMessage = message.slice(0, 1500);
+  return {
+    content:
+      `📮 **質問・改善要望BOX**\n` +
+      `${ownerId ? `<@${ownerId}>\n` : ""}` +
+      `送信者: ${senderName}${senderId ? ` (<@${senderId}>)` : ""}\n` +
+      `内容:\n${safeMessage}`,
+    allowed_mentions: { users: ownerId ? [ownerId] : [], parse: [] },
+  };
 }
 
 async function cmdSpecial(o, env) {
