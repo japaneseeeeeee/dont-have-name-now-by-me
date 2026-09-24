@@ -68,6 +68,8 @@ FEEDBACK_DESTINATION_CHANNEL_ID = int(
 )
 FEEDBACK_OWNER_ID = int(os.environ.get("FEEDBACK_OWNER_ID", "1083347827041771561"))
 FEEDBACK_MARKER = "📮"
+PHOTO_CHANNEL_ID = int(os.environ.get("PHOTO_CHANNEL_ID", "1552676837581389956"))
+PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
 
 # 現在位置の検索に使うADS-B API(どちらも ADSBExchange v2 互換・登録不要)。上から順に試す。
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
@@ -106,6 +108,11 @@ AIRPORT_SHORT_NAMES = {
     "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
 }
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
+_JA_REGISTRATION_RE = re.compile(r"(?<![A-Z0-9])JA[- ]?([0-9A-Z]{4})(?![A-Z0-9])", re.IGNORECASE)
+_LABELED_REGISTRATION_RE = re.compile(
+    r"(?:機体番号|登録記号|registration)\s*[:：]?\s*([A-Z0-9][A-Z0-9-]{2,9})",
+    re.IGNORECASE,
+)
 
 USAGE = {
     "add": "!add <登録記号> [icao24] [機種]",
@@ -230,6 +237,98 @@ def parse_duration(value):
     if amount < 1 or seconds > 365 * 86400:
         raise ValueError("期間は1分以上365日以内で指定してください。")
     return seconds
+
+
+def parse_photo_post(content, created_at=None):
+    """写真投稿の本文から登録記号・撮影場所・撮影日・感想を取り出す。"""
+    content = (content or "").strip()
+    ja_match = _JA_REGISTRATION_RE.search(content)
+    labeled_match = _LABELED_REGISTRATION_RE.search(content)
+    registration = None
+    if ja_match:
+        registration = f"JA{ja_match.group(1)}".upper()
+    elif labeled_match:
+        registration = labeled_match.group(1).upper()
+
+    values = {}
+    labels = {
+        "撮影場所": "location", "場所": "location",
+        "撮影日": "date", "日付": "date",
+        "感想": "comment", "ひとこと": "comment", "コメント": "comment",
+    }
+    unlabelled = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        matched_label = False
+        for label, key in labels.items():
+            match = re.match(rf"^{label}\s*[:：]?\s*(.*)$", line, re.IGNORECASE)
+            if match:
+                values[key] = match.group(1).strip()
+                matched_label = True
+                break
+        if matched_label or _LABELED_REGISTRATION_RE.search(line):
+            continue
+        if registration and _normalize_reg(line) == _normalize_reg(registration):
+            continue
+        unlabelled.append(line)
+
+    if unlabelled and not values.get("location"):
+        values["location"] = unlabelled.pop(0)
+    if unlabelled and not values.get("comment"):
+        values["comment"] = "\n".join(unlabelled)
+    if not values.get("date"):
+        stamp = created_at or datetime.now(timezone.utc)
+        values["date"] = stamp.astimezone(timezone(timedelta(hours=9))).strftime("%Y年%-m月%-d日")
+    return {
+        "registration": registration,
+        "location": values.get("location") or "未記入",
+        "date": values["date"],
+        "comment": values.get("comment") or "（感想なし）",
+    }
+
+
+def is_photo_attachment(attachment):
+    content_type = (getattr(attachment, "content_type", None) or "").lower()
+    filename = (getattr(attachment, "filename", "") or "").lower()
+    return content_type.startswith("image/") or filename.endswith(PHOTO_EXTENSIONS)
+
+
+def lookup_photo_aircraft(registration):
+    """写真投稿向けにicao24・機種・所有者情報をまとめて取得する。"""
+    icao24 = lookup_icao24(registration)
+    type_name = None
+    operator = None
+    canonical_reg = registration
+    if icao24:
+        try:
+            response = requests.get(f"https://hexdb.io/api/v1/aircraft/{icao24}", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                manufacturer = data.get("Manufacturer", "") or ""
+                model = data.get("Type", "") or data.get("ICAOTypeCode", "") or ""
+                type_name = f"{manufacturer} {model}".strip() or None
+                operator = (
+                    data.get("RegisteredOwners")
+                    or data.get("RegisteredOwnerOperatorName")
+                    or data.get("RegisteredOwnerOperator")
+                    or data.get("RegisteredOwner")
+                )
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("photo aircraft info lookup failed: %s", exc)
+    if not icao24 or not type_name:
+        found = lookup_from_tar1090(registration)
+        if found:
+            found_icao24, found_type, canonical_reg = found
+            icao24 = icao24 or found_icao24
+            type_name = type_name or found_type
+    return {
+        "registration": canonical_reg,
+        "icao24": icao24 or "不明",
+        "type": type_name or "不明",
+        "operator": operator or "不明",
+    }
 
 
 # ============ 検索(すべて同期関数。呼び出し側で to_thread する) ============
@@ -683,6 +782,68 @@ async def answer_feedback(message):
         await message.reply("⚠️ 回答の送信に失敗しました。", mention_author=False)
     return True
 
+
+async def handle_photo_post(message):
+    """航空機写真を確認し、機体情報付きのスレッドへ整理する。"""
+    photos = [item for item in message.attachments if is_photo_attachment(item)]
+    if not photos:
+        await message.reply(
+            "📸 写真を添付し、本文の最初に機体番号を書いてください。\n"
+            "例: `JA784A` → `成田空港` → `夕日がきれいでした！`",
+            mention_author=False,
+            delete_after=30,
+        )
+        return
+
+    post = parse_photo_post(message.content, message.created_at)
+    if not post["registration"]:
+        await message.reply(
+            "⚠️ 機体番号を読み取れませんでした。本文に `JA784A` のような登録記号を入れてください。",
+            mention_author=False,
+        )
+        return
+
+    async with message.channel.typing():
+        aircraft = await asyncio.to_thread(
+            lookup_photo_aircraft, post["registration"]
+        )
+
+    registration = aircraft["registration"]
+    location = post["location"]
+    title = f"✈️ {registration}｜{location}"
+    embed = discord.Embed(
+        title=title[:256],
+        description=post["comment"][:4096],
+        color=0x3498DB,
+        timestamp=message.created_at,
+    )
+    embed.add_field(name="📷 撮影場所", value=location[:1024], inline=True)
+    embed.add_field(name="📅 撮影日", value=post["date"][:1024], inline=True)
+    embed.add_field(name="🛩️ 機種", value=aircraft["type"][:1024], inline=False)
+    embed.add_field(name="🏢 所有者・運航会社", value=aircraft["operator"][:1024], inline=False)
+    embed.add_field(name="🔎 ICAO24", value=f"`{aircraft['icao24']}`", inline=True)
+    embed.set_author(
+        name=f"{message.author.display_name}さんの投稿",
+        icon_url=message.author.display_avatar.url,
+    )
+    embed.set_image(url=photos[0].url)
+    embed.set_footer(text="このスレッドで写真へのコメントや情報交換ができます。")
+
+    thread_name = f"{registration}｜{location}"[:100]
+    try:
+        thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+        await thread.send(embed=embed)
+        await message.add_reaction("✈️")
+    except discord.Forbidden:
+        logger.warning("写真投稿スレッドの作成権限がありません")
+        await message.reply(
+            "⚠️ Botに「公開スレッドを作成」と「スレッドでメッセージを送信」の権限が必要です。",
+            mention_author=False,
+        )
+    except discord.HTTPException as exc:
+        logger.error("写真投稿の整理に失敗しました: %s", exc)
+        await message.reply("⚠️ 写真の整理に失敗しました。少し待ってから再投稿してください。", mention_author=False)
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
@@ -699,6 +860,9 @@ async def on_resumed():
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+    if message.channel.id == PHOTO_CHANNEL_ID:
+        await handle_photo_post(message)
         return
     if (
         message.channel.id == FEEDBACK_DESTINATION_CHANNEL_ID
