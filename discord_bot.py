@@ -114,12 +114,10 @@ intents.message_content = True
 
 class AircraftBot(commands.Bot):
     async def setup_hook(self):
-        try:
-            synced = await self.tree.sync()
-            logger.info("スラッシュコマンドを%d件同期しました", len(synced))
-        except discord.HTTPException as exc:
-            # Discord側の一時障害でも、既存の !add / !remove 等は起動させる。
-            logger.error("スラッシュコマンドの同期に失敗しました: %s", exc)
+        # スラッシュコマンドはCloudflare Workerと worker/commands.json で管理する。
+        # ここでtree.sync()すると、Python側に定義した一部コマンドだけで
+        # /infoなどWorker専用コマンドを上書きしてしまうため同期しない。
+        logger.info("スラッシュコマンドの登録はWorker側で管理します")
 
 
 bot = AircraftBot(command_prefix=PREFIX, intents=intents)
