@@ -61,6 +61,16 @@ class PriorityTests(unittest.TestCase):
         names = [field["name"] for field in embed["fields"]]
         self.assertIn("区間(推定)", names)
 
+    def test_major_airports_use_short_name_and_iata_code(self):
+        self.assertEqual(
+            monitor.format_airport({"iata_code": "NRT", "name": "Narita International Airport"}),
+            "Narita (NRT)",
+        )
+        self.assertEqual(
+            monitor.format_airport({"iata_code": "HND", "municipality": "Tokyo"}),
+            "Haneda (HND)",
+        )
+
     def test_known_bad_delta_routes_are_rejected(self):
         dal88 = {
             "origin": {"latitude": 33.6367, "longitude": -84.428101},

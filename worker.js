@@ -26,6 +26,10 @@ const HEX6 = /^[0-9a-fA-F]{6}$/;
 const UNKNOWN_TYPE = "不明";
 const COLOR_AIRBORNE = 0x3498db;
 const COLOR_GROUND = 0x2ecc71;
+const AIRPORT_SHORT_NAMES = {
+  NRT: "Narita", HND: "Haneda", NGO: "Chubu", KIX: "Kansai",
+  ITM: "Itami", CTS: "New Chitose", FUK: "Fukuoka", OKA: "Naha",
+};
 
 // IATA航空会社コード → ICAOコード(コールサインの先頭3文字)。足りない会社は追記してよい。
 // (GitHub側の lib.py の IATA_TO_ICAO と同じ内容)
@@ -648,9 +652,10 @@ const num = (v) => typeof v === "number" && Number.isFinite(v);
 const fmt0 = (v) => Math.round(v).toLocaleString("en-US");
 
 function formatAirport(a) {
-  const code = a.iata_code || a.icao_code || "?";
-  const place = a.municipality || a.name || "";
-  return place ? `${place} (${code})` : code;
+  const iata = String(a.iata_code || "").toUpperCase();
+  const code = iata || a.icao_code || "?";
+  const name = AIRPORT_SHORT_NAMES[iata] || a.name || a.municipality || "";
+  return name ? `${name} (${code})` : code;
 }
 
 function buildFlightEmbed(ac, route) {

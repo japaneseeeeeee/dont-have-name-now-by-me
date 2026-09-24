@@ -145,6 +145,10 @@ IATA_TO_ICAO = {
     "OC": "ORC",
     "3X": "JAC",
 }
+AIRPORT_SHORT_NAMES = {
+    "NRT": "Narita", "HND": "Haneda", "NGO": "Chubu", "KIX": "Kansai",
+    "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
+}
 
 
 def callsign_candidates(text):
@@ -242,21 +246,24 @@ def format_live_aircraft(ac):
         destination = route.get("destination") or {}
 
         if origin and destination:
-            origin_name = origin.get("municipality") or origin.get("name") or "不明"
+            origin_iata = origin.get("iata_code") or "---"
+            destination_iata = destination.get("iata_code") or "---"
+            origin_name = (
+                AIRPORT_SHORT_NAMES.get(origin_iata.upper())
+                or origin.get("name")
+                or origin.get("municipality")
+                or "不明"
+            )
             destination_name = (
-                destination.get("municipality")
+                AIRPORT_SHORT_NAMES.get(destination_iata.upper())
                 or destination.get("name")
+                or destination.get("municipality")
                 or "不明"
             )
 
-            origin_iata = origin.get("iata_code") or "---"
-            origin_icao = origin.get("icao_code") or "----"
-            destination_iata = destination.get("iata_code") or "---"
-            destination_icao = destination.get("icao_code") or "----"
-
             lines.append(
-                f"区間: {origin_name} ({origin_iata}/{origin_icao})"
-                f" → {destination_name} ({destination_iata}/{destination_icao})"
+                f"区間: {origin_name} ({origin_iata})"
+                f" → {destination_name} ({destination_iata})"
             )
 
         lines.append("")

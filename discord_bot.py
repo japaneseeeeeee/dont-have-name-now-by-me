@@ -101,6 +101,10 @@ PREFIX = "!"
 PAGE_SIZE = 20
 HEX6 = re.compile(r"^[0-9a-fA-F]{6}$")
 PRIORITIES = {"NORMAL", "WATCH", "SPECIAL"}
+AIRPORT_SHORT_NAMES = {
+    "NRT": "Narita", "HND": "Haneda", "NGO": "Chubu", "KIX": "Kansai",
+    "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
+}
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
 
 USAGE = {
@@ -352,9 +356,10 @@ def compass(deg):
 
 
 def format_airport(airport):
-    code = airport.get("iata_code") or airport.get("icao_code") or "?"
-    place = airport.get("municipality") or airport.get("name") or ""
-    return f"{place} ({code})" if place else code
+    iata = (airport.get("iata_code") or "").upper()
+    code = iata or airport.get("icao_code") or "?"
+    name = AIRPORT_SHORT_NAMES.get(iata) or airport.get("name") or airport.get("municipality") or ""
+    return f"{name} ({code})" if name else code
 
 
 def fetch_route(callsign):

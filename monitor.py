@@ -128,6 +128,10 @@ COLOR_GROUND = 0x2ECC71    # 緑
 COLOR_WATCH = 0xF39C12     # オレンジ
 COLOR_SPECIAL = 0xE74C3C   # 赤
 PRIORITIES = {"NORMAL", "WATCH", "SPECIAL"}
+AIRPORT_SHORT_NAMES = {
+    "NRT": "Narita", "HND": "Haneda", "NGO": "Chubu", "KIX": "Kansai",
+    "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
+}
 
 # ============ ここまで CONFIG ============
 
@@ -440,9 +444,10 @@ def fetch_route(callsign):
 
 
 def format_airport(airport):
-    code = airport.get("iata_code") or airport.get("icao_code") or "?"
-    place = airport.get("municipality") or airport.get("name") or ""
-    return f"{place} ({code})" if place else code
+    iata = (airport.get("iata_code") or "").upper()
+    code = iata or airport.get("icao_code") or "?"
+    name = AIRPORT_SHORT_NAMES.get(iata) or airport.get("name") or airport.get("municipality") or ""
+    return f"{name} ({code})" if name else code
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
