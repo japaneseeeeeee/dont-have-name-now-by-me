@@ -109,6 +109,8 @@ AIRPORT_SHORT_NAMES = {
 }
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
 _JA_REGISTRATION_RE = re.compile(r"(?<![A-Z0-9])JA[- ]?([0-9A-Z]{4})(?![A-Z0-9])", re.IGNORECASE)
+_MILITARY_SERIAL_RE = re.compile(r"(?<![A-Z0-9])([0-9]{2,3}-[0-9]{4,6})(?![A-Z0-9])")
+_US_N_NUMBER_RE = re.compile(r"(?<![A-Z0-9])(N[0-9]{1,5}[A-Z]{0,2})(?![A-Z0-9])", re.IGNORECASE)
 _LABELED_REGISTRATION_RE = re.compile(
     r"(?:機体番号|登録記号|registration)\s*[:：]?\s*([A-Z0-9][A-Z0-9-]{2,9})",
     re.IGNORECASE,
@@ -243,10 +245,16 @@ def parse_photo_post(content, created_at=None):
     """写真投稿の本文から登録記号・撮影場所・撮影日・感想を取り出す。"""
     content = (content or "").strip()
     ja_match = _JA_REGISTRATION_RE.search(content)
+    military_match = _MILITARY_SERIAL_RE.search(content)
+    n_number_match = _US_N_NUMBER_RE.search(content)
     labeled_match = _LABELED_REGISTRATION_RE.search(content)
     registration = None
     if ja_match:
         registration = f"JA{ja_match.group(1)}".upper()
+    elif military_match:
+        registration = military_match.group(1).upper()
+    elif n_number_match:
+        registration = n_number_match.group(1).upper()
     elif labeled_match:
         registration = labeled_match.group(1).upper()
 

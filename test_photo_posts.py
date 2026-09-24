@@ -28,6 +28,16 @@ class PhotoPostTests(unittest.TestCase):
         result = discord_bot.parse_photo_post("成田空港\nきれいでした")
         self.assertIsNone(result["registration"])
 
+    def test_parses_military_serial(self):
+        result = discord_bot.parse_photo_post("92-9000\n羽田空港\n迫力がありました")
+        self.assertEqual(result["registration"], "92-9000")
+        self.assertEqual(result["location"], "羽田空港")
+        self.assertEqual(result["comment"], "迫力がありました")
+
+    def test_parses_us_n_number(self):
+        result = discord_bot.parse_photo_post("N123AB\n成田空港\n初めて見ました")
+        self.assertEqual(result["registration"], "N123AB")
+
 
 if __name__ == "__main__":
     unittest.main()
