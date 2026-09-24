@@ -367,6 +367,14 @@ def find_new_area_detections(states, watchlist, notified, now, scope):
     return to_notify, notified, present
 
 
+def should_send_japan_alert(aircraft, entry):
+    """日本周辺の通常範囲内、または日本国内で検出したSPECIALなら通知する。"""
+    return (
+        is_inside_bbox(aircraft, EARLY_WARNING_BBOX)
+        or effective_priority(entry) == "SPECIAL"
+    )
+
+
 # ============ 通知(Embed) ============
 
 _COMPASS = ["北", "北東", "東", "南東", "南", "南西", "西", "北西"]
@@ -685,7 +693,14 @@ def main():
         )
         region_notifications.add((icao24, region["webhook"]))
 
-    early_states = [aircraft for aircraft in states if is_inside_bbox(aircraft, EARLY_WARNING_BBOX)]
+    # 通常機は従来の早期警戒範囲だけを対象にする。SPECIALは日本国内の取得範囲
+    # 全域を対象にし、関東以外で見つかった場合も日本周辺チャンネルへ知らせる。
+    early_states = []
+    for aircraft in states:
+        icao24 = (aircraft[0] or "").strip().lower()
+        entry = watchlist.get(icao24)
+        if entry and should_send_japan_alert(aircraft, entry):
+            early_states.append(aircraft)
     early_notify, notified, early_present = find_new_area_detections(
         early_states, watchlist, notified, time.time(), "japan"
     )
@@ -699,7 +714,13 @@ def main():
             continue
         notify_discord(
             icao24, watchlist[icao24], aircraft,
-            JAPAN_WEBHOOK_URL, "日本周辺", repeat,
+            JAPAN_WEBHOOK_URL,
+            (
+                "日本国内(SPECIAL)"
+                if not is_inside_bbox(aircraft, EARLY_WARNING_BBOX)
+                else "日本周辺"
+            ),
+            repeat,
         )
 
     save_notified(notified)
