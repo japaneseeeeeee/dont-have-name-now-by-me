@@ -45,9 +45,7 @@
   },
   "868688": {
     "label": "JA751A",
-    "priority": "SPECIAL",
-    "priority_after_special": "WATCH",
-    "special_until": 1790222950.9727979,
+    "priority": "NORMAL",
     "type": "Boeing 777 381"
   },
   "868710": {
