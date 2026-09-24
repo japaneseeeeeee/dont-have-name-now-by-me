@@ -674,6 +674,7 @@ def main():
     to_notify, notified, currently_present = find_new_region_detections(
         states, watchlist, notified, time.time()
     )
+    region_notifications = set()
     for region_key, icao24, aircraft, repeat in to_notify:
         region = REGIONS[region_key]
         if not region["webhook"]:
@@ -682,12 +683,20 @@ def main():
             icao24, watchlist[icao24], aircraft,
             region["webhook"], region["name"], repeat,
         )
+        region_notifications.add((icao24, region["webhook"]))
 
     early_states = [aircraft for aircraft in states if is_inside_bbox(aircraft, EARLY_WARNING_BBOX)]
     early_notify, notified, early_present = find_new_area_detections(
         early_states, watchlist, notified, time.time(), "japan"
     )
     for icao24, aircraft, repeat in early_notify:
+        # Webhookの設定ミスで日本周辺と地方が同じチャンネルを指していても、
+        # 1回の監視中に同じ機体を同じ送信先へ二重投稿しない。
+        if (icao24, JAPAN_WEBHOOK_URL) in region_notifications:
+            logger.warning(
+                "日本周辺通知を省略: %s は同じWebhookへ地方通知済みです", icao24
+            )
+            continue
         notify_discord(
             icao24, watchlist[icao24], aircraft,
             JAPAN_WEBHOOK_URL, "日本周辺", repeat,

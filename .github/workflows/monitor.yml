@@ -1,8 +1,8 @@
 name: Aircraft Monitor
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  # 定期監視はMacのlaunchdに一本化する。GitHub Actionsからの自動実行を
+  # 併用すると、別々のnotified.jsonを基に同じ機体を重複通知してしまう。
   workflow_dispatch:
 
 jobs:
