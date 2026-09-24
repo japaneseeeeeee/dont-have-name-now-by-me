@@ -657,12 +657,20 @@ async def answer_feedback(message):
         recipient = await bot.fetch_user(int(match.group(1)))
         question = forwarded.embeds[0].description or "（質問内容なし）"
         embed = discord.Embed(
-            title="📬 質問・改善要望への回答",
-            description=answer[:4000],
+            title=f"📬 {message.author.display_name}から回答が届きました",
+            description="質問・改善要望BOXへの返信です。",
             color=0x57F287,
             timestamp=message.created_at,
         )
-        embed.add_field(name="あなたの投稿", value=question[:1024], inline=False)
+        embed.add_field(name="💬 回答", value=answer[:1024], inline=False)
+        embed.add_field(
+            name="📮 あなたが送った質問・要望",
+            value=question[:1024],
+            inline=False,
+        )
+        embed.set_footer(
+            text="追加で質問する場合は、bot-commandsで先頭に📮を付けて投稿してください。"
+        )
         await recipient.send(embed=embed)
         await message.add_reaction("✅")
     except discord.Forbidden:
