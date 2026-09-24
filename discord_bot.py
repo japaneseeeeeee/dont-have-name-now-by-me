@@ -623,6 +623,58 @@ async def notify_feedback(message):
     except discord.HTTPException as exc:
         logger.warning("転送後の元投稿を削除できませんでした: %s", exc)
 
+
+async def answer_feedback(message):
+    """管理者が転送メッセージへ返信した内容を、元の質問者へDMする。"""
+    reference = message.reference
+    if reference is None or reference.message_id is None:
+        return False
+    forwarded = reference.resolved if isinstance(reference.resolved, discord.Message) else None
+    if forwarded is None:
+        try:
+            forwarded = await message.channel.fetch_message(reference.message_id)
+        except discord.HTTPException:
+            return False
+    if forwarded.author.id != bot.user.id or not forwarded.embeds:
+        return False
+
+    sender_field = next(
+        (field for field in forwarded.embeds[0].fields if field.name == "送信者"), None
+    )
+    match = re.search(r"\b(\d{17,20})\b", sender_field.value if sender_field else "")
+    if match is None:
+        return False
+
+    answer = message.content.strip()
+    attachment_urls = "\n".join(item.url for item in message.attachments)
+    if attachment_urls:
+        answer = f"{answer}\n\n添付ファイル:\n{attachment_urls}".strip()
+    if not answer:
+        await message.reply("⚠️ 回答内容を入力してください。", mention_author=False)
+        return True
+
+    try:
+        recipient = await bot.fetch_user(int(match.group(1)))
+        question = forwarded.embeds[0].description or "（質問内容なし）"
+        embed = discord.Embed(
+            title="📬 質問・改善要望への回答",
+            description=answer[:4000],
+            color=0x57F287,
+            timestamp=message.created_at,
+        )
+        embed.add_field(name="あなたの投稿", value=question[:1024], inline=False)
+        await recipient.send(embed=embed)
+        await message.add_reaction("✅")
+    except discord.Forbidden:
+        await message.reply(
+            "⚠️ 質問者がDMを拒否しているため、回答を送信できませんでした。",
+            mention_author=False,
+        )
+    except discord.HTTPException as exc:
+        logger.error("質問箱の回答送信に失敗しました: %s", exc)
+        await message.reply("⚠️ 回答の送信に失敗しました。", mention_author=False)
+    return True
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
@@ -639,6 +691,12 @@ async def on_resumed():
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+    if (
+        message.channel.id == FEEDBACK_DESTINATION_CHANNEL_ID
+        and message.author.id == FEEDBACK_OWNER_ID
+        and await answer_feedback(message)
+    ):
         return
     if (
         message.channel.id == FEEDBACK_SOURCE_CHANNEL_ID
