@@ -62,6 +62,11 @@ HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が
 HEARTBEAT_INTERVAL = 30                                        # 秒
 CATCHUP_MAX_AGE = timedelta(hours=12)                          # これより古い取りこぼしは処理しない
 CATCHUP_LIMIT = 50                                             # 1回の再接続で拾う最大件数
+FEEDBACK_SOURCE_CHANNEL_ID = int(os.environ.get("FEEDBACK_SOURCE_CHANNEL_ID", "1552183795187322962"))
+FEEDBACK_DESTINATION_CHANNEL_ID = int(
+    os.environ.get("FEEDBACK_DESTINATION_CHANNEL_ID", "1552647426253389926")
+)
+FEEDBACK_OWNER_ID = int(os.environ.get("FEEDBACK_OWNER_ID", "1083347827041771561"))
 
 # 現在位置の検索に使うADS-B API(どちらも ADSBExchange v2 互換・登録不要)。上から順に試す。
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
@@ -517,7 +522,7 @@ def mark_handled(channel_id, message_id) -> bool:
 
 
 async def catch_up_missed_commands():
-    """切断中に送られたコマンドを、チャンネル履歴から拾って処理する。"""
+    """切断中に送られたコマンドや質問箱の投稿を拾って処理する。"""
     async with catchup_lock:
         cutoff = datetime.now(timezone.utc) - CATCHUP_MAX_AGE
         for key, last_id in list(last_ids.items()):
@@ -528,12 +533,21 @@ async def catch_up_missed_commands():
                 async for msg in channel.history(
                     limit=CATCHUP_LIMIT, after=discord.Object(id=last_id), oldest_first=True
                 ):
-                    if msg.author.bot or not msg.content.startswith(PREFIX):
+                    if msg.author.bot:
+                        continue
+                    is_feedback = (
+                        msg.channel.id == FEEDBACK_SOURCE_CHANNEL_ID
+                        and not msg.content.startswith(PREFIX)
+                    )
+                    if not is_feedback and not msg.content.startswith(PREFIX):
                         continue
                     if not mark_handled(msg.channel.id, msg.id):
                         continue
                     if msg.created_at < cutoff:
                         logger.info(f"古いコマンドはスキップ: {msg.content!r}")
+                        continue
+                    if is_feedback:
+                        await notify_feedback(msg)
                         continue
                     logger.info(f"取りこぼしコマンドを処理: {msg.content!r}")
                     try:
@@ -558,6 +572,50 @@ async def heartbeat():
 
 # ============ イベント ============
 
+async def notify_feedback(message):
+    """質問箱への通常投稿を管理者専用チャンネルへ転送し、元投稿を消す。"""
+    if message.author.id == FEEDBACK_OWNER_ID:
+        return
+    destination = bot.get_channel(FEEDBACK_DESTINATION_CHANNEL_ID)
+    if destination is None:
+        try:
+            destination = await bot.fetch_channel(FEEDBACK_DESTINATION_CHANNEL_ID)
+        except discord.HTTPException as exc:
+            logger.error("質問箱の転送先を取得できません: %s", exc)
+            return
+    allowed = discord.AllowedMentions(
+        everyone=False,
+        roles=False,
+        users=[discord.Object(id=FEEDBACK_OWNER_ID)],
+        replied_user=False,
+    )
+    attachments = "\n".join(attachment.url for attachment in message.attachments)
+    description = message.content.strip() or "（本文なし・添付ファイルのみ）"
+    if attachments:
+        description += f"\n\n**添付ファイル**\n{attachments}"
+    embed = discord.Embed(
+        title="📮 新しい質問・改善要望",
+        description=description[:4000],
+        color=0x5865F2,
+        timestamp=message.created_at,
+    )
+    embed.add_field(
+        name="送信者",
+        value=f"{message.author.mention} (`{message.author.id}`)",
+        inline=False,
+    )
+    try:
+        await destination.send(
+            f"<@{FEEDBACK_OWNER_ID}>", embed=embed, allowed_mentions=allowed
+        )
+    except discord.HTTPException as exc:
+        logger.error("質問箱の転送に失敗しました: %s", exc)
+        return
+    try:
+        await message.delete()
+    except discord.HTTPException as exc:
+        logger.warning("転送後の元投稿を削除できませんでした: %s", exc)
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
@@ -574,6 +632,10 @@ async def on_resumed():
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+    if message.channel.id == FEEDBACK_SOURCE_CHANNEL_ID and not message.content.startswith(PREFIX):
+        if mark_handled(message.channel.id, message.id):
+            await notify_feedback(message)
         return
     if message.content.startswith(PREFIX) and not mark_handled(message.channel.id, message.id):
         return  # すでに処理済み(再接続後の拾い直しなど)

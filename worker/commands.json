@@ -78,17 +78,16 @@
   },
   {
     "name": "priority",
-    "description": "登録機の通知レベルを変更します（管理者専用）",
+    "description": "登録機の通知レベルを期限なしで変更します（管理者専用）",
     "type": 1,
     "options": [
       {"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},
       {"name":"level","description":"NORMAL / WATCH / SPECIAL","type":3,"required":true,"choices":[{"name":"NORMAL","value":"NORMAL"},{"name":"WATCH","value":"WATCH"},{"name":"SPECIAL","value":"SPECIAL"}]}
     ]
   },
-  {"name":"special","description":"期限付きSPECIALに設定します（管理者専用）","type":1,"options":[{"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},{"name":"duration","description":"例: 24h / 30m / 7d","type":3,"required":false}]},
+  {"name":"special","description":"登録機を一時的なSPECIALに設定します（管理者専用）","type":1,"options":[{"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},{"name":"duration","description":"例: 24h / 30m / 7d","type":3,"required":false}]},
   {"name":"special-list","description":"SPECIAL登録機の一覧を表示します（管理者専用）","type":1},
   {"name":"nationwide","description":"登録機の全国通知を切り替えます（管理者専用）","type":1,"options":[{"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},{"name":"enabled","description":"全国通知を有効にするか","type":5,"required":true}]},
-  {"name":"feedback","description":"Botへの質問や改善要望を管理者へ送ります","type":1,"options":[{"name":"message","description":"質問または改善してほしい内容","type":3,"required":true,"max_length":1500}]},
   {
     "name": "flight",
     "description": "現在飛行中の機体を検索します",
