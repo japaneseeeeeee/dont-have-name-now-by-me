@@ -368,11 +368,8 @@ def find_new_area_detections(states, watchlist, notified, now, scope):
 
 
 def should_send_japan_alert(aircraft, entry):
-    """日本周辺の通常範囲内、または日本国内で検出したSPECIALなら通知する。"""
-    return (
-        is_inside_bbox(aircraft, EARLY_WARNING_BBOX)
-        or effective_priority(entry) == "SPECIAL"
-    )
+    """全国通知を明示的に有効化した登録機だけを日本周辺へ通知する。"""
+    return isinstance(entry, dict) and entry.get("nationwide_alert") is True
 
 
 # ============ 通知(Embed) ============
@@ -693,8 +690,8 @@ def main():
         )
         region_notifications.add((icao24, region["webhook"]))
 
-    # 通常機は従来の早期警戒範囲だけを対象にする。SPECIALは日本国内の取得範囲
-    # 全域を対象にし、関東以外で見つかった場合も日本周辺チャンネルへ知らせる。
+    # /nationwide で明示的に有効化した機体だけを日本全域で監視し、
+    # 日本周辺チャンネルへ知らせる。SPECIALとは独立した設定。
     early_states = []
     for aircraft in states:
         icao24 = (aircraft[0] or "").strip().lower()
@@ -702,7 +699,7 @@ def main():
         if entry and should_send_japan_alert(aircraft, entry):
             early_states.append(aircraft)
     early_notify, notified, early_present = find_new_area_detections(
-        early_states, watchlist, notified, time.time(), "japan"
+        early_states, watchlist, notified, time.time(), "nationwide"
     )
     for icao24, aircraft, repeat in early_notify:
         # Webhookの設定ミスで日本周辺と地方が同じチャンネルを指していても、
@@ -715,11 +712,7 @@ def main():
         notify_discord(
             icao24, watchlist[icao24], aircraft,
             JAPAN_WEBHOOK_URL,
-            (
-                "日本国内(SPECIAL)"
-                if not is_inside_bbox(aircraft, EARLY_WARNING_BBOX)
-                else "日本周辺"
-            ),
+            "日本国内(全国通知)",
             repeat,
         )
 

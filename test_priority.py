@@ -108,11 +108,13 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("japan:abc123", updated)
         self.assertIn("kanto:abc123", updated)
 
-    def test_special_outside_early_warning_area_uses_japan_alert(self):
+    def test_only_nationwide_flag_uses_japan_alert(self):
         aircraft = ["abc123", "TEST1", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
         special = {"label": "JA0001", "type": "TEST", "priority": "SPECIAL"}
         normal = {"label": "JA0001", "type": "TEST", "priority": "NORMAL"}
-        self.assertTrue(monitor.should_send_japan_alert(aircraft, special))
+        nationwide = {"label": "JA0001", "type": "TEST", "nationwide_alert": True}
+        self.assertTrue(monitor.should_send_japan_alert(aircraft, nationwide))
+        self.assertFalse(monitor.should_send_japan_alert(aircraft, special))
         self.assertFalse(monitor.should_send_japan_alert(aircraft, normal))
 
 

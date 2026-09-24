@@ -826,6 +826,40 @@ async def special_command(
     )
 
 
+@bot.tree.command(name="nationwide", description="登録機の全国通知を切り替えます(管理者専用)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(aircraft="登録記号またはicao24", enabled="全国通知を有効にするか")
+async def nationwide_command(
+    interaction: discord.Interaction,
+    aircraft: str,
+    enabled: bool,
+):
+    if not await require_administrator(interaction):
+        return
+    watchlist = load_watchlist()
+    found = find_watchlist_entry(watchlist, aircraft)
+    if not found:
+        await interaction.response.send_message(
+            f"⚠️ `{aircraft}` はwatchlistに見つかりませんでした。", ephemeral=True
+        )
+        return
+    icao24, value = found
+    entry = as_entry(value, icao24)
+    if enabled:
+        entry["nationwide_alert"] = True
+    else:
+        entry.pop("nationwide_alert", None)
+    watchlist[icao24] = entry
+    save_watchlist(watchlist)
+    label, _ = normalize(entry)
+    state = "ON" if enabled else "OFF"
+    await interaction.response.send_message(
+        f"🗾 `{label}` ({icao24}) の全国通知を **{state}** にしました。",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="special-list", description="SPECIAL登録機の一覧を表示します(管理者専用)")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)

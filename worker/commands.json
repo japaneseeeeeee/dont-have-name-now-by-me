@@ -1,0 +1,104 @@
+[
+  {
+    "name": "add",
+    "description": "機体を監視対象に追加します",
+    "type": 1,
+    "options": [
+      {
+        "name": "tail",
+        "description": "登録記号（例: JA8967）",
+        "type": 3,
+        "required": true
+      },
+      {
+        "name": "icao24",
+        "description": "ICAO24（省略可能）",
+        "type": 3,
+        "required": false
+      },
+      {
+        "name": "type",
+        "description": "機種（省略可能）",
+        "type": 3,
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "remove",
+    "description": "監視対象から機体を削除します",
+    "type": 1,
+    "options": [
+      {
+        "name": "target",
+        "description": "登録記号またはICAO24",
+        "type": 3,
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "find",
+    "description": "監視対象を検索します",
+    "type": 1,
+    "options": [
+      {
+        "name": "keyword",
+        "description": "登録記号またはICAO24の一部",
+        "type": 3,
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "list",
+    "description": "監視対象の一覧を表示します",
+    "type": 1,
+    "options": [
+      {
+        "name": "page",
+        "description": "ページ番号",
+        "type": 4,
+        "required": false
+      }
+    ]
+  },
+  {
+    "name": "info",
+    "description": "登録記号またはICAO24から機体情報を表示します",
+    "type": 1,
+    "options": [
+      {
+        "name": "aircraft",
+        "description": "登録記号またはICAO24",
+        "type": 3,
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "priority",
+    "description": "登録機の通知レベルを変更します（管理者専用）",
+    "type": 1,
+    "options": [
+      {"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},
+      {"name":"level","description":"NORMAL / WATCH / SPECIAL","type":3,"required":true,"choices":[{"name":"NORMAL","value":"NORMAL"},{"name":"WATCH","value":"WATCH"},{"name":"SPECIAL","value":"SPECIAL"}]}
+    ]
+  },
+  {"name":"special","description":"期限付きSPECIALに設定します（管理者専用）","type":1,"options":[{"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},{"name":"duration","description":"例: 24h / 30m / 7d","type":3,"required":false}]},
+  {"name":"special-list","description":"SPECIAL登録機の一覧を表示します（管理者専用）","type":1},
+  {"name":"nationwide","description":"登録機の全国通知を切り替えます（管理者専用）","type":1,"options":[{"name":"aircraft","description":"登録記号またはICAO24","type":3,"required":true},{"name":"enabled","description":"全国通知を有効にするか","type":5,"required":true}]},
+  {
+    "name": "flight",
+    "description": "現在飛行中の機体を検索します",
+    "type": 1,
+    "options": [
+      {
+        "name": "query",
+        "description": "便名、コールサイン、登録記号、ICAO24",
+        "type": 3,
+        "required": true
+      }
+    ]
+  }
+]

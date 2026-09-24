@@ -73,7 +73,7 @@ export default {
       if (allowed && interaction.channel_id !== allowed) {
         return json({ type: 4, data: { content: "このチャンネルでは使えません。", flags: 64 } });
       }
-      if (["add", "remove", "priority", "special", "special-list"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
+      if (["add", "remove", "priority", "special", "special-list", "nationwide"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
         return json({
           type: 4,
           data: { content: "⛔ このコマンドはサーバー管理者だけが使用できます。", flags: 64 },
@@ -177,6 +177,7 @@ async function runCommand(interaction, env) {
     case "priority": return cmdPriority(o, env);
     case "special": return cmdSpecial(o, env);
     case "special-list": return cmdSpecialList(env);
+    case "nationwide": return cmdNationwide(o, env);
     default: return { content: "未対応のコマンドです。" };
   }
 }
@@ -190,7 +191,14 @@ async function cmdSpecial(o, env) {
     const id = wl[aircraft.toLowerCase()] !== undefined ? aircraft.toLowerCase() : Object.keys(wl).find((x) => normalize(wl[x]).label.toUpperCase() === aircraft.toUpperCase());
     if (!id) return { changed:false };
     const entry = normalize(wl[id]);
-    wl[id] = { label:entry.label, type:entry.type, priority:"SPECIAL", priority_after_special:entry.priority || "NORMAL", special_until:Date.now()/1000 + seconds };
+    wl[id] = {
+      ...(typeof wl[id] === "object" ? wl[id] : {}),
+      label: entry.label,
+      type: entry.type,
+      priority: "SPECIAL",
+      priority_after_special: entry.priority || "NORMAL",
+      special_until: Date.now() / 1000 + seconds,
+    };
     return { changed:true, id, label:entry.label, until:Math.floor(Date.now()/1000 + seconds) };
   }, `watchlist: special ${aircraft}`);
   return result.changed ? { content:`🚨 \`${result.label}\` (${result.id}) を <t:${result.until}:F> まで **SPECIAL** に設定しました。` } : { content:`⚠️ \`${aircraft}\` はwatchlistに見つかりませんでした。` };
@@ -212,10 +220,31 @@ async function cmdPriority(o, env) {
     const id = wl[key] !== undefined ? key : Object.keys(wl).find((x) => normalize(wl[x]).label.toUpperCase() === aircraft.toUpperCase());
     if (!id) return { changed: false };
     const entry = normalize(wl[id]);
-    wl[id] = { label: entry.label, type: entry.type, priority: level };
+    wl[id] = { ...(typeof wl[id] === "object" ? wl[id] : {}), label: entry.label, type: entry.type, priority: level };
     return { changed: true, id, label: entry.label };
   }, `watchlist: priority ${aircraft} ${level}`);
   return result.changed ? { content: `✅ \`${result.label}\` (${result.id}) を **${level}** に設定しました。` } : { content: `⚠️ \`${aircraft}\` はwatchlistに見つかりませんでした。` };
+}
+
+async function cmdNationwide(o, env) {
+  const aircraft = String(o.aircraft || "").trim();
+  const enabled = o.enabled === true;
+  if (!aircraft || typeof o.enabled !== "boolean") {
+    return { content: "⚠️ aircraft と enabled を指定してください。" };
+  }
+  const result = await updateWatchlist(env, (wl) => {
+    const key = aircraft.toLowerCase();
+    const id = wl[key] !== undefined ? key : Object.keys(wl).find((x) => normalize(wl[x]).label.toUpperCase() === aircraft.toUpperCase());
+    if (!id) return { changed: false };
+    const entry = normalize(wl[id]);
+    const original = typeof wl[id] === "object" ? wl[id] : {};
+    wl[id] = { ...original, label: entry.label, type: entry.type };
+    if (enabled) wl[id].nationwide_alert = true;
+    else delete wl[id].nationwide_alert;
+    return { changed: true, id, label: entry.label };
+  }, `watchlist: nationwide ${aircraft} ${enabled ? "on" : "off"}`);
+  if (!result.changed) return { content: `⚠️ \`${aircraft}\` はwatchlistに見つかりませんでした。` };
+  return { content: `🗾 \`${result.label}\` (${result.id}) の全国通知を **${enabled ? "ON" : "OFF"}** にしました。` };
 }
 
 // ============ コマンド ============
@@ -332,7 +361,8 @@ async function cmdInfo(o, env) {
       `製造年: ${year}${age ? `（機齢 約${age}年）` : ""}\n` +
       `運航会社: ${details.operator || "不明"}\n` +
       `登録国: ${details.country || "不明"}\n` +
-      `通知レベル: **${priority}**` +
+      `通知レベル: **${priority}**\n` +
+      `全国通知: **${entry?.nationwide_alert === true ? "ON" : "OFF"}**` +
       (entry ? "\nwatchlist: 登録済み" : "\nwatchlist: 未登録"),
   };
 }
