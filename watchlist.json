@@ -50,9 +50,7 @@
   },
   "868710": {
     "label": "JA755A",
-    "priority": "SPECIAL",
-    "priority_after_special": "NORMAL",
-    "special_until": 1790247768.355,
+    "priority": "NORMAL",
     "type": "Boeing 777-300"
   },
   "885336": {
