@@ -67,6 +67,7 @@ FEEDBACK_DESTINATION_CHANNEL_ID = int(
     os.environ.get("FEEDBACK_DESTINATION_CHANNEL_ID", "1552647426253389926")
 )
 FEEDBACK_OWNER_ID = int(os.environ.get("FEEDBACK_OWNER_ID", "1083347827041771561"))
+FEEDBACK_MARKER = "📮"
 
 # 現在位置の検索に使うADS-B API(どちらも ADSBExchange v2 互換・登録不要)。上から順に試す。
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
@@ -537,7 +538,7 @@ async def catch_up_missed_commands():
                         continue
                     is_feedback = (
                         msg.channel.id == FEEDBACK_SOURCE_CHANNEL_ID
-                        and not msg.content.startswith(PREFIX)
+                        and msg.content.strip().startswith(FEEDBACK_MARKER)
                     )
                     if not is_feedback and not msg.content.startswith(PREFIX):
                         continue
@@ -590,7 +591,8 @@ async def notify_feedback(message):
         replied_user=False,
     )
     attachments = "\n".join(attachment.url for attachment in message.attachments)
-    description = message.content.strip() or "（本文なし・添付ファイルのみ）"
+    description = message.content.strip()[len(FEEDBACK_MARKER):].strip()
+    description = description or "（本文なし・添付ファイルのみ）"
     if attachments:
         description += f"\n\n**添付ファイル**\n{attachments}"
     embed = discord.Embed(
@@ -633,7 +635,10 @@ async def on_resumed():
 async def on_message(message):
     if message.author.bot:
         return
-    if message.channel.id == FEEDBACK_SOURCE_CHANNEL_ID and not message.content.startswith(PREFIX):
+    if (
+        message.channel.id == FEEDBACK_SOURCE_CHANNEL_ID
+        and message.content.strip().startswith(FEEDBACK_MARKER)
+    ):
         if mark_handled(message.channel.id, message.id):
             await notify_feedback(message)
         return
