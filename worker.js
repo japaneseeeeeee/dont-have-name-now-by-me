@@ -527,13 +527,36 @@ async function lookupAircraftType(icao24) {
 }
 
 async function lookupAircraftDetails(icao24) {
-  const data = await fetchJson(`https://hexdb.io/api/v1/aircraft/${icao24}`, 1200);
-  if (!data) return {};
+  // HexDBは機種と所有者には強いが、登録国を返さない機体が多い。
+  // ADSBDBも並行して参照し、片方にしかない項目を補完する。
+  const [hexData, adsbData] = await Promise.all([
+    fetchJson(`https://hexdb.io/api/v1/aircraft/${icao24}`, 1800),
+    fetchJson(`https://api.adsbdb.com/v0/aircraft/${icao24}`, 1800),
+  ]);
+  const data = hexData || {};
+  const adsb = adsbData?.response?.aircraft || {};
   return {
-    type: `${data.Manufacturer || ""} ${data.Type || data.ICAOTypeCode || ""}`.trim() || null,
+    type: (
+      `${data.Manufacturer || ""} ${data.Type || data.ICAOTypeCode || ""}`.trim()
+      || `${adsb.manufacturer || ""} ${adsb.type || adsb.icao_type || ""}`.trim()
+      || null
+    ),
     year: String(data.Year || data.YearOfManufacture || data.FirstRegistered || "").match(/^\d{4}/)?.[0] || null,
-    operator: data.RegisteredOwnerOperatorName || data.RegisteredOwnerOperator || data.RegisteredOwner || null,
-    country: data.RegisteredOwnerCountry || data.RegisteredOwnerNationality || null,
+    operator: (
+      data.RegisteredOwners
+      || data.RegisteredOwnerOperatorName
+      || data.RegisteredOwnerOperator
+      || data.RegisteredOwner
+      || adsb.registered_owner
+      || null
+    ),
+    country: (
+      data.RegisteredOwnerCountry
+      || data.RegisteredOwnerNationality
+      || adsb.registered_owner_country_name
+      || adsb.registered_owner_country_iso_name
+      || null
+    ),
   };
 }
 
