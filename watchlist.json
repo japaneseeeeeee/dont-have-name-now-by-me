@@ -1070,5 +1070,9 @@
     "a25188": {
         "label": "N249BA",
         "type": "BOEING 747-400LCF Dreamlifter (BLCF)"
+    },
+    "a999df": {
+        "label": "N718BA",
+        "type": "BOEING 747-400LCF Dreamlifter (BLCF)"
     }
 }
