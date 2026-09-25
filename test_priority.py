@@ -141,6 +141,40 @@ class PriorityTests(unittest.TestCase):
         self.assertFalse(monitor.should_send_japan_alert(aircraft, special))
         self.assertFalse(monitor.should_send_japan_alert(aircraft, normal))
 
+    def test_personal_special_creates_private_event(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        settings = {
+            "123456789012345678": {
+                "enabled": True,
+                "aircraft": {"abc123": {"label": "JA0001", "type": "TEST"}},
+            }
+        }
+        events, notified = monitor.find_personal_special_events(
+            [aircraft], settings, {}, 100
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["user_id"], "123456789012345678")
+        self.assertEqual(events[0]["label"], "JA0001")
+        self.assertEqual(events[0]["region"], "関東")
+        self.assertIn("123456789012345678:abc123", notified)
+
+    def test_personal_special_respects_cooldown_and_setting(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        enabled = {
+            "123": {"enabled": True, "aircraft": {"abc123": {"label": "JA0001"}}}
+        }
+        disabled = {
+            "123": {"enabled": False, "aircraft": {"abc123": {"label": "JA0001"}}}
+        }
+        events, _ = monitor.find_personal_special_events(
+            [aircraft], enabled, {"123:abc123": 100}, 200
+        )
+        self.assertEqual(events, [])
+        events, _ = monitor.find_personal_special_events(
+            [aircraft], disabled, {}, 2000
+        )
+        self.assertEqual(events, [])
+
 
 if __name__ == "__main__":
     unittest.main()

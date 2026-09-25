@@ -59,6 +59,8 @@ TAR1090_REFRESH_SECONDS = 24 * 3600  # 見つからなかったとき、これ�
 BASE_DIR = os.path.expanduser("~/aircraft-alert")
 STATE_PATH = os.path.join(BASE_DIR, "bot_state.json")          # チャンネルごとの最終処理メッセージID
 HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が更新時刻を見る
+PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
+PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
 HEARTBEAT_INTERVAL = 30                                        # 秒
 CATCHUP_MAX_AGE = timedelta(hours=12)                          # これより古い取りこぼしは処理しない
 CATCHUP_LIMIT = 50                                             # 1回の再接続で拾う最大件数
@@ -70,6 +72,7 @@ FEEDBACK_OWNER_ID = int(os.environ.get("FEEDBACK_OWNER_ID", "1083347827041771561
 FEEDBACK_MARKER = "📮"
 PHOTO_CHANNEL_ID = int(os.environ.get("PHOTO_CHANNEL_ID", "1552676837581389956"))
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+PERSONAL_SPECIAL_LIMIT = 20
 
 # 現在位置の検索に使うADS-B API(どちらも ADSBExchange v2 互換・登録不要)。上から順に試す。
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
@@ -122,6 +125,10 @@ USAGE = {
     "find": "!find <キーワード>",
     "list": "!list [ページ番号]",
     "flight": "!flight <便名 / コールサイン / 登録記号 / icao24>",
+    "my-special-add": "!my-special-add <登録記号 または icao24>",
+    "my-special-remove": "!my-special-remove <登録記号 または icao24>",
+    "my-special-list": "!my-special-list",
+    "my-special-settings": "!my-special-settings <on または off>",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -163,6 +170,84 @@ def save_watchlist(data):
             os.replace(tmp_path, WATCHLIST_PATH)
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def load_locked_json(path, default):
+    """別プロセスと共有するJSONをロック付きで読み込む。"""
+    lock_path = path + ".lock"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_SH)
+        try:
+            if not os.path.exists(path):
+                return default.copy() if isinstance(default, dict) else list(default)
+            with open(path, "r", encoding="utf-8") as data_file:
+                return json.load(data_file)
+        except (OSError, ValueError):
+            return default.copy() if isinstance(default, dict) else list(default)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def save_locked_json(path, data):
+    """別プロセスと共有するJSONをロック付きで安全に置き換える。"""
+    lock_path = path + ".lock"
+    tmp_path = path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump(data, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def consume_personal_special_events():
+    """監視処理が作ったDM通知イベントをまとめて取り出す。"""
+    path = PERSONAL_SPECIAL_EVENTS_PATH
+    lock_path = path + ".lock"
+    tmp_path = path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            events = []
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        events = json.load(data_file)
+                except (OSError, ValueError):
+                    events = []
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump([], data_file)
+            os.replace(tmp_path, path)
+            return events if isinstance(events, list) else []
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def append_personal_special_events(events):
+    """一時的な送信失敗イベントをキューへ戻す。"""
+    if not events:
+        return
+    path = PERSONAL_SPECIAL_EVENTS_PATH
+    lock_path = path + ".lock"
+    tmp_path = path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            queued = []
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        queued = json.load(data_file)
+                except (OSError, ValueError):
+                    queued = []
+            queued = queued if isinstance(queued, list) else []
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump(queued + events, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def normalize(value):
@@ -453,6 +538,41 @@ def lookup_from_tar1090(registration: str):
     return result
 
 
+def resolve_personal_aircraft(aircraft):
+    """個人SPECIAL用に登録記号/icao24を (icao24, label, type) へ解決する。"""
+    query = aircraft.strip().upper()
+    watchlist = load_watchlist()
+    found = find_watchlist_entry(watchlist, query)
+    if found:
+        icao24, value = found
+        label, type_name = normalize(value)
+        return icao24, label, type_name
+
+    if HEX6.fullmatch(query):
+        return query.lower(), query.lower(), lookup_aircraft_type(query.lower()) or "不明"
+
+    icao24 = lookup_icao24(query)
+    type_name = None
+    label = query
+    if icao24:
+        type_name = lookup_aircraft_type(icao24)
+    if not icao24 or not type_name:
+        tar_result = lookup_from_tar1090(query)
+        if tar_result:
+            tar_icao24, tar_type, canonical_reg = tar_result
+            icao24 = icao24 or tar_icao24
+            type_name = type_name or tar_type
+            label = canonical_reg or label
+    if not icao24:
+        local_result = lookup_from_local_db(query)
+        if local_result:
+            icao24, local_type = local_result
+            type_name = type_name or local_type
+    if not icao24:
+        return None
+    return icao24.lower(), label, type_name or "不明"
+
+
 # ============ 現在位置の検索(!flight) ============
 
 _COMPASS = ["北", "北東", "東", "南東", "南", "南西", "西", "北西"]
@@ -683,6 +803,62 @@ async def heartbeat():
             logger.warning(f"heartbeat write failed: {e}")
 
 
+@tasks.loop(seconds=10)
+async def personal_special_dispatch():
+    """監視処理が検出した個人SPECIALを、登録者本人へDMする。"""
+    if not bot.is_ready() or bot.is_closed():
+        return
+    events = await asyncio.to_thread(consume_personal_special_events)
+    retry_events = []
+    for event in events:
+        try:
+            user_id = int(event["user_id"])
+            recipient = await bot.fetch_user(user_id)
+            state = "引き続き検出しています" if event.get("repeat") else "新たに検出しました"
+            embed = discord.Embed(
+                title=f"🚨 個人SPECIAL｜{event['label']}を検出",
+                description=f"{event['region']}の監視範囲内で{state}。",
+                color=0xED4245,
+                timestamp=datetime.fromtimestamp(
+                    float(event.get("detected_at", time.time())), timezone.utc
+                ),
+                url=f"https://globe.adsbexchange.com/?icao={event['icao24']}",
+            )
+            embed.add_field(name="機種", value=event.get("type") or "不明", inline=True)
+            embed.add_field(
+                name="コールサイン",
+                value=f"`{event.get('callsign') or '不明'}`",
+                inline=True,
+            )
+            embed.add_field(name="ICAO24", value=f"`{event['icao24']}`", inline=True)
+            if event.get("altitude") is not None and not event.get("on_ground"):
+                altitude = float(event["altitude"])
+                embed.add_field(
+                    name="高度",
+                    value=f"{altitude:,.0f} m ({altitude * 3.28084:,.0f} ft)",
+                    inline=True,
+                )
+            if event.get("velocity") is not None and not event.get("on_ground"):
+                velocity = float(event["velocity"])
+                embed.add_field(
+                    name="速度",
+                    value=f"{velocity * 3.6:,.0f} km/h ({velocity * 1.94384:,.0f} kt)",
+                    inline=True,
+                )
+            embed.set_footer(text="タイトルをタップするとADS-B Exchangeを開きます")
+            await recipient.send(embed=embed)
+        except discord.Forbidden:
+            logger.warning("個人SPECIALのDMを送信できません: user=%s", event.get("user_id"))
+        except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
+            logger.error("個人SPECIALのDM送信に失敗しました: %s", exc)
+            retry_count = int(event.get("retry_count", 0)) + 1
+            if retry_count <= 3:
+                event["retry_count"] = retry_count
+                retry_events.append(event)
+    if retry_events:
+        await asyncio.to_thread(append_personal_special_events, retry_events)
+
+
 # ============ イベント ============
 
 async def notify_feedback(message):
@@ -857,6 +1033,8 @@ async def on_ready():
     logger.info(f"Logged in as {bot.user}")
     if not heartbeat.is_running():
         heartbeat.start()
+    if not personal_special_dispatch.is_running():
+        personal_special_dispatch.start()
     await catch_up_missed_commands()
 
 
@@ -1041,6 +1219,133 @@ async def flight_lookup(ctx, *, query: str):
             route = await asyncio.to_thread(fetch_route, ac.get("flight"))
             embeds.append(build_flight_embed(ac, route))
     await ctx.send(embeds=embeds)
+
+
+async def require_personal_special_dm(ctx):
+    """個人SPECIALの内容がサーバーへ出ないよう、DMからの利用だけを許可する。"""
+    if ctx.guild is None:
+        return True
+    await ctx.send(
+        "🔒 個人SPECIALは登録内容を非公開にするため、BotへのDMで使用してください。",
+        delete_after=30,
+    )
+    return False
+
+
+@bot.command(name="my-special")
+async def my_special_help(ctx):
+    if not await require_personal_special_dm(ctx):
+        return
+    await ctx.send(
+        "🚨 **個人SPECIALの使い方**\n"
+        "`!my-special-add JA784A` — 機体を追加\n"
+        "`!my-special-remove JA784A` — 機体を解除\n"
+        "`!my-special-list` — 自分の登録一覧\n"
+        "`!my-special-settings on` — DM通知をON\n"
+        "`!my-special-settings off` — DM通知をOFF\n\n"
+        "登録内容はほかのメンバーには表示されません。"
+    )
+
+
+@bot.command(name="my-special-add")
+async def my_special_add(ctx, aircraft: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    user_id = str(ctx.author.id)
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(user_id) or {"enabled": True, "aircraft": {}}
+    registered = config.get("aircraft") or {}
+    if len(registered) >= PERSONAL_SPECIAL_LIMIT:
+        await ctx.send(f"⚠️ 個人SPECIALは1人{PERSONAL_SPECIAL_LIMIT}機まで登録できます。")
+        return
+
+    async with ctx.typing():
+        result = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
+    if result is None:
+        await ctx.send(
+            f"⚠️ `{aircraft}` のICAO24を確認できませんでした。"
+            "登録記号または6桁のICAO24を確認してください。"
+        )
+        return
+    icao24, label, type_name = result
+    if icao24 in registered:
+        await ctx.send(f"ℹ️ `{label}` ({icao24}) はすでに個人SPECIALへ登録されています。")
+        return
+    registered[icao24] = {"label": label, "type": type_name}
+    config["aircraft"] = registered
+    config.setdefault("enabled", True)
+    settings[user_id] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(
+        f"✅ `{label}` ({icao24} / {type_name}) を個人SPECIALへ追加しました。\n"
+        "日本国内で検出すると、ここへDMで通知します。"
+    )
+
+
+@bot.command(name="my-special-remove")
+async def my_special_remove(ctx, aircraft: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    user_id = str(ctx.author.id)
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(user_id) or {"enabled": True, "aircraft": {}}
+    registered = config.get("aircraft") or {}
+    target = _normalize_reg(aircraft)
+    match = next(
+        (
+            icao24 for icao24, entry in registered.items()
+            if icao24.lower() == aircraft.lower()
+            or _normalize_reg(entry.get("label", "")) == target
+        ),
+        None,
+    )
+    if match is None:
+        await ctx.send(f"⚠️ `{aircraft}` は自分の個人SPECIALに登録されていません。")
+        return
+    removed = registered.pop(match)
+    config["aircraft"] = registered
+    settings[user_id] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(f"🗑️ `{removed.get('label', match)}` ({match}) を個人SPECIALから解除しました。")
+
+
+@bot.command(name="my-special-list")
+async def my_special_list(ctx):
+    if not await require_personal_special_dm(ctx):
+        return
+    config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(ctx.author.id)) or {}
+    registered = config.get("aircraft") or {}
+    state = "ON" if config.get("enabled", True) else "OFF"
+    if not registered:
+        await ctx.send(
+            f"🚨 **自分の個人SPECIAL**（DM通知: {state}）\n登録機はありません。\n"
+            "`!my-special-add JA784A` で追加できます。"
+        )
+        return
+    lines = [
+        f"`{entry.get('label', icao24)}` ({icao24} / {entry.get('type') or '不明'})"
+        for icao24, entry in sorted(registered.items(), key=lambda item: item[1].get("label", ""))
+    ]
+    await ctx.send(
+        (f"🚨 **自分の個人SPECIAL**（DM通知: {state} / {len(lines)}機）\n" + "\n".join(lines))[:1990]
+    )
+
+
+@bot.command(name="my-special-settings")
+async def my_special_settings(ctx, enabled: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    normalized = enabled.strip().lower()
+    if normalized not in {"on", "off"}:
+        await ctx.send("⚠️ `!my-special-settings on` または `off` と入力してください。")
+        return
+    user_id = str(ctx.author.id)
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(user_id) or {"aircraft": {}}
+    config["enabled"] = normalized == "on"
+    settings[user_id] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(f"✅ 個人SPECIALのDM通知を **{normalized.upper()}** にしました。")
 
 
 # ============ 管理者用スラッシュコマンド ============

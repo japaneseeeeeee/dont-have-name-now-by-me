@@ -15,6 +15,12 @@ bot_heartbeat
 
 bot_state.json
 notified.json
+personal_specials.json
+personal_special_notified.json
+personal_special_events.json
+personal_specials.json.lock
+personal_special_notified.json.lock
+personal_special_events.json.lock
 
 actions-runner-new/
 worker/

@@ -1,4 +1,5 @@
 import json
+import fcntl
 import logging
 import math
 import os
@@ -103,6 +104,9 @@ SHARED_WATCHLIST_URL = os.environ.get(
 
 # 通知済みの機体を記録しておくファイル(同じ機体を何度も通知しないため)
 STATE_PATH = os.path.join(BASE_DIR, "notified.json")
+PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
+PERSONAL_SPECIAL_STATE_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
+PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
 
 # リトライ設定
 MAX_RETRIES = 3
@@ -374,6 +378,119 @@ def find_new_area_detections(states, watchlist, notified, now, scope):
 def should_send_japan_alert(aircraft, entry):
     """全国通知を明示的に有効化した登録機だけを日本周辺へ通知する。"""
     return isinstance(entry, dict) and entry.get("nationwide_alert") is True
+
+
+def load_shared_json(path, default):
+    """Botと共有するJSONをロック付きで読み込む。"""
+    lock_path = path + ".lock"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_SH)
+        try:
+            if not os.path.exists(path):
+                return default.copy() if isinstance(default, dict) else list(default)
+            with open(path, "r", encoding="utf-8") as data_file:
+                return json.load(data_file)
+        except (OSError, ValueError):
+            return default.copy() if isinstance(default, dict) else list(default)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def save_shared_json(path, data):
+    """Botと共有するJSONをロック付きで安全に置き換える。"""
+    lock_path = path + ".lock"
+    tmp_path = path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump(data, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def append_personal_special_events(events):
+    """検出イベントをBotのDM送信キューへ追加する。"""
+    if not events:
+        return
+    path = PERSONAL_SPECIAL_EVENTS_PATH
+    lock_path = path + ".lock"
+    tmp_path = path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            queued = []
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        queued = json.load(data_file)
+                except (OSError, ValueError):
+                    queued = []
+            queued = queued if isinstance(queued, list) else []
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump(queued + events, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def find_personal_special_events(states, settings, notified, now):
+    """個人SPECIAL登録機を日本国内で検出し、ユーザー別DMイベントを作る。"""
+    notified = dict(notified)
+    aircraft_by_icao = {
+        (aircraft[0] or "").strip().lower(): aircraft
+        for aircraft in states
+        if aircraft and aircraft[0]
+    }
+    active_keys = set()
+    events = []
+    for user_id, config in settings.items():
+        if not isinstance(config, dict) or config.get("enabled", True) is False:
+            continue
+        registered = config.get("aircraft") or {}
+        for icao24, entry in registered.items():
+            icao24 = icao24.lower()
+            aircraft = aircraft_by_icao.get(icao24)
+            if aircraft is None:
+                continue
+            region_key = classify_region(aircraft[6], aircraft[5])
+            if region_key is None:
+                continue
+            state_key = f"{user_id}:{icao24}"
+            active_keys.add(state_key)
+            last = notified.get(state_key)
+            on_ground = bool(aircraft[8])
+            repeat = last is not None
+            if last is not None and (
+                now - last < RENOTIFY_SECONDS or (on_ground and not RENOTIFY_ON_GROUND)
+            ):
+                continue
+            notified[state_key] = now
+            entry = entry if isinstance(entry, dict) else {}
+            events.append({
+                "user_id": str(user_id),
+                "icao24": icao24,
+                "label": entry.get("label") or icao24,
+                "type": entry.get("type") or "不明",
+                "region": REGIONS[region_key]["name"],
+                "repeat": repeat,
+                "callsign": (aircraft[1] or "").strip(),
+                "longitude": aircraft[5],
+                "latitude": aircraft[6],
+                "altitude": aircraft[7],
+                "on_ground": on_ground,
+                "velocity": aircraft[9],
+                "track": aircraft[10],
+                "vertical_rate": aircraft[11],
+                "detected_at": now,
+            })
+
+    notified = {
+        key: timestamp for key, timestamp in notified.items()
+        if key in active_keys or now - timestamp < RENOTIFY_SECONDS
+    }
+    return events, notified
 
 
 # ============ 通知(Embed) ============
@@ -689,6 +806,17 @@ def main():
 
     data = response.json()
     states = data.get("states") or []
+
+    # メンバーごとの個人SPECIALを通常通知とは独立して判定し、
+    # Botが本人へDMするためのイベントキューへ渡す。
+    personal_settings = load_shared_json(PERSONAL_SPECIALS_PATH, {})
+    personal_notified = load_shared_json(PERSONAL_SPECIAL_STATE_PATH, {})
+    personal_events, personal_notified = find_personal_special_events(
+        states, personal_settings, personal_notified, time.time()
+    )
+    save_shared_json(PERSONAL_SPECIAL_STATE_PATH, personal_notified)
+    append_personal_special_events(personal_events)
+
     to_notify, notified, currently_present = find_new_region_detections(
         states, watchlist, notified, time.time()
     )
@@ -732,8 +860,8 @@ def main():
     save_notified(notified)
 
     logger.info(
-        "チェック完了。地方別=%s / 日本周辺=%s",
-        currently_present or "なし", early_present or "なし",
+        "チェック完了。地方別=%s / 日本周辺=%s / 個人SPECIAL=%d件",
+        currently_present or "なし", early_present or "なし", len(personal_events),
     )
 
 
