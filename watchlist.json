@@ -1066,5 +1066,9 @@
     "888153": {
         "label": "VN-A897",
         "type": "AIRBUS A-350-900 (A359)"
+    },
+    "a25188": {
+        "label": "N249BA",
+        "type": "BOEING 747-400LCF Dreamlifter (BLCF)"
     }
 }
