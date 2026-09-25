@@ -501,6 +501,17 @@ def route_matches_position(route, lat, lon, max_distance_km=600):
     return nearest <= max_distance_km
 
 
+def format_detection_reason(priority, region_name, repeat=False):
+    """通知レベルと検出状態を、自然な日本語の説明にする。"""
+    aircraft_label = {
+        "SPECIAL": "特別注目機（SPECIAL）",
+        "WATCH": "注目機（WATCH）",
+        "NORMAL": "登録機",
+    }.get(priority, "登録機")
+    status = "引き続き検出しています" if repeat else "新たに検出しました"
+    return f"{aircraft_label}を{region_name}の監視範囲内で{status}。"
+
+
 def build_embed(
     icao24, entry, aircraft, photo=None, route=None, repeat=False,
     region_name=AIRPORT_NAME,
@@ -525,10 +536,7 @@ def build_embed(
         {"name": "通知レベル", "value": priority, "inline": True},
         {
             "name": "検出理由",
-            "value": (
-                f"{priority} 登録機が{region_name}の監視範囲内で"
-                + ("継続して検出されました" if repeat else "初めて検出されました")
-            ),
+            "value": format_detection_reason(priority, region_name, repeat),
             "inline": False,
         },
     ]

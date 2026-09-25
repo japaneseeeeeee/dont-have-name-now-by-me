@@ -29,6 +29,20 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("SPECIAL", embed["title"])
         self.assertTrue(any(field["name"] == "検出理由" for field in embed["fields"]))
 
+    def test_detection_reason_uses_natural_japanese(self):
+        self.assertEqual(
+            monitor.format_detection_reason("NORMAL", "関東"),
+            "登録機を関東の監視範囲内で新たに検出しました。",
+        )
+        self.assertEqual(
+            monitor.format_detection_reason("WATCH", "中部", repeat=True),
+            "注目機（WATCH）を中部の監視範囲内で引き続き検出しています。",
+        )
+        self.assertEqual(
+            monitor.format_detection_reason("SPECIAL", "日本周辺"),
+            "特別注目機（SPECIAL）を日本周辺の監視範囲内で新たに検出しました。",
+        )
+
     def test_route_is_hidden_when_position_does_not_match(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
         route = {
