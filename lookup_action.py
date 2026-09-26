@@ -6,6 +6,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+from livery import lookup_livery
+
 REPO = os.environ["GITHUB_REPOSITORY"]
 TOKEN = os.environ["GITHUB_TOKEN"]
 DISCORD_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
@@ -275,6 +277,10 @@ def format_live_aircraft(ac):
         f"icao24: `{icao24}`",
         f"機種: {aircraft_type}",
     ])
+
+    livery_name = lookup_livery(registration)
+    if livery_name:
+        lines.append(f"🎨 塗装名: {livery_name}")
 
     alt = ac.get("alt_baro")
     if alt == "ground":

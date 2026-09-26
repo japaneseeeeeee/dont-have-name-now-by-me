@@ -45,6 +45,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from route_corrections import correct_route
+from livery import lookup_livery
 
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
@@ -682,6 +683,10 @@ def build_flight_embed(ac, route=None):
     embed.add_field(name="機種", value=ac.get("desc") or ac.get("t") or "不明", inline=True)
     embed.add_field(name="登録記号", value=f"`{reg}`" if reg else "不明", inline=True)
     embed.add_field(name="icao24", value=f"`{hex_id}`", inline=True)
+
+    livery_name = lookup_livery(reg)
+    if livery_name:
+        embed.add_field(name="🎨 塗装名", value=livery_name, inline=False)
 
     if route:
         flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
