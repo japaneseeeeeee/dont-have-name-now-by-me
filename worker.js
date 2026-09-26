@@ -210,7 +210,12 @@ async function cmdSpecial(o, env) {
 
 async function cmdSpecialList(env) {
   const { data } = await readWatchlist(env);
-  const items = Object.entries(data).filter(([, value]) => String(value?.priority || "NORMAL").toUpperCase() === "SPECIAL");
+  const now = Date.now() / 1000;
+  const items = Object.entries(data).filter(([, value]) => {
+    if (String(value?.priority || "NORMAL").toUpperCase() !== "SPECIAL") return false;
+    const until = Number(value?.special_until || 0);
+    return !until || until > now;
+  });
   if (!items.length) return { content: "SPECIAL登録機はありません。" };
   return { content: `🚨 SPECIAL登録機\n${items.map(([id, value]) => `\`${normalize(value).label}\` (${id})`).join("\n")}`.slice(0, 1990) };
 }

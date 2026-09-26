@@ -1,23 +1,23 @@
 {
     "600801": {
         "label": "4K-8888",
-        "type": "不明"
+        "type": "AIRBUS A-319"
     },
     "600806": {
         "label": "4K-AI06",
-        "type": "不明"
+        "type": "GULFSTREAM 5"
     },
     "600858": {
         "label": "4K-AZ88",
-        "type": "不明"
+        "type": "GALX"
     },
     "601831": {
         "label": "EZ-A700",
-        "type": "不明"
+        "type": "BOEING 737-700"
     },
     "683037": {
         "label": "UP-B5701",
-        "type": "不明"
+        "type": "BOEING 757-200"
     },
     "706049": {
         "label": "9K-GBA",
@@ -25,23 +25,23 @@
     },
     "710190": {
         "label": "HZ-HM5",
-        "type": "不明"
+        "type": "BOEING 777-300ER"
     },
     "710195": {
         "label": "HZ-HM3",
-        "type": "不明"
+        "type": "BOEING 787-8 Dreamliner"
     },
     "710321": {
         "label": "HZ-HM1A",
-        "type": "不明"
+        "type": "BOEING 747-300"
     },
     "710334": {
         "label": "HZ-HMS2",
-        "type": "不明"
+        "type": "AIRBUS A-340-200"
     },
     "800585": {
         "label": "K7066",
-        "type": "不明"
+        "type": "BOEING 777-300ER"
     },
     "868688": {
         "label": "JA751A",
@@ -59,15 +59,15 @@
     },
     "894014": {
         "label": "A9C-HMK",
-        "type": "不明"
+        "type": "BOEING 747-400"
     },
     "894016": {
         "label": "A9C-HWR",
-        "type": "不明"
+        "type": "AVRO RJ-85 Avroliner"
     },
     "894082": {
         "label": "A9C-HAK",
-        "type": "不明"
+        "type": "BOEING 747-400"
     },
     "896193": {
         "label": "A6-EET",
@@ -103,7 +103,7 @@
     },
     "06a001": {
         "label": "A7-HHK",
-        "type": "不明"
+        "type": "AIRBUS A-340-200"
     },
     "06a00f": {
         "label": "A7-AAG",
@@ -199,7 +199,7 @@
     },
     "06a1de": {
         "label": "A7-CHE",
-        "type": "不明"
+        "type": "GULFSTREAM G700"
     },
     "06a2af": {
         "label": "A7-BEK",
@@ -251,7 +251,7 @@
     },
     "407dfc": {
         "label": "G-GBNI",
-        "type": "不明"
+        "type": "AIRBUS A-321neo"
     },
     "43c6f9": {
         "label": "ZZ336",
@@ -295,11 +295,11 @@
     },
     "4bd24b": {
         "label": "TC-TRK",
-        "type": "不明"
+        "type": "BOEING 747-8"
     },
     "4bd2b2": {
         "label": "TC-TUR",
-        "type": "不明"
+        "type": "AIRBUS A-330-200"
     },
     "4cad47": {
         "label": "EI-IFD",
@@ -307,11 +307,11 @@
     },
     "600bc0": {
         "label": "4K-AI08",
-        "type": "不明"
+        "type": "AIRBUS A-340-600"
     },
     "600be9": {
         "label": "4K-AI001",
-        "type": "不明"
+        "type": "BOEING 777-200LR"
     },
     "70604a": {
         "label": "9K-GBB",
@@ -327,19 +327,19 @@
     },
     "70c04d": {
         "label": "A4O-OMN",
-        "type": "不明"
+        "type": "BOEING 747-400"
     },
     "70c0b7": {
         "label": "A4O-HMS",
-        "type": "不明"
+        "type": "BOEING 747-8"
     },
     "71019b": {
         "label": "HZ-HM4",
-        "type": "不明"
+        "type": "BOEING 787-8 Dreamliner"
     },
     "717fff": {
         "label": "HZ-HM1",
-        "type": "不明"
+        "type": "BOEING 747-8"
     },
     "7380c5": {
         "label": "4X-EDF",
@@ -351,7 +351,7 @@
     },
     "800c3d": {
         "label": "K7067",
-        "type": "不明"
+        "type": "BOEING 777-300ER"
     },
     "861ed6": {
         "label": "JA614A",
@@ -371,29 +371,25 @@
     },
     "87c002": {
         "label": "80-1111",
-        "priority": "SPECIAL",
-        "priority_after_special": "NORMAL",
-        "special_until": 1790263363.218,
+        "priority": "NORMAL",
         "type": "Boeing 777 300ER"
     },
     "87c003": {
         "label": "80-1112",
-        "priority": "SPECIAL",
-        "priority_after_special": "NORMAL",
-        "special_until": 1790263390.699,
+        "priority": "NORMAL",
         "type": "Boeing 777 300ER"
     },
     "89404d": {
         "label": "A9C-HMH",
-        "type": "不明"
+        "type": "BOEING 767-400"
     },
     "8953c7": {
         "label": "V8-MHB",
-        "type": "不明"
+        "type": "BOEING 767-200"
     },
     "8953df": {
         "label": "V8-BKH",
-        "type": "不明"
+        "type": "BOEING 747-8"
     },
     "89639d": {
         "label": "A6-EOD",
@@ -425,7 +421,7 @@
     },
     "8a0452": {
         "label": "PK-GIG",
-        "type": "不明"
+        "type": "BOEING 777-300ER"
     },
     "a11cbb": {
         "label": "N17085",
@@ -437,7 +433,7 @@
     },
     "a254ff": {
         "label": "N24988",
-        "type": "不明"
+        "type": "BOEING 787-9 Dreamliner"
     },
     "a28e29": {
         "label": "N264DE",
@@ -449,7 +445,7 @@
     },
     "a4d838": {
         "label": "N411DX",
-        "type": "不明"
+        "type": "AIRBUS A-330-900"
     },
     "a4d974": {
         "label": "N411SN",
@@ -625,7 +621,7 @@
     },
     "a9ddb0": {
         "label": "N735AT",
-        "type": "不明"
+        "type": "BOEING 777-300ER"
     },
     "a9fa04": {
         "label": "N742AM",
@@ -637,15 +633,15 @@
     },
     "aa8c98": {
         "label": "N779XW",
-        "type": "不明"
+        "type": "BOEING 777-9"
     },
     "aa8c99": {
         "label": "N779XX",
-        "type": "不明"
+        "type": "BOEING 777-9"
     },
     "aa8c9a": {
         "label": "N779XY",
-        "type": "不明"
+        "type": "BOEING 777-9"
     },
     "aa90a0": {
         "label": "N780BA",
@@ -665,15 +661,15 @@
     },
     "aabbc9": {
         "label": "N791AN",
-        "type": "不明"
+        "type": "BOEING 777-200"
     },
     "aac8a4": {
         "label": "N794UA",
-        "type": "不明"
+        "type": "BOEING 777-200"
     },
     "aace5c": {
         "label": "N796AN",
-        "type": "不明"
+        "type": "BOEING 777-200"
     },
     "aada49": {
         "label": "N799JN",
@@ -705,7 +701,7 @@
     },
     "adfdf8": {
         "label": "82-8000",
-        "type": "不明"
+        "type": "Boeing VC-25A"
     },
     "adfdf9": {
         "label": "92-9000",
@@ -840,7 +836,7 @@
         "type": "McDonnell Douglas KC-10A"
     },
     "ae021b": {
-        "label": "84-0187",
+        "label": "84-0188",
         "type": "McDonnell Douglas KC-10A"
     },
     "ae021c": {
@@ -912,7 +908,7 @@
         "type": "McDonnell Douglas KC-10A"
     },
     "ae022d": {
-        "label": "86-0034",
+        "label": "86-0036",
         "type": "McDonnell Douglas KC-10A"
     },
     "ae022e": {
@@ -932,15 +928,15 @@
         "type": "McDonnell Douglas KC-10A"
     },
     "ae0232": {
-        "label": "87-0118",
-        "type": "McDonnell Douglas KC-10A"
-    },
-    "ae0233": {
         "label": "87-0120",
         "type": "McDonnell Douglas KC-10A"
     },
-    "ae0234": {
+    "ae0233": {
         "label": "87-0121",
+        "type": "McDonnell Douglas KC-10A"
+    },
+    "ae0234": {
+        "label": "87-0122",
         "type": "McDonnell Douglas KC-10A"
     },
     "ae0235": {
@@ -953,7 +949,7 @@
     },
     "ae0449": {
         "label": "02-4452",
-        "type": "不明"
+        "type": "Boeing C-32B"
     },
     "ae0945": {
         "label": "01-0040",
@@ -997,15 +993,15 @@
     },
     "ae4ae6": {
         "label": "09-0015",
-        "type": "不明"
+        "type": "Boeing C-32A"
     },
     "ae4ae8": {
         "label": "09-0016",
-        "type": "不明"
+        "type": "Boeing C-32A"
     },
     "ae4aea": {
         "label": "09-0017",
-        "type": "不明"
+        "type": "Boeing C-32A"
     },
     "ae503d": {
         "label": "09-0540",
@@ -1036,12 +1032,12 @@
         "type": "B-1B Lancer"
     },
     "ae6c06": {
-        "label": "86-0127",
+        "label": "86-0135",
         "type": "B-1B Lancer"
     },
     "c2c36d": {
-        "label": "330002",
-        "type": "不明"
+        "label": "330003",
+        "type": "AIRBUS A-330-200"
     },
     "c81e22": {
         "label": "ZK-OKQ",
@@ -1049,11 +1045,11 @@
     },
     "c87f00": {
         "label": "NZ7571",
-        "type": "不明"
+        "type": "BOEING 757-200"
     },
     "c87f01": {
         "label": "NZ7572",
-        "type": "不明"
+        "type": "BOEING 757-200"
     },
     "e940a2": {
         "label": "CP-2791",
