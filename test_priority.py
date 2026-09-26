@@ -141,6 +141,15 @@ class PriorityTests(unittest.TestCase):
         self.assertFalse(monitor.should_send_japan_alert(aircraft, special))
         self.assertFalse(monitor.should_send_japan_alert(aircraft, normal))
 
+    def test_registered_aircraft_outside_regions_uses_japan_outer_alert(self):
+        watchlist = {"abc123": {"label": "JA0001", "type": "TEST"}}
+        outer = ["abc123", "TEST1", None, None, None, 145.0, 40.0, 1000, False, 100, 90, 0]
+        kanto = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        unknown = ["def456", "TEST2", None, None, None, 145.0, 40.0, 1000, False, 100, 90, 0]
+        self.assertTrue(monitor.should_send_japan_outer_alert(outer, watchlist))
+        self.assertFalse(monitor.should_send_japan_outer_alert(kanto, watchlist))
+        self.assertFalse(monitor.should_send_japan_outer_alert(unknown, watchlist))
+
     def test_personal_special_creates_private_event(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
         settings = {

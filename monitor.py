@@ -50,9 +50,6 @@ JAPAN_BBOX = {
     "lomax": 146.0,
 }
 
-# 従来の「日本周辺」早期警戒範囲。全国取得した結果から切り出すためAPI追加取得はしない。
-EARLY_WARNING_BBOX = (34.0, 138.2, 37.5, 143.1)
-
 REGIONS = {
     "hokkaido": {
         "name": "北海道", "env": "AIRCRAFT_WEBHOOK_HOKKAIDO",
@@ -378,6 +375,14 @@ def find_new_area_detections(states, watchlist, notified, now, scope):
 def should_send_japan_alert(aircraft, entry):
     """全国通知を明示的に有効化した登録機だけを日本周辺へ通知する。"""
     return isinstance(entry, dict) and entry.get("nationwide_alert") is True
+
+
+def should_send_japan_outer_alert(aircraft, watchlist):
+    """登録機が地方外かつ日本全体の取得範囲内なら、日本周辺通知の対象にする。"""
+    icao24 = (aircraft[0] or "").strip().lower()
+    if icao24 not in watchlist:
+        return False
+    return classify_region(aircraft[6], aircraft[5]) is None
 
 
 def load_shared_json(path, default):
@@ -831,18 +836,39 @@ def main():
         )
         region_notifications.add((icao24, region["webhook"]))
 
-    # /nationwide で明示的に有効化した機体だけを日本全域で監視し、
-    # 日本周辺チャンネルへ知らせる。SPECIALとは独立した設定。
-    early_states = []
+    # 地方の範囲外にいる登録機は「日本周辺」へ先行通知する。
+    # 地方へ入った後は地方通知へ切り替わるため、通常機が両方へ重複しない。
+    outer_states = [
+        aircraft for aircraft in states
+        if should_send_japan_outer_alert(aircraft, watchlist)
+    ]
+    outer_notify, notified, outer_present = find_new_area_detections(
+        outer_states, watchlist, notified, time.time(), "japan_outer"
+    )
+    for icao24, aircraft, repeat in outer_notify:
+        notify_discord(
+            icao24, watchlist[icao24], aircraft,
+            JAPAN_WEBHOOK_URL,
+            "日本周辺",
+            repeat,
+        )
+
+    # /nationwide がONの機体だけは、地方の範囲内でも地方と日本周辺の両方へ通知する。
+    # 地方外の機体は上の日本周辺通知で処理済みなので、ここでは除外する。
+    nationwide_states = []
     for aircraft in states:
         icao24 = (aircraft[0] or "").strip().lower()
         entry = watchlist.get(icao24)
-        if entry and should_send_japan_alert(aircraft, entry):
-            early_states.append(aircraft)
-    early_notify, notified, early_present = find_new_area_detections(
-        early_states, watchlist, notified, time.time(), "nationwide"
+        if (
+            entry
+            and should_send_japan_alert(aircraft, entry)
+            and classify_region(aircraft[6], aircraft[5]) is not None
+        ):
+            nationwide_states.append(aircraft)
+    nationwide_notify, notified, nationwide_present = find_new_area_detections(
+        nationwide_states, watchlist, notified, time.time(), "nationwide"
     )
-    for icao24, aircraft, repeat in early_notify:
+    for icao24, aircraft, repeat in nationwide_notify:
         # Webhookの設定ミスで日本周辺と地方が同じチャンネルを指していても、
         # 1回の監視中に同じ機体を同じ送信先へ二重投稿しない。
         if (icao24, JAPAN_WEBHOOK_URL) in region_notifications:
@@ -861,7 +887,9 @@ def main():
 
     logger.info(
         "チェック完了。地方別=%s / 日本周辺=%s / 個人SPECIAL=%d件",
-        currently_present or "なし", early_present or "なし", len(personal_events),
+        currently_present or "なし",
+        (outer_present | nationwide_present) or "なし",
+        len(personal_events),
     )
 
 
