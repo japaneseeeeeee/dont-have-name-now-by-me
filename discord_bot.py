@@ -44,6 +44,8 @@ import requests
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from route_corrections import correct_route
+
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
 AIRCRAFT_DB_PATH = os.path.expanduser(
@@ -109,6 +111,7 @@ PRIORITIES = {"NORMAL", "WATCH", "SPECIAL"}
 AIRPORT_SHORT_NAMES = {
     "NRT": "Narita", "HND": "Haneda", "NGO": "Chubu", "KIX": "Kansai",
     "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
+    "ICN": "Incheon", "SLC": "Salt Lake City",
 }
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
 _JA_REGISTRATION_RE = re.compile(r"(?<![A-Z0-9])JA[- ]?([0-9A-Z]{4})(?![A-Z0-9])", re.IGNORECASE)
@@ -605,11 +608,12 @@ def fetch_route(callsign):
         fr = body.get("flightroute") if isinstance(body, dict) else None
         if not fr or not fr.get("origin") or not fr.get("destination"):
             return None
-        return {
+        route = {
             "origin": fr["origin"],
             "destination": fr["destination"],
             "flight_iata": fr.get("callsign_iata"),
         }
+        return correct_route(callsign, route)
     except (requests.RequestException, ValueError, AttributeError):
         return None
 

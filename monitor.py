@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from route_corrections import correct_route
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -132,6 +134,7 @@ PRIORITIES = {"NORMAL", "WATCH", "SPECIAL"}
 AIRPORT_SHORT_NAMES = {
     "NRT": "Narita", "HND": "Haneda", "NGO": "Chubu", "KIX": "Kansai",
     "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
+    "ICN": "Incheon", "SLC": "Salt Lake City",
 }
 
 # ============ ここまで CONFIG ============
@@ -555,12 +558,13 @@ def fetch_route(callsign):
         flightroute = body.get("flightroute") if isinstance(body, dict) else None
         if not flightroute or not flightroute.get("origin") or not flightroute.get("destination"):
             return None
-        return {
+        route = {
             "origin": flightroute["origin"],
             "destination": flightroute["destination"],
             "flight_iata": flightroute.get("callsign_iata"),
             "airline": (flightroute.get("airline") or {}).get("name"),
         }
+        return correct_route(callsign, route)
     except (requests.RequestException, ValueError, AttributeError):
         return None
 

@@ -1,6 +1,8 @@
 import unittest
+from datetime import date
 
 import monitor
+from route_corrections import correct_route
 
 
 class PriorityTests(unittest.TestCase):
@@ -83,6 +85,35 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual(
             monitor.format_airport({"iata_code": "HND", "municipality": "Tokyo"}),
             "Haneda (HND)",
+        )
+        self.assertEqual(
+            monitor.format_airport({"iata_code": "ICN", "name": "Incheon International Airport"}),
+            "Incheon (ICN)",
+        )
+
+    def test_dl172_stale_route_is_corrected(self):
+        stale = {
+            "origin": {"iata_code": "MNL"},
+            "destination": {"iata_code": "JFK"},
+            "flight_iata": "DL172",
+        }
+        corrected = correct_route("DAL172", stale, today=date(2026, 9, 26))
+        self.assertEqual(corrected["origin"]["iata_code"], "ICN")
+        self.assertEqual(corrected["destination"]["iata_code"], "SLC")
+        self.assertEqual(
+            monitor.format_airport(corrected["destination"]),
+            "Salt Lake City (SLC)",
+        )
+        self.assertTrue(monitor.route_matches_position(corrected, 36.319, 132.945))
+
+    def test_dl172_correction_expires(self):
+        stale = {
+            "origin": {"iata_code": "MNL"},
+            "destination": {"iata_code": "JFK"},
+        }
+        self.assertIs(
+            correct_route("DAL172", stale, today=date(2027, 8, 25)),
+            stale,
         )
 
     def test_known_bad_delta_routes_are_rejected(self):
