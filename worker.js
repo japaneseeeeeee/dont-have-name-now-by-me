@@ -88,6 +88,18 @@ export default {
       return json({ type: 5 });
     }
 
+    // 3: 検索結果の「watchlistへ登録」ボタン
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("watchadd|")) {
+      if (!isAdministrator(interaction)) {
+        return json({
+          type: 4,
+          data: { content: "⛔ watchlistへの登録はサーバー管理者だけが実行できます。", flags: 64 },
+        });
+      }
+      ctx.waitUntil(processWatchAddButton(interaction, env));
+      return json({ type: 6 });
+    }
+
     return new Response("unsupported interaction", { status: 400 });
   },
 };
@@ -151,6 +163,29 @@ async function processCommand(interaction, env) {
   await editOriginal(interaction, message);
 }
 
+async function processWatchAddButton(interaction, env) {
+  let message;
+  try {
+    const [, icao24, registration] = String(interaction.data.custom_id || "").split("|");
+    if (!HEX6.test(icao24 || "") || !registration) throw new Error("invalid watchadd custom_id");
+    const typeName = (await lookupAircraftType(icao24)) || UNKNOWN_TYPE;
+    const outcome = await updateWatchlist(env, (wl) => {
+      if (wl[icao24] !== undefined) {
+        return { changed: false, existing: normalize(wl[icao24]).label };
+      }
+      wl[icao24] = { label: registration.toUpperCase(), type: typeName };
+      return { changed: true };
+    }, `watchlist: add ${registration.toUpperCase()}`);
+    message = outcome.existing
+      ? { content: `ℹ️ \`${outcome.existing}\` (${icao24}) は既に登録済みです。`, components: [] }
+      : { content: `✅ \`${registration.toUpperCase()}\` (${icao24} / ${typeName}) をwatchlistに追加しました。`, components: [] };
+  } catch (err) {
+    console.error("watchadd button failed:", (err && err.stack) || err);
+    message = { content: "⚠️ 登録に失敗しました。もう一度検索してください。", components: [] };
+  }
+  await editOriginal(interaction, message);
+}
+
 async function editOriginal(interaction, message) {
   const payload = { allowed_mentions: { parse: [] }, ...message };
   if (payload.content) payload.content = payload.content.slice(0, 2000);
@@ -173,6 +208,7 @@ async function runCommand(interaction, env) {
   const o = optionsOf(interaction);
   switch (interaction.data.name) {
     case "add": return cmdAdd(o, env, interaction);
+    case "aircraft-search": return cmdAircraftSearch(o, env, interaction);
     case "remove": return cmdRemove(o, env);
     case "find": return cmdFind(o, env);
     case "list": return cmdList(o, env);
@@ -184,6 +220,16 @@ async function runCommand(interaction, env) {
     case "nationwide": return cmdNationwide(o, env);
     default: return { content: "未対応のコマンドです。" };
   }
+}
+
+async function cmdAircraftSearch(o, env, interaction) {
+  const query = String(o.query || "").trim();
+  if (query.replace(/[\s-]/g, "").length < 3) {
+    return { content: "⚠️ 3文字以上入力してください。例: `/aircraft-search query:JA78`" };
+  }
+  return startSlowLookup(env, "search", [query], interaction, {
+    failure: `❓ \`${query}\` に一致する機体を見つけられませんでした。`,
+  });
 }
 
 async function cmdSpecial(o, env) {

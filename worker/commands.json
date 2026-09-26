@@ -25,6 +25,19 @@
     ]
   },
   {
+    "name": "aircraft-search",
+    "description": "機体を検索し、ボタンからwatchlistへ登録します",
+    "type": 1,
+    "options": [
+      {
+        "name": "query",
+        "description": "登録記号の一部、ICAO24、便名、機種コード",
+        "type": 3,
+        "required": true
+      }
+    ]
+  },
+  {
     "name": "remove",
     "description": "監視対象から機体を削除します",
     "type": 1,

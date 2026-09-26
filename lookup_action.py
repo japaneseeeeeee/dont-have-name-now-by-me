@@ -31,14 +31,17 @@ def request(url, method="GET", data=None, headers=None):
         return r.read()
 
 
-def discord_send(channel_id, text):
+def discord_send(channel_id, text, components=None):
+    payload = {
+        "content": text[:2000],
+        "allowed_mentions": {"parse": []},
+    }
+    if components:
+        payload["components"] = components
     request(
         f"https://discord.com/api/v10/channels/{channel_id}/messages",
         method="POST",
-        data={
-            "content": text[:2000],
-            "allowed_mentions": {"parse": []},
-        },
+        data=payload,
         headers={"Authorization": f"Bot {DISCORD_TOKEN}"},
     )
 
@@ -78,6 +81,75 @@ def lookup_tar1090(registration):
         return icao24, type_name, canonical_reg
 
     return None
+
+
+def search_tar1090(query, limit=5):
+    """登録記号の一部・ICAO24・機種コード・機種名から候補を探す。"""
+    target = normalize_reg(query)
+    if len(target) < 3:
+        return []
+
+    print("Downloading tar1090 aircraft database for candidate search...")
+    raw = request(TAR1090_URL)
+    text = gzip.decompress(raw).decode("utf-8", errors="replace")
+    prefix_matches = []
+    other_matches = []
+    for line in text.splitlines():
+        parts = line.split(";", 5)
+        if len(parts) < 5:
+            continue
+        icao24 = parts[0].strip().lower()
+        registration = parts[1].strip()
+        typecode = parts[2].strip()
+        description = parts[4].strip()
+        normalized_reg = normalize_reg(registration)
+        searchable = normalize_reg(f"{icao24} {typecode} {description}")
+        if target not in normalized_reg and target not in searchable:
+            continue
+        item = {
+            "icao24": icao24,
+            "registration": registration or "不明",
+            "typecode": typecode,
+            "description": description,
+        }
+        bucket = prefix_matches if normalized_reg.startswith(target) else other_matches
+        bucket.append(item)
+        if len(prefix_matches) >= limit:
+            break
+        if len(prefix_matches) + len(other_matches) >= limit * 4:
+            break
+    return (prefix_matches + other_matches)[:limit]
+
+
+def search_result_components(results):
+    rows = []
+    for item in results[:5]:
+        registration = item["registration"]
+        if registration == "不明":
+            continue
+        rows.append({
+            "type": 1,
+            "components": [{
+                "type": 2,
+                "style": 1,
+                "label": f"{registration} を登録"[:80],
+                "custom_id": f"watchadd|{item['icao24']}|{registration}"[:100],
+            }],
+        })
+    return rows
+
+
+def format_search_results(query, results):
+    lines = [f"🔎 **「{query}」の検索結果**", "登録する機体のボタンを押してください。", ""]
+    for item in results:
+        aircraft_type = item.get("description") or item.get("typecode") or "不明"
+        if item.get("description") and item.get("typecode"):
+            aircraft_type = f"{item['description']} ({item['typecode']})"
+        lines.append(
+            f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}"
+        )
+    lines.append("\n※ watchlistへの登録は管理者のみ実行できます。")
+    return "\n".join(lines)
 
 
 def github_json(path, method="GET", data=None):
@@ -390,6 +462,38 @@ def main():
         discord_send(
             channel_id,
             f"❓ `{query}` の現在のADS-B情報を取得できませんでした。",
+        )
+        return
+
+    if op == "search":
+        query = str(args[0]).strip().upper()
+        results = []
+
+        # 便名・コールサインの場合は、現在飛行中の実機を最優先で候補にする。
+        live = lookup_live_callsign(query)
+        if live and live.get("hex") and live.get("r"):
+            results.append({
+                "icao24": str(live["hex"]).lower(),
+                "registration": str(live["r"]).upper(),
+                "typecode": str(live.get("t") or ""),
+                "description": str(live.get("desc") or ""),
+            })
+
+        if not results:
+            results = search_tar1090(query)
+
+        if not results:
+            discord_send(
+                channel_id,
+                f"❓ `{query}` に一致する機体を見つけられませんでした。\n"
+                "登録記号、ICAO24、現在飛行中の便名、機種コードで検索できます。",
+            )
+            return
+
+        discord_send(
+            channel_id,
+            format_search_results(query, results),
+            components=search_result_components(results),
         )
         return
 
