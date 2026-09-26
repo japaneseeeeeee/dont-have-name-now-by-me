@@ -21,6 +21,8 @@ personal_special_events.json
 personal_specials.json.lock
 personal_special_notified.json.lock
 personal_special_events.json.lock
+equipment_alerts.json
+equipment_alerts.json.lock
 
 actions-runner-new/
 worker/

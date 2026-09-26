@@ -46,6 +46,7 @@ from discord.ext import commands, tasks
 
 from route_corrections import correct_route
 from livery import lookup_livery
+from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_equipment
 
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
@@ -64,6 +65,7 @@ STATE_PATH = os.path.join(BASE_DIR, "bot_state.json")          # チャンネル
 HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が更新時刻を見る
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
+EQUIPMENT_ALERTS_PATH = os.path.join(BASE_DIR, "equipment_alerts.json")
 HEARTBEAT_INTERVAL = 30                                        # 秒
 CATCHUP_MAX_AGE = timedelta(hours=12)                          # これより古い取りこぼしは処理しない
 CATCHUP_LIMIT = 50                                             # 1回の再接続で拾う最大件数
@@ -76,6 +78,10 @@ FEEDBACK_MARKER = "📮"
 PHOTO_CHANNEL_ID = int(os.environ.get("PHOTO_CHANNEL_ID", "1552676837581389956"))
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
 PERSONAL_SPECIAL_LIMIT = 20
+EQUIPMENT_ALERT_LIMIT = 20
+EQUIPMENT_ALERT_CHANNEL_ID = int(
+    os.environ.get("EQUIPMENT_ALERT_CHANNEL_ID", "1553395098249732157")
+)
 
 # 現在位置の検索に使うADS-B API(どちらも ADSBExchange v2 互換・登録不要)。上から順に試す。
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
@@ -133,6 +139,12 @@ USAGE = {
     "my-special-remove": "!my-special-remove <登録記号 または icao24>",
     "my-special-list": "!my-special-list",
     "my-special-settings": "!my-special-settings <on または off>",
+    "equipment-add": "!equipment-add <便名> <機材コード>",
+    "equipment-remove": "!equipment-remove <登録ID>",
+    "equipment-list": "!equipment-list",
+    "equipment-add-server": "!equipment-add-server <便名> <機材コード>",
+    "equipment-remove-server": "!equipment-remove-server <登録ID>",
+    "equipment-list-server": "!equipment-list-server",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -868,6 +880,68 @@ async def personal_special_dispatch():
         await asyncio.to_thread(append_personal_special_events, retry_events)
 
 
+@tasks.loop(seconds=120)
+async def equipment_alert_dispatch():
+    """指定便へ対象機材が実際に入ったことをADS-Bで確認して通知する。"""
+    if not bot.is_ready() or bot.is_closed():
+        return
+    store = await asyncio.to_thread(load_locked_json, EQUIPMENT_ALERTS_PATH, empty_store())
+    rules = store.get("rules") or []
+    if not rules:
+        return
+
+    now = time.time()
+    notified = store.setdefault("notified", {})
+    changed = False
+    live_cache = {}
+    for rule in list(rules):
+        flight = rule.get("flight") or ""
+        equipment = rule.get("equipment") or ""
+        if not flight or not equipment:
+            continue
+        if flight not in live_cache:
+            live_cache[flight] = await asyncio.to_thread(find_live_aircraft, flight)
+        for aircraft in live_cache[flight]:
+            if not aircraft_matches(aircraft, equipment):
+                continue
+            callsign = (aircraft.get("flight") or flight).strip().upper()
+            hex_id = (aircraft.get("hex") or "unknown").lower()
+            operation = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            event_key = f"{rule['id']}:{operation}:{callsign}:{hex_id}"
+            if event_key in notified:
+                continue
+            route = await asyncio.to_thread(fetch_route, aircraft.get("flight"))
+            embed = build_flight_embed(aircraft, route)
+            embed.title = f"🔔 指定便の機材を実機確認｜{flight}"
+            embed.description = (
+                f"**{flight}** に指定機材 **{normalize_equipment(equipment)}** が投入されたことを、"
+                "現在のADS-B情報で確認しました。"
+            )
+            try:
+                if rule.get("scope") == "personal":
+                    recipient = await bot.fetch_user(int(rule["owner_id"]))
+                    await recipient.send(embed=embed)
+                else:
+                    channel = bot.get_channel(EQUIPMENT_ALERT_CHANNEL_ID)
+                    if channel is None:
+                        channel = await bot.fetch_channel(EQUIPMENT_ALERT_CHANNEL_ID)
+                    await channel.send(embed=embed)
+                notified[event_key] = now
+                changed = True
+            except discord.Forbidden:
+                logger.warning("機材通知を送信できません: rule=%s", rule.get("id"))
+            except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
+                logger.error("機材通知の送信に失敗しました: rule=%s %s", rule.get("id"), exc)
+
+    cutoff = now - 8 * 86400
+    old_keys = [key for key, stamp in notified.items() if float(stamp) < cutoff]
+    for key in old_keys:
+        notified.pop(key, None)
+        changed = True
+    if changed:
+        await asyncio.to_thread(save_locked_json, EQUIPMENT_ALERTS_PATH, store)
+
+
 # ============ イベント ============
 
 async def notify_feedback(message):
@@ -1044,6 +1118,8 @@ async def on_ready():
         heartbeat.start()
     if not personal_special_dispatch.is_running():
         personal_special_dispatch.start()
+    if not equipment_alert_dispatch.is_running():
+        equipment_alert_dispatch.start()
     await catch_up_missed_commands()
 
 
@@ -1355,6 +1431,125 @@ async def my_special_settings(ctx, enabled: str):
     settings[user_id] = config
     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
     await ctx.send(f"✅ 個人SPECIALのDM通知を **{normalized.upper()}** にしました。")
+
+
+async def require_equipment_dm(ctx):
+    if ctx.guild is None:
+        return True
+    await ctx.send(
+        "🔒 個人用の機材通知は登録内容を非公開にするため、BotへのDMで使用してください。",
+        delete_after=30,
+    )
+    return False
+
+
+def equipment_rules_for(store, owner_id, scope):
+    return [
+        rule for rule in store.get("rules", [])
+        if str(rule.get("owner_id")) == str(owner_id) and rule.get("scope") == scope
+    ]
+
+
+async def add_equipment_rule(ctx, flight, equipment, scope, owner_id):
+    store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+    current = equipment_rules_for(store, owner_id, scope)
+    if len(current) >= EQUIPMENT_ALERT_LIMIT:
+        await ctx.send(f"⚠️ 機材通知は{EQUIPMENT_ALERT_LIMIT}件まで登録できます。")
+        return
+    rule, created = add_rule(
+        store,
+        owner_id=owner_id,
+        scope=scope,
+        flight=flight,
+        equipment=equipment,
+    )
+    if not rule["flight"] or not rule["equipment"]:
+        await ctx.send("⚠️ 便名と機材コードを確認してください。例: `JL12 B77W`")
+        return
+    if not created:
+        await ctx.send(
+            f"ℹ️ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` は登録済みです。"
+        )
+        return
+    save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+    destination = "DM" if scope == "personal" else "機材変更・投入情報チャンネル"
+    await ctx.send(
+        f"✅ ID `{rule['id']}`：`{rule['flight']}` に `{rule['equipment']}` が実際に投入されたら、"
+        f"{destination}へ通知します。\n予定情報ではなく、飛行中のADS-B情報を約2分ごとに確認します。"
+    )
+
+
+async def remove_equipment_rule(ctx, rule_id, scope, owner_id):
+    store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+    match = next(
+        (
+            rule for rule in store.get("rules", [])
+            if rule.get("id") == rule_id
+            and rule.get("scope") == scope
+            and str(rule.get("owner_id")) == str(owner_id)
+        ),
+        None,
+    )
+    if match is None:
+        await ctx.send(f"⚠️ ID `{rule_id}` の登録は見つかりませんでした。")
+        return
+    store["rules"].remove(match)
+    save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+    await ctx.send(
+        f"🗑️ ID `{rule_id}`：`{match['flight']}` × `{match['equipment']}` を解除しました。"
+    )
+
+
+async def list_equipment_rules(ctx, scope, owner_id):
+    store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+    rules = equipment_rules_for(store, owner_id, scope)
+    if not rules:
+        await ctx.send("登録されている機材通知はありません。")
+        return
+    lines = [
+        f"ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`"
+        for rule in sorted(rules, key=lambda item: item["id"])
+    ]
+    await ctx.send(("🔔 **機材通知の登録一覧**\n" + "\n".join(lines))[:1990])
+
+
+@bot.command(name="equipment-add")
+async def equipment_add(ctx, flight: str, equipment: str):
+    if not await require_equipment_dm(ctx):
+        return
+    await add_equipment_rule(ctx, flight, equipment, "personal", ctx.author.id)
+
+
+@bot.command(name="equipment-remove")
+async def equipment_remove(ctx, rule_id: int):
+    if not await require_equipment_dm(ctx):
+        return
+    await remove_equipment_rule(ctx, rule_id, "personal", ctx.author.id)
+
+
+@bot.command(name="equipment-list")
+async def equipment_list(ctx):
+    if not await require_equipment_dm(ctx):
+        return
+    await list_equipment_rules(ctx, "personal", ctx.author.id)
+
+
+@bot.command(name="equipment-add-server")
+@commands.has_permissions(administrator=True)
+async def equipment_add_server(ctx, flight: str, equipment: str):
+    await add_equipment_rule(ctx, flight, equipment, "server", ctx.guild.id)
+
+
+@bot.command(name="equipment-remove-server")
+@commands.has_permissions(administrator=True)
+async def equipment_remove_server(ctx, rule_id: int):
+    await remove_equipment_rule(ctx, rule_id, "server", ctx.guild.id)
+
+
+@bot.command(name="equipment-list-server")
+@commands.has_permissions(administrator=True)
+async def equipment_list_server(ctx):
+    await list_equipment_rules(ctx, "server", ctx.guild.id)
 
 
 # ============ 管理者用スラッシュコマンド ============
