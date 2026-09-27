@@ -5,6 +5,7 @@ import gzip
 import urllib.request
 import urllib.error
 import urllib.parse
+from datetime import datetime, timezone
 
 from livery import lookup_livery
 
@@ -16,7 +17,7 @@ API = "https://api.github.com"
 TAR1090_URL = "https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz"
 
 
-def request(url, method="GET", data=None, headers=None):
+def request(url, method="GET", data=None, headers=None, timeout=60):
     h = {"User-Agent": "aircraft-alert-action/1.0"}
     if headers:
         h.update(headers)
@@ -27,7 +28,7 @@ def request(url, method="GET", data=None, headers=None):
         h["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url, data=body, headers=h, method=method)
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
@@ -48,6 +49,42 @@ def discord_send(channel_id, text, components=None):
 
 def normalize_reg(reg):
     return reg.replace("-", "").replace(" ", "").upper()
+
+
+def load_watchlist():
+    try:
+        with open("watchlist.json", encoding="utf-8") as stream:
+            value = json.load(stream)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def watchlist_status(watchlist, icao24, registration):
+    entry = watchlist.get(str(icao24 or "").lower())
+    if entry is None and registration:
+        target = normalize_reg(registration)
+        entry = next((value for value in watchlist.values()
+                      if normalize_reg(normalize_watch_entry(value)[0]) == target), None)
+    if entry is None:
+        return "未登録"
+    data = entry if isinstance(entry, dict) else {}
+    priority = str(data.get("priority") or "NORMAL").upper()
+    until = float(data.get("special_until") or 0)
+    if priority == "SPECIAL" and until and until <= datetime.now(timezone.utc).timestamp():
+        priority = str(data.get("priority_after_special") or "NORMAL").upper()
+    badge = {"SPECIAL": "🚨 SPECIAL", "WATCH": "👁️ WATCH"}.get(priority, "👁️ 監視中")
+    if priority == "SPECIAL" and until:
+        badge += f"（<t:{int(until)}:R>まで）"
+    if data.get("nationwide_alert") is True:
+        badge += " · 全国通知ON"
+    return badge
+
+
+def normalize_watch_entry(value):
+    if isinstance(value, dict):
+        return str(value.get("label") or "?"), str(value.get("type") or "不明")
+    return str(value), "不明"
 
 
 def lookup_tar1090(registration):
@@ -292,11 +329,41 @@ def lookup_flight_route(callsign):
 
     return None
 
-def format_live_aircraft(ac):
+
+def lookup_aircraft_details(icao24):
+    """HexDBとADSBDBを併用し、/info相当の機体情報を補完する。"""
+    hex_data = {}
+    adsb_data = {}
+    try:
+        hex_data = json.loads(request(f"https://hexdb.io/api/v1/aircraft/{icao24}", timeout=8))
+    except Exception as error:
+        print(f"HexDB aircraft lookup failed: {type(error).__name__}: {error}")
+    try:
+        payload = json.loads(request(f"https://api.adsbdb.com/v0/aircraft/{icao24}", timeout=8))
+        adsb_data = payload.get("response", {}).get("aircraft") or {}
+    except Exception as error:
+        print(f"ADSBDB aircraft lookup failed: {type(error).__name__}: {error}")
+    year_text = str(hex_data.get("Year") or hex_data.get("YearOfManufacture") or hex_data.get("FirstRegistered") or "")
+    year = year_text[:4] if year_text[:4].isdigit() else None
+    return {
+        "type": " ".join(filter(None, [hex_data.get("Manufacturer"), hex_data.get("Type") or hex_data.get("ICAOTypeCode")]))
+                or " ".join(filter(None, [adsb_data.get("manufacturer"), adsb_data.get("type") or adsb_data.get("icao_type")]))
+                or None,
+        "operator": hex_data.get("RegisteredOwners") or hex_data.get("RegisteredOwnerOperatorName")
+                    or hex_data.get("RegisteredOwner") or adsb_data.get("registered_owner"),
+        "country": hex_data.get("RegisteredOwnerCountry") or hex_data.get("RegisteredOwnerNationality")
+                   or adsb_data.get("registered_owner_country_name") or adsb_data.get("registered_owner_country_iso_name"),
+        "year": year,
+    }
+
+def format_live_aircraft(ac, watchlist=None):
     callsign = str(ac.get("flight") or "").strip() or "不明"
     registration = ac.get("r") or "不明"
     icao24 = str(ac.get("hex") or "").lower() or "不明"
     aircraft_type = ac.get("desc") or ac.get("t") or "不明"
+    details = lookup_aircraft_details(icao24) if icao24 != "不明" else {}
+    if aircraft_type == "不明":
+        aircraft_type = details.get("type") or "不明"
 
     route = lookup_flight_route(callsign) if callsign != "不明" else None
 
@@ -349,6 +416,13 @@ def format_live_aircraft(ac):
         f"icao24: `{icao24}`",
         f"機種: {aircraft_type}",
     ])
+
+    if details.get("year"):
+        age = datetime.now(timezone.utc).year - int(details["year"])
+        lines.append(f"製造年: {details['year']}（機齢 約{age}年）")
+    lines.append(f"運航会社/所有者: {details.get('operator') or '不明'}")
+    lines.append(f"登録国: {details.get('country') or '不明'}")
+    lines.append(f"監視情報: {watchlist_status(watchlist or {}, icao24, registration)}")
 
     livery_name = lookup_livery(registration)
     if livery_name:
@@ -441,7 +515,7 @@ def main():
         if live:
             discord_send(
                 channel_id,
-                format_live_aircraft(live),
+                format_live_aircraft(live, load_watchlist()),
             )
             return
 
@@ -450,11 +524,19 @@ def main():
 
         if found:
             icao24, type_name, canonical_reg = found
+            details = lookup_aircraft_details(icao24)
+            status = watchlist_status(load_watchlist(), icao24, canonical_reg)
+            year = details.get("year") or "不明"
+            age = datetime.now(timezone.utc).year - int(year) if str(year).isdigit() else None
             discord_send(
                 channel_id,
                 f"🔎 `{canonical_reg}` の機体情報を確認しました。\n"
                 f"icao24: `{icao24}`\n"
-                f"機種: {type_name}\n"
+                f"機種: {type_name or details.get('type') or '不明'}\n"
+                f"製造年: {year}{f'（機齢 約{age}年）' if age is not None else ''}\n"
+                f"運航会社/所有者: {details.get('operator') or '不明'}\n"
+                f"登録国: {details.get('country') or '不明'}\n"
+                f"監視情報: {status}\n"
                 f"現在位置はADS-Bで確認できませんでした。",
             )
             return

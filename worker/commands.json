@@ -113,5 +113,55 @@
         "required": true
       }
     ]
+  },
+  {
+    "name": "airport",
+    "description": "空港の発着予定を時刻順に表示します",
+    "type": 1,
+    "options": [
+      {
+        "name": "airport",
+        "description": "IATAまたはICAO空港コード（例: HND / RJTT）",
+        "type": 3,
+        "required": true
+      },
+      {
+        "name": "type",
+        "description": "到着・出発の絞り込み",
+        "type": 3,
+        "required": false,
+        "choices": [
+          {"name": "到着と出発", "value": "both"},
+          {"name": "到着のみ", "value": "arrival"},
+          {"name": "出発のみ", "value": "departure"}
+        ]
+      },
+      {
+        "name": "hours",
+        "description": "今から何時間分を表示するか（1〜12、既定3）",
+        "type": 4,
+        "required": false,
+        "min_value": 1,
+        "max_value": 12
+      },
+      {
+        "name": "show_all",
+        "description": "該当する全便を複数メッセージで表示する",
+        "type": 5,
+        "required": false
+      },
+      {
+        "name": "airline",
+        "description": "航空会社名またはコード（例: ANA / NH / JAL）",
+        "type": 3,
+        "required": false
+      },
+      {
+        "name": "aircraft",
+        "description": "機種名またはコード（例: B789 / 787 / A350）",
+        "type": 3,
+        "required": false
+      }
+    ]
   }
 ]

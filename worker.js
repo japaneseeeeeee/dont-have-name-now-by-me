@@ -161,6 +161,9 @@ async function processCommand(interaction, env) {
     message = { content: "⚠️ 処理中にエラーが起きました。少し待ってから、もう一度試してください。" };
   }
   await editOriginal(interaction, message);
+  for (const followup of message.followups || []) {
+    await sendFollowup(interaction, followup);
+  }
 }
 
 async function processWatchAddButton(interaction, env) {
@@ -187,7 +190,8 @@ async function processWatchAddButton(interaction, env) {
 }
 
 async function editOriginal(interaction, message) {
-  const payload = { allowed_mentions: { parse: [] }, ...message };
+  const { followups: _followups, ...visibleMessage } = message;
+  const payload = { allowed_mentions: { parse: [] }, ...visibleMessage };
   if (payload.content) payload.content = payload.content.slice(0, 2000);
   const url = `${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
   const r = await fetch(url, {
@@ -196,6 +200,17 @@ async function editOriginal(interaction, message) {
     body: JSON.stringify(payload),
   });
   if (!r.ok) console.error("editOriginal failed:", r.status, await r.text());
+}
+
+async function sendFollowup(interaction, message) {
+  const payload = { allowed_mentions: { parse: [] }, ...message };
+  if (payload.content) payload.content = payload.content.slice(0, 2000);
+  const r = await fetch(`${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": UA },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) console.error("sendFollowup failed:", r.status, await r.text());
 }
 
 function optionsOf(interaction) {
@@ -214,6 +229,7 @@ async function runCommand(interaction, env) {
     case "list": return cmdList(o, env);
     case "info": return cmdInfo(o, env);
     case "flight": return cmdFlight(o, env, interaction);
+    case "airport": return cmdAirport(o, env);
     case "priority": return cmdPriority(o, env);
     case "special": return cmdSpecial(o, env);
     case "special-list": return cmdSpecialList(env);
@@ -403,11 +419,25 @@ async function cmdInfo(o, env) {
   if (!icao24) return { content: `❓ \`${query}\` の機体情報は見つかりませんでした。` };
 
   const normalized = entry ? normalize(entry) : { label: query, type: UNKNOWN_TYPE };
-  const details = await lookupAircraftDetails(icao24);
+  const [details, liveAircraft] = await Promise.all([
+    lookupAircraftDetails(icao24),
+    adsbLookup("hex", icao24),
+  ]);
   const type = normalized.type !== UNKNOWN_TYPE ? normalized.type : details.type || UNKNOWN_TYPE;
-  const priority = String(entry?.priority || "NORMAL").toUpperCase();
+  const priority = effectivePriority(entry);
   const year = details.year || "不明";
   const age = aircraftAge(details.year);
+  const live = liveAircraft[0] || null;
+  const status = live ? (live.alt_baro === "ground" ? "🟢 地上で受信中" : "🟢 飛行中") : "⚪ 現在位置なし";
+  const specialUntil = priority === "SPECIAL" && Number(entry?.special_until || 0) > Date.now() / 1000
+    ? `（<t:${Math.floor(Number(entry.special_until))}:R>まで）`
+    : "";
+  const liveLines = live
+    ? `\nコールサイン: \`${String(live.flight || "不明").trim() || "不明"}\n` +
+      `現在状態: ${status}` +
+      (num(live.alt_baro) ? `\n高度: ${fmt0(live.alt_baro)} ft` : "") +
+      (num(live.gs) ? `\n速度: ${fmt0(live.gs * 1.852)} km/h` : "")
+    : `\n現在状態: ${status}`;
   return {
     content: `✈️ **機体情報**\n` +
       `登録記号: \`${normalized.label}\`\n` +
@@ -416,9 +446,11 @@ async function cmdInfo(o, env) {
       `製造年: ${year}${age ? `（機齢 約${age}年）` : ""}\n` +
       `運航会社: ${details.operator || "不明"}\n` +
       `登録国: ${details.country || "不明"}\n` +
-      `通知レベル: **${priority}**\n` +
+      `通知レベル: **${priority}**${specialUntil}\n` +
       `全国通知: **${entry?.nationwide_alert === true ? "ON" : "OFF"}**` +
-      (entry ? "\nwatchlist: 登録済み" : "\nwatchlist: 未登録"),
+      (entry ? "\nwatchlist: 👁️ 登録済み" : "\nwatchlist: 未登録") +
+      liveLines +
+      `\n地図: https://globe.adsbexchange.com/?icao=${icao24}`,
   };
 }
 
@@ -453,6 +485,65 @@ async function cmdFlight(o, env, interaction) {
     interaction,
     { failure: notFoundText(query) },
   );
+}
+
+async function cmdAirport(o, env) {
+  const code = String(o.airport || "").trim().toUpperCase();
+  const direction = String(o.type || "both").toLowerCase();
+  const hours = Math.max(1, Math.min(Number(o.hours) || 3, 12));
+  const airline = String(o.airline || "").trim();
+  const aircraft = String(o.aircraft || "").trim();
+  const showAll = o.show_all === true;
+  if (!/^[A-Z]{3,4}$/.test(code)) {
+    return { content: "⚠️ 空港は3文字のIATA（例: HND）または4文字のICAO（例: RJTT）で指定してください。" };
+  }
+  if (!env.AERODATABOX_RAPIDAPI_KEY) {
+    return {
+      content: "⚠️ 発着予定データAPIが未設定です。`AERODATABOX_RAPIDAPI_KEY` をWorkerのSecretに設定すると `/airport` を利用できます。\n現在のADS-Bだけでは、離陸前を含む正確な発着予定は取得できません。",
+    };
+  }
+
+  const codeType = code.length === 3 ? "iata" : "icao";
+  const query = new URLSearchParams({
+    offsetMinutes: "0",
+    durationMinutes: String(hours * 60),
+    direction: direction === "arrival" ? "Arrival" : direction === "departure" ? "Departure" : "Both",
+    withLeg: "true",
+    withCancelled: "true",
+    withCodeshared: "false",
+    withCargo: "true",
+    withPrivate: "false",
+    withLocation: "false",
+  });
+  let response;
+  try {
+    response = await fetch(`https://aerodatabox.p.rapidapi.com/flights/airports/${codeType}/${code}?${query}`, {
+      headers: {
+        "x-rapidapi-key": env.AERODATABOX_RAPIDAPI_KEY,
+        "x-rapidapi-host": "aerodatabox.p.rapidapi.com",
+        "user-agent": UA,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (err) {
+    console.error("airport schedule failed:", err?.name, err?.message);
+    return { content: "⚠️ 発着予定サービスへ接続できませんでした。少し待ってから再試行してください。" };
+  }
+  if (response.status === 204 || response.status === 404) {
+    return { content: `❓ 空港 \`${code}\` の発着予定は見つかりませんでした。コードを確認してください。` };
+  }
+  if (!response.ok) {
+    console.error("airport schedule HTTP error:", response.status, await response.text());
+    const hint = [401, 403, 429].includes(response.status) ? "APIキー・契約枠・利用上限を確認してください。" : "少し待ってから再試行してください。";
+    return { content: `⚠️ 発着予定を取得できませんでした（${response.status}）。${hint}` };
+  }
+  const schedule = await response.json();
+  const { data: watchlist } = await readWatchlist(env);
+  return buildAirportMessage(code, hours, direction, schedule, watchlist, {
+    airline,
+    aircraft,
+    showAll,
+  });
 }
 
 
@@ -564,9 +655,17 @@ async function updateWatchlist(env, mutate, message) {
 
 function normalize(value) {
   if (value && typeof value === "object") {
-    return { label: value.label || "?", type: value.type || UNKNOWN_TYPE };
+    return { ...value, label: value.label || "?", type: value.type || UNKNOWN_TYPE };
   }
   return { label: String(value), type: UNKNOWN_TYPE };
+}
+
+function effectivePriority(value, now = Date.now() / 1000) {
+  if (!value || typeof value !== "object") return "NORMAL";
+  const priority = String(value.priority || "NORMAL").toUpperCase();
+  if (priority !== "SPECIAL" || !value.special_until) return priority;
+  if (Number(value.special_until) > now) return "SPECIAL";
+  return String(value.priority_after_special || "NORMAL").toUpperCase();
 }
 
 // ============ 機体情報の検索 ============
@@ -756,5 +855,118 @@ function buildFlightEmbed(ac, route) {
     color: onGround ? COLOR_GROUND : COLOR_AIRBORNE,
     fields,
     footer: { text: footer },
+  };
+}
+
+function watchlistBadge(watchlist, movement) {
+  const aircraft = movement?.aircraft || {};
+  const icao24 = String(aircraft.modeS || aircraft.icao24 || "").toLowerCase();
+  const registration = String(aircraft.reg || aircraft.registration || "").replace(/[\s-]/g, "").toUpperCase();
+  let entry = icao24 ? watchlist[icao24] : null;
+  if (!entry && registration) {
+    entry = Object.values(watchlist).find((value) =>
+      normalize(value).label.replace(/[\s-]/g, "").toUpperCase() === registration,
+    );
+  }
+  if (!entry) return "";
+  const priority = effectivePriority(entry);
+  return priority === "SPECIAL" ? " 🚨SPECIAL" : priority === "WATCH" ? " 👁️WATCH" : " 👁️監視中";
+}
+
+function movementTime(movement) {
+  return movement?.revisedTime?.local
+    || movement?.predictedTime?.local
+    || movement?.scheduledTime?.local
+    || movement?.runwayTime?.local
+    || "";
+}
+
+function airportAircraft(item, movement) {
+  return movement?.aircraft || item.aircraft || {};
+}
+
+function airportAirlineText(item) {
+  const airline = item.airline || {};
+  return [airline.name, airline.iata, airline.icao, item.number, item.callSign]
+    .filter(Boolean)
+    .join(" ")
+    .toUpperCase();
+}
+
+function airportAircraftText(item, movement) {
+  const aircraft = airportAircraft(item, movement);
+  return [aircraft.model, aircraft.reg, aircraft.registration, aircraft.modeS, aircraft.icao24]
+    .filter(Boolean)
+    .join(" ")
+    .toUpperCase();
+}
+
+function airportFlightLine(item, kind, watchlist) {
+  const movement = kind === "arrival" ? item.arrival : item.departure;
+  const opposite = kind === "arrival" ? item.departure?.airport : item.arrival?.airport;
+  const time = movementTime(movement);
+  const hhmm = time.match(/T(\d{2}:\d{2})/)?.[1] || "--:--";
+  const flight = item.number || item.callSign || "便名不明";
+  const airport = opposite?.iata || opposite?.icao || "---";
+  const aircraft = airportAircraft(item, movement);
+  const type = aircraft.model || aircraft.modeS || "";
+  const status = String(item.status || "").toLowerCase();
+  const icon = status.includes("cancel") ? "🔴" : status.includes("arriv") || status.includes("land") ? "🔵" : status.includes("depart") || status.includes("airborne") ? "🟢" : "🟡";
+  const gate = movement?.gate ? ` G${movement.gate}` : "";
+  const badgeMovement = { ...movement, aircraft: Object.keys(aircraft).length ? aircraft : movement?.aircraft };
+  return `${icon} \`${hhmm}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;
+}
+
+function splitAirportMessages(header, sections, footer) {
+  const messages = [];
+  let current = "";
+  const lines = [header, "", ...sections.flatMap((section, index) => [section, ...(index < sections.length - 1 ? [""] : [])]), "", footer];
+  for (const line of lines.flatMap((value) => String(value).split("\n"))) {
+    const addition = `${current ? "\n" : ""}${line}`;
+    if ((current + addition).length > 1900 && current) {
+      messages.push(current);
+      current = line;
+    } else {
+      current += addition;
+    }
+  }
+  if (current) messages.push(current);
+  return messages;
+}
+
+function buildAirportMessage(code, hours, direction, schedule, watchlist, filters = {}) {
+  const groups = [];
+  if (direction !== "departure") groups.push(["到着", "arrival", schedule.arrivals || []]);
+  if (direction !== "arrival") groups.push(["出発", "departure", schedule.departures || []]);
+  const sections = [];
+  let matchedCount = 0;
+  const airlineFilter = String(filters.airline || "").toUpperCase();
+  const aircraftFilter = String(filters.aircraft || "").toUpperCase();
+  for (const [label, kind, flights] of groups) {
+    const filtered = flights.filter((item) => {
+      const movement = kind === "arrival" ? item.arrival : item.departure;
+      return (!airlineFilter || airportAirlineText(item).includes(airlineFilter))
+        && (!aircraftFilter || airportAircraftText(item, movement).includes(aircraftFilter));
+    });
+    const sorted = [...filtered].sort((a, b) => movementTime(kind === "arrival" ? a.arrival : a.departure).localeCompare(movementTime(kind === "arrival" ? b.arrival : b.departure)));
+    matchedCount += sorted.length;
+    const visible = filters.showAll ? sorted : sorted.slice(0, 12);
+    const lines = visible.map((item) => airportFlightLine(item, kind, watchlist));
+    const omitted = !filters.showAll && sorted.length > visible.length ? `\n…ほか ${sorted.length - visible.length}便（show_all:true で全便表示）` : "";
+    sections.push(`**${kind === "arrival" ? "🛬" : "🛫"} ${label}（${sorted.length}便）**\n${lines.length ? lines.join("\n") : "該当便なし"}${omitted}`);
+  }
+  const airport = schedule.airport || {};
+  const title = airport.name ? `${airport.name}（${airport.iata || code} / ${airport.icao || code}）` : code;
+  const legend = "🟢運航中 · 🟡予定 · 🔵到着済み · 🔴欠航";
+  const filterLabels = [
+    filters.airline ? `航空会社: ${filters.airline}` : "",
+    filters.aircraft ? `機種: ${filters.aircraft}` : "",
+  ].filter(Boolean);
+  const filterLine = filterLabels.length ? `\n絞り込み: ${filterLabels.join(" / ")}` : "";
+  const header = `🏢 **${title} 発着予定**（今から${hours}時間・${matchedCount}便）${filterLine}\n${legend}`;
+  const messages = splitAirportMessages(header, sections, "Data: AeroDataBox");
+  return {
+    content: messages[0] || `${header}\n\n該当便なし`,
+    followups: messages.slice(1).map((content) => ({ content })),
   };
 }
