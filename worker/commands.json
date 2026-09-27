@@ -116,7 +116,7 @@
   },
   {
     "name": "airport",
-    "description": "空港の発着予定を時刻順に表示します",
+    "description": "空港の発着予定を自分だけに時刻順で表示します",
     "type": 1,
     "options": [
       {

@@ -85,7 +85,10 @@ export default {
       }
       // 3秒以内に返す必要があるので、まず「考え中…」を返し、結果はあとから書き換える
       ctx.waitUntil(processCommand(interaction, env));
-      return json({ type: 5 });
+      // /airport はチャンネルを埋めないよう、実行者本人だけに見える応答にする。
+      return json(interaction.data?.name === "airport"
+        ? { type: 5, data: { flags: 64 } }
+        : { type: 5 });
     }
 
     // 3: 検索結果の「watchlistへ登録」ボタン
@@ -203,7 +206,8 @@ async function editOriginal(interaction, message) {
 }
 
 async function sendFollowup(interaction, message) {
-  const payload = { allowed_mentions: { parse: [] }, ...message };
+  const privateFlags = interaction.data?.name === "airport" ? { flags: 64 } : {};
+  const payload = { allowed_mentions: { parse: [] }, ...privateFlags, ...message };
   if (payload.content) payload.content = payload.content.slice(0, 2000);
   const r = await fetch(`${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}`, {
     method: "POST",
