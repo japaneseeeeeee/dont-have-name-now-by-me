@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 
+from equipment_alerts import normalize_equipment
 from livery import lookup_livery
 
 REPO = os.environ["GITHUB_REPOSITORY"]
@@ -123,14 +124,14 @@ def lookup_tar1090(registration):
 def search_tar1090(query, limit=5):
     """登録記号の一部・ICAO24・機種コード・機種名から候補を探す。"""
     target = normalize_reg(query)
+    equipment_target = normalize_equipment(query)
     if len(target) < 3:
         return []
 
     print("Downloading tar1090 aircraft database for candidate search...")
     raw = request(TAR1090_URL)
     text = gzip.decompress(raw).decode("utf-8", errors="replace")
-    prefix_matches = []
-    other_matches = []
+    matches = []
     for line in text.splitlines():
         parts = line.split(";", 5)
         if len(parts) < 5:
@@ -140,8 +141,12 @@ def search_tar1090(query, limit=5):
         typecode = parts[2].strip()
         description = parts[4].strip()
         normalized_reg = normalize_reg(registration)
+        normalized_icao24 = normalize_reg(icao24)
+        normalized_typecode = normalize_equipment(typecode)
         searchable = normalize_reg(f"{icao24} {typecode} {description}")
-        if target not in normalized_reg and target not in searchable:
+        if (target not in normalized_reg
+                and target not in searchable
+                and equipment_target != normalized_typecode):
             continue
         item = {
             "icao24": icao24,
@@ -149,13 +154,26 @@ def search_tar1090(query, limit=5):
             "typecode": typecode,
             "description": description,
         }
-        bucket = prefix_matches if normalized_reg.startswith(target) else other_matches
-        bucket.append(item)
-        if len(prefix_matches) >= limit:
-            break
-        if len(prefix_matches) + len(other_matches) >= limit * 4:
-            break
-    return (prefix_matches + other_matches)[:limit]
+        # 登録記号・ICAO24の一致を最優先にする。機種コード検索では、
+        # 日本の利用者が探している可能性が高いJA登録機を先に表示する。
+        item["_search_rank"] = (
+            0 if normalized_reg == target else
+            1 if normalized_icao24 == target else
+            2 if normalized_reg.startswith(target) else
+            3 if equipment_target == normalized_typecode and normalized_reg.startswith("JA") else
+            4 if equipment_target == normalized_typecode else
+            5
+        )
+        matches.append(item)
+
+    matches.sort(key=lambda item: (
+        item["_search_rank"],
+        normalize_reg(item["registration"]),
+        item["icao24"],
+    ))
+    for item in matches:
+        item.pop("_search_rank", None)
+    return matches[:limit]
 
 
 def search_result_components(results):
