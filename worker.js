@@ -77,7 +77,7 @@ export default {
       if (allowed && interaction.channel_id !== allowed) {
         return json({ type: 4, data: { content: "このチャンネルでは使えません。", flags: 64 } });
       }
-      if (["add", "remove", "priority", "special", "special-list", "nationwide"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
+      if (["add", "remove", "priority", "special", "special-list", "nationwide", "menu"].includes(interaction.data?.name) && !isAdministrator(interaction)) {
         return json({
           type: 4,
           data: { content: "⛔ このコマンドはサーバー管理者だけが使用できます。", flags: 64 },
@@ -91,6 +91,11 @@ export default {
         : { type: 5 });
     }
 
+    // 3: メッセージ内のボタン
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("menu|")) {
+      return handleMenuButton(interaction, env, ctx);
+    }
+
     // 3: 検索結果の「watchlistへ登録」ボタン
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("watchadd|")) {
       if (!isAdministrator(interaction)) {
@@ -101,6 +106,14 @@ export default {
       }
       ctx.waitUntil(processWatchAddButton(interaction, env));
       return json({ type: 6 });
+    }
+
+    // 5: Botメニューから開いた入力画面
+    if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("menu_modal|")) {
+      const command = String(interaction.data.custom_id).split("|")[1] || "";
+      const synthetic = menuModalToCommand(interaction, command);
+      ctx.waitUntil(processCommand(synthetic, env));
+      return json({ type: 5, data: { flags: 64 } });
     }
 
     return new Response("unsupported interaction", { status: 400 });
@@ -234,12 +247,109 @@ async function runCommand(interaction, env) {
     case "info": return cmdInfo(o, env);
     case "flight": return cmdFlight(o, env, interaction);
     case "airport": return cmdAirport(o, env);
+    case "menu": return cmdMenu();
     case "priority": return cmdPriority(o, env);
     case "special": return cmdSpecial(o, env);
     case "special-list": return cmdSpecialList(env);
     case "nationwide": return cmdNationwide(o, env);
     default: return { content: "未対応のコマンドです。" };
   }
+}
+
+function cmdMenu() {
+  return {
+    content: "✈️ **航空機通知Botメニュー**\n調べたい項目をボタンから選んでください。入力内容と結果は、基本的に実行した本人だけに表示されます。",
+    components: [
+      {
+        type: 1,
+        components: [
+          { type: 2, style: 1, custom_id: "menu|aircraft-search", emoji: { name: "🔍" }, label: "機体を検索" },
+          { type: 2, style: 2, custom_id: "menu|info", emoji: { name: "🛩️" }, label: "機体情報" },
+          { type: 2, style: 1, custom_id: "menu|flight", emoji: { name: "🛫" }, label: "運航便を検索" },
+          { type: 2, style: 2, custom_id: "menu|airport", emoji: { name: "🏢" }, label: "空港の発着予定" },
+        ],
+      },
+      {
+        type: 1,
+        components: [
+          { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "登録機一覧" },
+          { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "❓" }, label: "使い方" },
+        ],
+      },
+    ],
+  };
+}
+
+function handleMenuButton(interaction, env, ctx) {
+  const action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  if (action === "help") {
+    return json({ type: 4, data: {
+      flags: 64,
+      content: "✈️ **主な使い方**\n`機体を検索`：登録記号・便名・機種から検索\n`機体情報`：登録記号またはICAO24の詳細\n`運航便を検索`：現在ADS-Bで確認できる便を検索\n`空港の発着予定`：空港コードから到着・出発便を表示\n`登録機一覧`：watchlistを表示\n\n従来のスラッシュコマンドも引き続き利用できます。",
+    } });
+  }
+  if (action === "list") {
+    const synthetic = { ...interaction, data: { name: "list", options: [] } };
+    ctx.waitUntil(processCommand(synthetic, env));
+    return json({ type: 5, data: { flags: 64 } });
+  }
+  const modal = menuModal(action);
+  return modal
+    ? json({ type: 9, data: modal })
+    : json({ type: 4, data: { flags: 64, content: "⚠️ このボタンは現在利用できません。" } });
+}
+
+function textInput(customId, label, placeholder, required = true, maxLength = 100) {
+  return { type: 1, components: [{
+    type: 4,
+    custom_id: customId,
+    label,
+    style: 1,
+    placeholder,
+    required,
+    max_length: maxLength,
+  }] };
+}
+
+function menuModal(action) {
+  const definitions = {
+    "aircraft-search": {
+      title: "機体を検索",
+      rows: [textInput("query", "検索する機体", "例: JA78 / 8691AA / JL12 / B77W", true, 50)],
+    },
+    info: {
+      title: "機体情報を表示",
+      rows: [textInput("aircraft", "登録記号またはICAO24", "例: JA784A / 867F7C", true, 20)],
+    },
+    flight: {
+      title: "運航中の便を検索",
+      rows: [textInput("query", "便名・登録記号・ICAO24", "例: JL12 / JAL12 / JA784A", true, 50)],
+    },
+    airport: {
+      title: "空港の発着予定",
+      rows: [
+        textInput("airport", "空港コード", "例: HND / RJTT", true, 4),
+        textInput("type", "表示する便（省略可）", "both / arrival / departure", false, 9),
+        textInput("hours", "時間範囲（省略可・1〜12時間）", "例: 3", false, 2),
+        textInput("airline", "航空会社（省略可）", "例: ANA / NH / JAL", false, 40),
+        textInput("aircraft", "機種（省略可）", "例: B789 / 787 / A350", false, 40),
+      ],
+    },
+  };
+  const definition = definitions[action];
+  if (!definition) return null;
+  return { custom_id: `menu_modal|${action}`, title: definition.title, components: definition.rows };
+}
+
+function menuModalToCommand(interaction, command) {
+  const values = {};
+  for (const row of interaction.data?.components || []) {
+    for (const field of row.components || []) values[field.custom_id] = String(field.value || "").trim();
+  }
+  const options = Object.entries(values)
+    .filter(([, value]) => value !== "")
+    .map(([name, value]) => ({ name, value: name === "hours" ? Number(value) : value }));
+  return { ...interaction, data: { name: command, options } };
 }
 
 async function cmdAircraftSearch(o, env, interaction) {

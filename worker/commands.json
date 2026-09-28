@@ -1,5 +1,10 @@
 [
   {
+    "name": "menu",
+    "description": "常設のBot操作メニューを投稿します（管理者専用）",
+    "type": 1
+  },
+  {
     "name": "add",
     "description": "機体を監視対象に追加します",
     "type": 1,
