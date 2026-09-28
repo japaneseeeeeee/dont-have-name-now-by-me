@@ -144,6 +144,7 @@ USAGE = {
     "my-watch-list": "!my-watch-list",
     "my-watch-regions": "!my-watch-regions <地方名... または all>",
     "my-watch-quiet": "!my-watch-quiet <開始時刻> <終了時刻> または off",
+    "my-watch-filter": "!my-watch-filter <status|airline|type|show|reset> [条件...]",
     "equipment-add": "!equipment-add <便名> <機材コード>",
     "equipment-remove": "!equipment-remove <登録ID>",
     "equipment-list": "!equipment-list",
@@ -1343,6 +1344,11 @@ async def my_special_help(ctx):
         "`!my-watch-regions all` — 全国の地方を対象\n"
         "`!my-watch-quiet 23:00 07:00` — 通常通知を休止（SPECIALは通知）\n"
         "`!my-watch-quiet off` — 時間制限を解除\n\n"
+        "`!my-watch-filter status airborne` — 飛行中だけ通知\n"
+        "`!my-watch-filter airline ANA JAL` — 航空会社を限定\n"
+        "`!my-watch-filter type B77W A359` — 機種を限定\n"
+        "`!my-watch-filter show` — 現在の条件を表示\n"
+        "`!my-watch-filter reset` — 絞り込みを解除\n\n"
         "登録内容はほかのメンバーには表示されません。"
     )
 
@@ -1441,8 +1447,16 @@ async def my_special_list(ctx):
         f"`{entry.get('label', icao24)}` ({icao24} / {entry.get('type') or '不明'}) · **{entry.get('priority') or 'SPECIAL'}**"
         for icao24, entry in sorted(registered.items(), key=lambda item: item[1].get("label", ""))
     ]
+    filters = config.get("filters") or {}
+    status_labels = {"airborne": "飛行中のみ", "ground": "地上のみ", "all": "すべて"}
+    conditions = [f"状態: {status_labels.get(filters.get('status', 'all'), 'すべて')}"]
+    if filters.get("airlines"):
+        conditions.append("航空会社: " + ", ".join(filters["airlines"]))
+    if filters.get("types"):
+        conditions.append("機種: " + ", ".join(filters["types"]))
     await ctx.send(
-        (f"👤 **自分の個人watchlist**（DM通知: {state} / {len(lines)}機）\n" + "\n".join(lines))[:1990]
+        (f"👤 **自分の個人watchlist**（DM通知: {state} / {len(lines)}機）\n"
+         + "通知条件: " + "｜".join(conditions) + "\n" + "\n".join(lines))[:1990]
     )
 
 
@@ -1496,6 +1510,54 @@ async def my_watch_quiet(ctx, start: str, end: str = None):
             return
         config["quiet_hours"] = {"start": start, "end": end}
         message = f"✅ **{start}〜{end}** は通常通知を休止します。SPECIALは通知します。"
+    settings[str(ctx.author.id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(message)
+
+
+@bot.command(name="my-watch-filter")
+async def my_watch_filter(ctx, field: str, *values: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    field = field.lower()
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(ctx.author.id)) or {"enabled": True, "aircraft": {}}
+    filters = config.get("filters") or {}
+
+    if field == "show":
+        status = {"airborne": "飛行中のみ", "ground": "地上のみ", "all": "すべて"}.get(filters.get("status", "all"), "すべて")
+        airlines = ", ".join(filters.get("airlines") or []) or "すべて"
+        types = ", ".join(filters.get("types") or []) or "すべて"
+        await ctx.send(f"🔔 **現在の個人通知条件**\n状態: {status}\n航空会社: {airlines}\n機種: {types}")
+        return
+    if field == "reset":
+        config.pop("filters", None)
+        message = "✅ 飛行状態・航空会社・機種の絞り込みをすべて解除しました。"
+    elif field == "status":
+        aliases = {"all": "all", "すべて": "all", "airborne": "airborne", "flying": "airborne", "飛行中": "airborne", "ground": "ground", "地上": "ground"}
+        value = aliases.get(values[0].lower()) if values else None
+        if value is None:
+            await ctx.send("⚠️ `!my-watch-filter status all` / `airborne` / `ground` のいずれかを指定してください。")
+            return
+        filters["status"] = value
+        config["filters"] = filters
+        message = f"✅ 飛行状態の条件を **{values[0]}** に設定しました。"
+    elif field in {"airline", "type"}:
+        cleaned = list(dict.fromkeys(value.upper() for value in values if value.strip()))
+        if len(cleaned) == 1 and cleaned[0] in {"ALL", "OFF", "すべて"}:
+            cleaned = []
+        if not cleaned and not values:
+            await ctx.send(f"⚠️ 例: `!my-watch-filter {field} ANA JAL`。解除は `all` を指定してください。")
+            return
+        key = "airlines" if field == "airline" else "types"
+        filters[key] = cleaned
+        config["filters"] = filters
+        label = ", ".join(cleaned) or "すべて"
+        message = f"✅ {'航空会社' if field == 'airline' else '機種'}の条件を **{label}** に設定しました。"
+    else:
+        await ctx.send("⚠️ 項目は `status` / `airline` / `type` / `show` / `reset` から選んでください。")
+        return
+
     settings[str(ctx.author.id)] = config
     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
     await ctx.send(message)

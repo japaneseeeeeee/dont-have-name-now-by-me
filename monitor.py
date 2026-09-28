@@ -3,6 +3,7 @@ import fcntl
 import logging
 import math
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -106,6 +107,13 @@ STATE_PATH = os.path.join(BASE_DIR, "notified.json")
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_STATE_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
+
+PERSONAL_AIRLINE_ALIASES = {
+    "JL": "JAL", "NH": "ANA", "MM": "APJ", "GK": "JJP", "BC": "SKY",
+    "7G": "SFJ", "NU": "JTA", "HD": "ADO", "IJ": "SJO", "6J": "SNJ",
+    "FW": "IBX", "OC": "ORC", "3X": "JAC", "DL": "DAL", "UA": "UAL",
+    "AA": "AAL", "KE": "KAL", "OZ": "AAR", "CX": "CPA", "SQ": "SIA",
+}
 
 # リトライ設定
 MAX_RETRIES = 3
@@ -457,6 +465,34 @@ def _in_quiet_hours(config, now):
     return start <= minute < end if start < end else minute >= start or minute < end
 
 
+def _compact_filter(value):
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _personal_filters_match(config, entry, aircraft):
+    filters = config.get("filters") or {}
+    status = str(filters.get("status") or "all").lower()
+    on_ground = bool(aircraft[8])
+    if status == "airborne" and on_ground:
+        return False
+    if status == "ground" and not on_ground:
+        return False
+
+    airlines = [_compact_filter(value) for value in filters.get("airlines") or []]
+    if airlines:
+        callsign = _compact_filter(aircraft[1])
+        accepted = [PERSONAL_AIRLINE_ALIASES.get(value, value) for value in airlines]
+        if not any(callsign.startswith(value) for value in accepted):
+            return False
+
+    types = [_compact_filter(value) for value in filters.get("types") or []]
+    if types:
+        aircraft_type = _compact_filter(entry.get("type"))
+        if not any(value in aircraft_type for value in types):
+            return False
+    return True
+
+
 def find_personal_special_events(states, settings, notified, now):
     """個人登録機を条件に従って検出し、ユーザー別DMイベントを作る。"""
     notified = dict(notified)
@@ -485,6 +521,8 @@ def find_personal_special_events(states, settings, notified, now):
             entry = entry if isinstance(entry, dict) else {}
             priority = str(entry.get("priority") or "SPECIAL").upper()
             if _in_quiet_hours(config, now) and priority != "SPECIAL":
+                continue
+            if not _personal_filters_match(config, entry, aircraft):
                 continue
             state_key = f"{user_id}:{icao24}"
             active_keys.add(state_key)

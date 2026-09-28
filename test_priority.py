@@ -237,6 +237,29 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual(len(special_events), 1)
         self.assertEqual(special_events[0]["priority"], "SPECIAL")
 
+    def test_personal_filters_match_status_airline_and_type(self):
+        airborne = ["abc123", "ANA101", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        ground = ["abc123", "ANA101", None, None, None, 139.0, 35.5, 0, True, 0, 0, 0]
+        config = {
+            "enabled": True,
+            "filters": {"status": "airborne", "airlines": ["NH"], "types": ["77W"]},
+            "aircraft": {"abc123": {"label": "JA0001", "type": "BOEING 777-300ER (B77W)", "priority": "NORMAL"}},
+        }
+        events, _ = monitor.find_personal_special_events([airborne], {"123": config}, {}, 100)
+        self.assertEqual(len(events), 1)
+        events, _ = monitor.find_personal_special_events([ground], {"123": config}, {}, 100)
+        self.assertEqual(events, [])
+
+    def test_personal_airline_filter_rejects_other_airline(self):
+        aircraft = ["abc123", "JAL101", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        config = {
+            "enabled": True,
+            "filters": {"airlines": ["NH"]},
+            "aircraft": {"abc123": {"label": "JA0001", "type": "B77W", "priority": "NORMAL"}},
+        }
+        events, _ = monitor.find_personal_special_events([aircraft], {"123": config}, {}, 100)
+        self.assertEqual(events, [])
+
 
 if __name__ == "__main__":
     unittest.main()
