@@ -260,6 +260,23 @@ class PriorityTests(unittest.TestCase):
         events, _ = monitor.find_personal_special_events([aircraft], {"123": config}, {}, 100)
         self.assertEqual(events, [])
 
+    def test_airport_watch_detects_server_watchlist_aircraft_near_airport(self):
+        near_haneda = ["abc123", "ANA101", None, None, None, 139.80, 35.56, 1000, False, 100, 90, 0]
+        settings = {"123": {"enabled": True, "aircraft": {}, "airports": {"HND": {"radius_km": 50}}}}
+        watchlist = {"abc123": {"label": "JA0001", "type": "B77W", "priority": "WATCH"}}
+        events, notified = monitor.find_personal_special_events(
+            [near_haneda], settings, {}, 100, watchlist
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["airport"], "HND")
+        self.assertIn("airport:123:HND:abc123", notified)
+
+    def test_personal_mute_suppresses_notifications(self):
+        aircraft = ["abc123", "ANA101", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        settings = {"123": {"enabled": True, "muted_until": 200, "aircraft": {"abc123": {"label": "JA0001"}}}}
+        events, _ = monitor.find_personal_special_events([aircraft], settings, {}, 100)
+        self.assertEqual(events, [])
+
 
 if __name__ == "__main__":
     unittest.main()

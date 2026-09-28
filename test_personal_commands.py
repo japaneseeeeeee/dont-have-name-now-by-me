@@ -95,6 +95,23 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         await discord_bot.my_special_settings.callback(self.ctx, "on")
         self.assertTrue(self.store["123"]["enabled"])
 
+    async def test_airport_watch_add_list_and_remove(self):
+        await discord_bot.my_airport_add.callback(self.ctx, "HND", 75)
+        self.assertEqual(self.store["123"]["airports"]["HND"]["radius_km"], 75)
+        await discord_bot.my_airport_list.callback(self.ctx)
+        self.assertIn("HND", self.ctx.messages[-1])
+        await discord_bot.my_airport_remove.callback(self.ctx, "HND")
+        self.assertEqual(self.store["123"]["airports"], {})
+
+    def test_data_quality_finds_invalid_duplicate_and_unknown_entries(self):
+        anomalies = discord_bot.find_watchlist_anomalies({
+            "bad": {"label": "JA0001", "type": "不明"},
+            "abc123": {"label": "JA0001", "type": "B77W"},
+        })
+        self.assertTrue(any("不正なICAO24" in item for item in anomalies))
+        self.assertTrue(any("機種不明" in item for item in anomalies))
+        self.assertTrue(any("登録記号重複" in item for item in anomalies))
+
 
 if __name__ == "__main__":
     unittest.main()

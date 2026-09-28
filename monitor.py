@@ -114,6 +114,16 @@ PERSONAL_AIRLINE_ALIASES = {
     "FW": "IBX", "OC": "ORC", "3X": "JAC", "DL": "DAL", "UA": "UAL",
     "AA": "AAL", "KE": "KAL", "OZ": "AAR", "CX": "CPA", "SQ": "SIA",
 }
+AIRPORT_WATCH_POINTS = {
+    "HND": (35.5494, 139.7798, "羽田空港"),
+    "NRT": (35.7720, 140.3929, "成田空港"),
+    "CTS": (42.7752, 141.6923, "新千歳空港"),
+    "ITM": (34.7855, 135.4382, "伊丹空港"),
+    "KIX": (34.4347, 135.2440, "関西空港"),
+    "NGO": (34.8584, 136.8054, "中部空港"),
+    "FUK": (33.5859, 130.4507, "福岡空港"),
+    "OKA": (26.1958, 127.6459, "那覇空港"),
+}
 
 # リトライ設定
 MAX_RETRIES = 3
@@ -493,7 +503,16 @@ def _personal_filters_match(config, entry, aircraft):
     return True
 
 
-def find_personal_special_events(states, settings, notified, now):
+def _distance_km(lat1, lon1, lat2, lon2):
+    radius = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    value = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
+    return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+
+
+def find_personal_special_events(states, settings, notified, now, watchlist=None):
     """個人登録機を条件に従って検出し、ユーザー別DMイベントを作る。"""
     notified = dict(notified)
     aircraft_by_icao = {
@@ -503,8 +522,11 @@ def find_personal_special_events(states, settings, notified, now):
     }
     active_keys = set()
     events = []
+    watchlist = watchlist or {}
     for user_id, config in settings.items():
         if not isinstance(config, dict) or config.get("enabled", True) is False:
+            continue
+        if float(config.get("muted_until") or 0) > now:
             continue
         registered = config.get("aircraft") or {}
         for icao24, entry in registered.items():
@@ -552,6 +574,44 @@ def find_personal_special_events(states, settings, notified, now):
                 "vertical_rate": aircraft[11],
                 "detected_at": now,
             })
+
+        # 空港ウォッチは、サーバーwatchlist内の注目機が指定空港へ近づいた時に通知する。
+        for code, airport_config in (config.get("airports") or {}).items():
+            point = AIRPORT_WATCH_POINTS.get(str(code).upper())
+            if point is None:
+                continue
+            airport_lat, airport_lon, airport_name = point
+            radius_km = max(10, min(float((airport_config or {}).get("radius_km", 50)), 200))
+            for icao24, aircraft in aircraft_by_icao.items():
+                if icao24 in registered or icao24 not in watchlist:
+                    continue
+                if aircraft[5] is None or aircraft[6] is None:
+                    continue
+                distance = _distance_km(aircraft[6], aircraft[5], airport_lat, airport_lon)
+                if distance > radius_km:
+                    continue
+                entry = watchlist[icao24] if isinstance(watchlist[icao24], dict) else {"label": watchlist[icao24]}
+                if not _personal_filters_match(config, entry, aircraft):
+                    continue
+                priority = str(entry.get("priority") or "NORMAL").upper()
+                if _in_quiet_hours(config, now) and priority != "SPECIAL":
+                    continue
+                state_key = f"airport:{user_id}:{code}:{icao24}"
+                active_keys.add(state_key)
+                last = notified.get(state_key)
+                if last is not None and now - last < RENOTIFY_SECONDS:
+                    continue
+                notified[state_key] = now
+                events.append({
+                    "user_id": str(user_id), "icao24": icao24,
+                    "label": entry.get("label") or icao24, "type": entry.get("type") or "不明",
+                    "priority": priority, "region": f"{airport_name}から約{distance:.0f}km",
+                    "airport": str(code).upper(), "repeat": last is not None,
+                    "callsign": (aircraft[1] or "").strip(), "longitude": aircraft[5],
+                    "latitude": aircraft[6], "altitude": aircraft[7], "on_ground": bool(aircraft[8]),
+                    "velocity": aircraft[9], "track": aircraft[10], "vertical_rate": aircraft[11],
+                    "detected_at": now,
+                })
 
     notified = {
         key: timestamp for key, timestamp in notified.items()
@@ -880,7 +940,7 @@ def main():
     personal_settings = load_shared_json(PERSONAL_SPECIALS_PATH, {})
     personal_notified = load_shared_json(PERSONAL_SPECIAL_STATE_PATH, {})
     personal_events, personal_notified = find_personal_special_events(
-        states, personal_settings, personal_notified, time.time()
+        states, personal_settings, personal_notified, time.time(), watchlist
     )
     save_shared_json(PERSONAL_SPECIAL_STATE_PATH, personal_notified)
     append_personal_special_events(personal_events)

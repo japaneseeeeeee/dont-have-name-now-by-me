@@ -78,6 +78,8 @@ FEEDBACK_MARKER = "📮"
 PHOTO_CHANNEL_ID = int(os.environ.get("PHOTO_CHANNEL_ID", "1552676837581389956"))
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
 PERSONAL_SPECIAL_LIMIT = 20
+PERSONAL_AIRPORT_LIMIT = 10
+PERSONAL_AIRPORTS = ("HND", "NRT", "CTS", "ITM", "KIX", "NGO", "FUK", "OKA")
 EQUIPMENT_ALERT_LIMIT = 20
 EQUIPMENT_ALERT_CHANNEL_ID = int(
     os.environ.get("EQUIPMENT_ALERT_CHANNEL_ID", "1553395098249732157")
@@ -145,6 +147,10 @@ USAGE = {
     "my-watch-regions": "!my-watch-regions <地方名... または all>",
     "my-watch-quiet": "!my-watch-quiet <開始時刻> <終了時刻> または off",
     "my-watch-filter": "!my-watch-filter <status|airline|type|show|reset> [条件...]",
+    "my-watch-panel": "!my-watch-panel",
+    "my-airport-add": "!my-airport-add <空港コード> [半径km]",
+    "my-airport-remove": "!my-airport-remove <空港コード>",
+    "my-airport-list": "!my-airport-list",
     "equipment-add": "!equipment-add <便名> <機材コード>",
     "equipment-remove": "!equipment-remove <登録ID>",
     "equipment-list": "!equipment-list",
@@ -830,6 +836,135 @@ async def heartbeat():
             logger.warning(f"heartbeat write failed: {e}")
 
 
+class PersonalAlertView(discord.ui.View):
+    """個人DM通知だけに付ける操作ボタン。"""
+
+    def __init__(self, user_id, icao24, airport=None):
+        super().__init__(timeout=7 * 24 * 3600)
+        self.user_id = int(user_id)
+        self.icao24 = str(icao24).lower()
+        self.airport = str(airport or "").upper()
+        if self.airport:
+            self.stop_aircraft.label = f"{self.airport}の空港通知を停止"
+        self.add_item(discord.ui.Button(
+            label="地図を見る", emoji="🗺️",
+            url=f"https://globe.adsbexchange.com/?icao={self.icao24}",
+        ))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message("この通知は登録者本人だけが操作できます。", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="この機体の通知を停止", emoji="🔕", style=discord.ButtonStyle.danger)
+    async def stop_aircraft(self, interaction, button):
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        config = settings.get(str(self.user_id)) or {}
+        registered = config.get("aircraft") or {}
+        if self.airport:
+            airports = config.get("airports") or {}
+            removed = airports.pop(self.airport, None)
+            config["airports"] = airports
+        else:
+            removed = registered.pop(self.icao24, None)
+        config["aircraft"] = registered
+        settings[str(self.user_id)] = config
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(
+            (f"🔕 {self.airport}の空港通知を停止しました。" if self.airport
+             else "🔕 この機体の個人通知を停止しました。")
+            if removed else "対象はすでに解除されています。",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="個人通知を24時間休止", emoji="🌙", style=discord.ButtonStyle.secondary)
+    async def mute_day(self, interaction, button):
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        config = settings.get(str(self.user_id)) or {"aircraft": {}}
+        config["muted_until"] = time.time() + 24 * 3600
+        settings[str(self.user_id)] = config
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+        await interaction.response.send_message("🌙 個人通知を24時間休止しました。", ephemeral=True)
+
+
+class AirportWatchModal(discord.ui.Modal, title="空港ウォッチを追加"):
+    airport = discord.ui.TextInput(label="空港コード", placeholder="HND / NRT / CTS", max_length=3)
+    radius = discord.ui.TextInput(label="通知半径（km）", placeholder="50", required=False, max_length=3)
+
+    def __init__(self, user_id):
+        super().__init__()
+        self.user_id = int(user_id)
+
+    async def on_submit(self, interaction):
+        code = str(self.airport).strip().upper()
+        if code not in PERSONAL_AIRPORTS:
+            await interaction.response.send_message("対応空港: " + " / ".join(PERSONAL_AIRPORTS), ephemeral=True)
+            return
+        try:
+            radius = max(10, min(int(str(self.radius) or "50"), 200))
+        except ValueError:
+            await interaction.response.send_message("半径は10〜200kmの数字で入力してください。", ephemeral=True)
+            return
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        config = settings.get(str(self.user_id)) or {"enabled": True, "aircraft": {}}
+        airports = config.get("airports") or {}
+        airports[code] = {"radius_km": radius}
+        config["airports"] = airports
+        settings[str(self.user_id)] = config
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+        await interaction.response.send_message(f"✅ {code}を半径{radius}kmで空港ウォッチへ追加しました。", ephemeral=True)
+
+
+class PersonalSettingsView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=15 * 60)
+        self.user_id = int(user_id)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message("本人だけが操作できます。", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="登録・条件を表示", emoji="📋", style=discord.ButtonStyle.primary)
+    async def show_settings(self, interaction, button):
+        config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(self.user_id)) or {}
+        aircraft = config.get("aircraft") or {}
+        filters = config.get("filters") or {}
+        airports = config.get("airports") or {}
+        lines = [f"DM通知: {'ON' if config.get('enabled', True) else 'OFF'}", f"登録機: {len(aircraft)}機"]
+        lines.append("空港: " + (", ".join(f"{code}({value.get('radius_km', 50)}km)" for code, value in airports.items()) or "未登録"))
+        lines.append("状態: " + filters.get("status", "all"))
+        lines.append("航空会社: " + (", ".join(filters.get("airlines") or []) or "すべて"))
+        lines.append("機種: " + (", ".join(filters.get("types") or []) or "すべて"))
+        await interaction.response.send_message("👤 **個人設定**\n" + "\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(label="通知ON/OFF", emoji="🔔", style=discord.ButtonStyle.secondary)
+    async def toggle(self, interaction, button):
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        config = settings.get(str(self.user_id)) or {"aircraft": {}}
+        config["enabled"] = not config.get("enabled", True)
+        settings[str(self.user_id)] = config
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+        await interaction.response.send_message(f"DM通知を **{'ON' if config['enabled'] else 'OFF'}** にしました。", ephemeral=True)
+
+    @discord.ui.button(label="空港を追加", emoji="🏢", style=discord.ButtonStyle.success)
+    async def add_airport(self, interaction, button):
+        await interaction.response.send_modal(AirportWatchModal(self.user_id))
+
+    @discord.ui.button(label="絞り込み解除", emoji="↩️", style=discord.ButtonStyle.secondary)
+    async def reset_filters(self, interaction, button):
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        config = settings.get(str(self.user_id)) or {"aircraft": {}}
+        config.pop("filters", None)
+        settings[str(self.user_id)] = config
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+        await interaction.response.send_message("飛行状態・航空会社・機種の絞り込みを解除しました。", ephemeral=True)
+
+
 @tasks.loop(seconds=10)
 async def personal_special_dispatch():
     """監視処理が検出した個人SPECIALを、登録者本人へDMする。"""
@@ -876,7 +1011,10 @@ async def personal_special_dispatch():
                     inline=True,
                 )
             embed.set_footer(text="タイトルをタップするとADS-B Exchangeを開きます")
-            await recipient.send(embed=embed)
+            await recipient.send(
+                embed=embed,
+                view=PersonalAlertView(user_id, event["icao24"], event.get("airport")),
+            )
         except discord.Forbidden:
             logger.warning("個人SPECIALのDMを送信できません: user=%s", event.get("user_id"))
         except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
@@ -1120,6 +1258,50 @@ async def handle_photo_post(message):
         logger.error("写真投稿の整理に失敗しました: %s", exc)
         await message.reply("⚠️ 写真の整理に失敗しました。少し待ってから再投稿してください。", mention_author=False)
 
+def find_watchlist_anomalies(watchlist):
+    anomalies = []
+    labels = {}
+    for icao24, value in watchlist.items():
+        entry = value if isinstance(value, dict) else {"label": value}
+        label = str(entry.get("label") or "").strip()
+        aircraft_type = str(entry.get("type") or "").strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", str(icao24)):
+            anomalies.append(f"不正なICAO24: `{icao24}`")
+        if not label or label == "?":
+            anomalies.append(f"登録記号なし: `{icao24}`")
+        if not aircraft_type or aircraft_type == "不明":
+            anomalies.append(f"機種不明: `{label or icao24}`")
+        normalized = _normalize_reg(label)
+        if normalized:
+            if normalized in labels and labels[normalized] != icao24:
+                anomalies.append(f"登録記号重複: `{label}` ({labels[normalized]} / {icao24})")
+            labels[normalized] = icao24
+    return anomalies
+
+
+_last_anomaly_fingerprint = None
+
+
+@tasks.loop(minutes=30)
+async def data_quality_check():
+    global _last_anomaly_fingerprint
+    if not bot.is_ready() or bot.is_closed():
+        return
+    anomalies = await asyncio.to_thread(find_watchlist_anomalies, load_locked_json(WATCHLIST_PATH, {}))
+    fingerprint = tuple(anomalies)
+    if not anomalies or fingerprint == _last_anomaly_fingerprint:
+        _last_anomaly_fingerprint = fingerprint
+        return
+    _last_anomaly_fingerprint = fingerprint
+    owner = await bot.fetch_user(FEEDBACK_OWNER_ID)
+    preview = "\n".join(f"• {item}" for item in anomalies[:20])
+    more = f"\n…ほか{len(anomalies) - 20}件" if len(anomalies) > 20 else ""
+    try:
+        await owner.send(f"⚠️ **航空機データ異常を検出**\n{preview}{more}")
+    except discord.HTTPException as exc:
+        logger.warning("データ異常の管理者DMに失敗しました: %s", exc)
+
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user}")
@@ -1129,6 +1311,8 @@ async def on_ready():
         personal_special_dispatch.start()
     if not equipment_alert_dispatch.is_running():
         equipment_alert_dispatch.start()
+    if not data_quality_check.is_running():
+        data_quality_check.start()
     await catch_up_missed_commands()
 
 
@@ -1349,6 +1533,10 @@ async def my_special_help(ctx):
         "`!my-watch-filter type B77W A359` — 機種を限定\n"
         "`!my-watch-filter show` — 現在の条件を表示\n"
         "`!my-watch-filter reset` — 絞り込みを解除\n\n"
+        "`!my-watch-panel` — ボタン式の個人設定画面\n"
+        "`!my-airport-add HND 50` — 空港ウォッチを追加\n"
+        "`!my-airport-remove HND` — 空港ウォッチを解除\n"
+        "`!my-airport-list` — 登録空港を表示\n\n"
         "登録内容はほかのメンバーには表示されません。"
     )
 
@@ -1561,6 +1749,68 @@ async def my_watch_filter(ctx, field: str, *values: str):
     settings[str(ctx.author.id)] = config
     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
     await ctx.send(message)
+
+
+@bot.command(name="my-watch-panel")
+async def my_watch_panel(ctx):
+    if not await require_personal_special_dm(ctx):
+        return
+    await ctx.send(
+        "👤 **個人通知 設定画面**\n登録内容の確認、通知切り替え、空港追加、絞り込み解除ができます。",
+        view=PersonalSettingsView(ctx.author.id),
+    )
+
+
+@bot.command(name="my-airport-add")
+async def my_airport_add(ctx, airport: str, radius_km: int = 50):
+    if not await require_personal_special_dm(ctx):
+        return
+    code = airport.strip().upper()
+    if code not in PERSONAL_AIRPORTS:
+        await ctx.send("⚠️ 対応空港: " + " / ".join(PERSONAL_AIRPORTS))
+        return
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(ctx.author.id)) or {"enabled": True, "aircraft": {}}
+    airports = config.get("airports") or {}
+    if code not in airports and len(airports) >= PERSONAL_AIRPORT_LIMIT:
+        await ctx.send(f"⚠️ 空港ウォッチは{PERSONAL_AIRPORT_LIMIT}空港まで登録できます。")
+        return
+    radius_km = max(10, min(radius_km, 200))
+    airports[code] = {"radius_km": radius_km}
+    config["airports"] = airports
+    settings[str(ctx.author.id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(f"✅ `{code}`を半径{radius_km}kmで空港ウォッチへ追加しました。")
+
+
+@bot.command(name="my-airport-remove")
+async def my_airport_remove(ctx, airport: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    code = airport.strip().upper()
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(ctx.author.id)) or {"aircraft": {}}
+    airports = config.get("airports") or {}
+    if airports.pop(code, None) is None:
+        await ctx.send(f"⚠️ `{code}`は登録されていません。")
+        return
+    config["airports"] = airports
+    settings[str(ctx.author.id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(f"🗑️ `{code}`を空港ウォッチから解除しました。")
+
+
+@bot.command(name="my-airport-list")
+async def my_airport_list(ctx):
+    if not await require_personal_special_dm(ctx):
+        return
+    config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(ctx.author.id)) or {}
+    airports = config.get("airports") or {}
+    if not airports:
+        await ctx.send("登録中の空港ウォッチはありません。")
+        return
+    lines = [f"`{code}`｜半径{value.get('radius_km', 50)}km" for code, value in sorted(airports.items())]
+    await ctx.send("🏢 **空港ウォッチ**\n" + "\n".join(lines))
 
 
 @bot.command(name="my-special-settings")
