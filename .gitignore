@@ -23,6 +23,7 @@ personal_special_notified.json.lock
 personal_special_events.json.lock
 equipment_alerts.json
 equipment_alerts.json.lock
+watchlist.json.lock
 
 actions-runner-new/
 worker/
