@@ -47,6 +47,7 @@ from discord.ext import commands, tasks
 from route_corrections import correct_route
 from livery import lookup_livery
 from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_equipment
+from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, prune_notified as prune_destination_notified, route_matches_destination, should_notify as should_notify_destination)
 
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
@@ -66,6 +67,7 @@ HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
 EQUIPMENT_ALERTS_PATH = os.path.join(BASE_DIR, "equipment_alerts.json")
+DESTINATION_ALERTS_PATH = os.path.join(BASE_DIR, "destination_alerts.json")
 HEARTBEAT_INTERVAL = 30                                        # 秒
 CATCHUP_MAX_AGE = timedelta(hours=12)                          # これより古い取りこぼしは処理しない
 CATCHUP_LIMIT = 50                                             # 1回の再接続で拾う最大件数
@@ -84,6 +86,7 @@ EQUIPMENT_ALERT_LIMIT = 20
 EQUIPMENT_ALERT_CHANNEL_ID = int(
     os.environ.get("EQUIPMENT_ALERT_CHANNEL_ID", "1553395098249732157")
 )
+DESTINATION_ALERT_CHANNEL_ID = int(os.environ.get("DESTINATION_ALERT_CHANNEL_ID", str(EQUIPMENT_ALERT_CHANNEL_ID)))
 
 # 現在位置の検索に使うADS-B API(どちらも ADSBExchange v2 互換・登録不要)。上から順に試す。
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
@@ -157,6 +160,9 @@ USAGE = {
     "equipment-add-server": "!equipment-add-server <便名> <機材コード>",
     "equipment-remove-server": "!equipment-remove-server <登録ID>",
     "equipment-list-server": "!equipment-list-server",
+    "destination-add": "!destination-add <登録記号またはicao24> <目的空港>",
+    "destination-remove": "!destination-remove <登録ID>",
+    "destination-list": "!destination-list",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -1089,6 +1095,85 @@ async def equipment_alert_dispatch():
         await asyncio.to_thread(save_locked_json, EQUIPMENT_ALERTS_PATH, store)
 
 
+def _destination_distance_km(aircraft, route):
+    try:
+        destination = route["destination"]
+        lat1, lon1 = math.radians(float(aircraft["lat"])), math.radians(float(aircraft["lon"]))
+        lat2, lon2 = math.radians(float(destination["latitude"])), math.radians(float(destination["longitude"]))
+        dlat, dlon = lat2 - lat1, lon2 - lon1
+        value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        return 6371.0 * 2 * math.atan2(math.sqrt(value), math.sqrt(max(0.0, 1 - value)))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def build_destination_alert_embed(rule, aircraft, route):
+    callsign = str(aircraft.get("flight") or "").strip().upper()
+    hex_id = str(aircraft.get("hex") or rule["icao24"]).lower()
+    embed = discord.Embed(title=f"✈️ 監視機体が{rule['destination']}へ向かっています", description=f"**{format_airport(route['origin'])} → {format_airport(route['destination'])}**", color=0x5865F2, timestamp=datetime.now(timezone.utc), url=f"https://globe.adsbexchange.com/?icao={hex_id}")
+    embed.add_field(name="登録記号", value=f"`{aircraft.get('r') or rule['registration']}`", inline=True)
+    embed.add_field(name="機種", value=aircraft.get("desc") or aircraft.get("t") or rule.get("type") or "不明", inline=True)
+    embed.add_field(name="便名", value=f"`{route.get('flight_iata') or callsign}`", inline=True)
+    lat, lon = aircraft.get("lat"), aircraft.get("lon")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        embed.add_field(name="現在位置", value=f"{lat:.3f}, {lon:.3f}", inline=True)
+    altitude = aircraft.get("alt_baro")
+    embed.add_field(name="高度", value=f"{float(altitude):,.0f} ft" if isinstance(altitude, (int, float)) else "取得不可", inline=True)
+    distance = _destination_distance_km(aircraft, route)
+    embed.add_field(name=f"{rule['destination']}まで", value=f"約{distance:,.0f} km" if distance is not None else "取得不可", inline=True)
+    embed.add_field(name="到着予定", value="取得不可", inline=True)
+    embed.set_footer(text="目的地は便ルート情報との完全一致で判定｜到着予定は信頼できる情報源がある場合のみ表示")
+    return embed
+
+
+@tasks.loop(seconds=120)
+async def destination_alert_dispatch():
+    if not bot.is_ready() or bot.is_closed():
+        return
+    store = await asyncio.to_thread(load_locked_json, DESTINATION_ALERTS_PATH, empty_destination_store())
+    rules = store.get("rules") or []
+    if not rules:
+        return
+    rules_by_icao = {}
+    for rule in rules:
+        rules_by_icao.setdefault(str(rule.get("icao24") or "").lower(), []).append(rule)
+    now, notified, changed, route_cache = time.time(), store.setdefault("notified", {}), False, {}
+    for icao24, aircraft_rules in rules_by_icao.items():
+        if not HEX6.fullmatch(icao24):
+            continue
+        aircraft_list = await asyncio.to_thread(adsb_lookup, "hex", icao24)
+        aircraft = next((item for item in aircraft_list if str(item.get("hex") or "").lower().lstrip("~") == icao24), None)
+        if not aircraft or aircraft.get("alt_baro") == "ground":
+            continue
+        callsign = str(aircraft.get("flight") or "").strip().upper()
+        if not callsign:
+            continue
+        if callsign not in route_cache:
+            route_cache[callsign] = await asyncio.to_thread(fetch_route, callsign)
+        route = route_cache[callsign]
+        if not route:
+            continue
+        for rule in aircraft_rules:
+            if not route_matches_destination(route, rule.get("destination")):
+                continue
+            fingerprint = event_fingerprint(rule, aircraft, route)
+            if not should_notify_destination(notified, fingerprint, now):
+                continue
+            try:
+                channel = bot.get_channel(DESTINATION_ALERT_CHANNEL_ID) or await bot.fetch_channel(DESTINATION_ALERT_CHANNEL_ID)
+                await channel.send(embed=build_destination_alert_embed(rule, aircraft, route))
+                notified[fingerprint], changed = now, True
+            except discord.Forbidden:
+                logger.warning("早期目的地通知を送信できません: rule=%s", rule.get("id"))
+            except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
+                logger.error("早期目的地通知に失敗しました: rule=%s %s", rule.get("id"), exc)
+    cleaned = prune_destination_notified(notified, now)
+    if cleaned != notified:
+        store["notified"], changed = cleaned, True
+    if changed:
+        await asyncio.to_thread(save_locked_json, DESTINATION_ALERTS_PATH, store)
+
+
 # ============ イベント ============
 
 async def notify_feedback(message):
@@ -1311,6 +1396,8 @@ async def on_ready():
         personal_special_dispatch.start()
     if not equipment_alert_dispatch.is_running():
         equipment_alert_dispatch.start()
+    if not destination_alert_dispatch.is_running():
+        destination_alert_dispatch.start()
     if not data_quality_check.is_running():
         data_quality_check.start()
     await catch_up_missed_commands()
@@ -1947,6 +2034,54 @@ async def equipment_remove_server(ctx, rule_id: int):
 @commands.has_permissions(administrator=True)
 async def equipment_list_server(ctx):
     await list_equipment_rules(ctx, "server", ctx.guild.id)
+
+
+@bot.command(name="destination-add")
+@commands.has_permissions(administrator=True)
+async def destination_add(ctx, aircraft: str, destination: str):
+    async with ctx.typing():
+        resolved = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
+    if resolved is None:
+        await ctx.send(f"⚠️ `{aircraft}` のICAO24を特定できませんでした。登録記号または6桁のICAO24を確認してください。")
+        return
+    icao24, registration, aircraft_type = resolved
+    store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
+    if len(store.get("rules") or []) >= DESTINATION_ALERT_LIMIT:
+        await ctx.send(f"⚠️ 早期目的地通知は全体で{DESTINATION_ALERT_LIMIT}件まで登録できます。")
+        return
+    rule, created = add_destination_rule(store, registration=registration, icao24=icao24, aircraft_type=aircraft_type, destination=destination, owner_id=ctx.author.id)
+    if rule is None:
+        await ctx.send("⚠️ 空港コードは `NRT` または `RJAA` のように3〜4文字で指定してください。")
+        return
+    if not created:
+        await ctx.send(f"ℹ️ ID `{rule['id']}`：`{rule['registration']}` → `{rule['destination']}` は登録済みです。")
+        return
+    save_locked_json(DESTINATION_ALERTS_PATH, store)
+    await ctx.send(f"✅ ID `{rule['id']}`：`{rule['registration']}` → `{rule['destination']}` を早期通知へ登録しました。\n世界のADS-B情報を約2分ごとに確認し、信頼できる便ルートで目的地が一致した場合だけ通知します。")
+
+
+@bot.command(name="destination-remove")
+@commands.has_permissions(administrator=True)
+async def destination_remove(ctx, rule_id: int):
+    store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
+    rule = next((item for item in store.get("rules", []) if item.get("id") == rule_id), None)
+    if rule is None:
+        await ctx.send(f"⚠️ ID `{rule_id}` の早期通知は見つかりませんでした。")
+        return
+    store["rules"].remove(rule)
+    save_locked_json(DESTINATION_ALERTS_PATH, store)
+    await ctx.send(f"🗑️ ID `{rule_id}`：`{rule['registration']}` → `{rule['destination']}` を解除しました。")
+
+
+@bot.command(name="destination-list")
+@commands.has_permissions(administrator=True)
+async def destination_list(ctx):
+    rules = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store()).get("rules") or []
+    if not rules:
+        await ctx.send("登録中の早期目的地通知はありません。")
+        return
+    lines = [f"ID `{rule['id']}`｜`{rule['registration']}` (`{rule['icao24']}`) → `{rule['destination']}`" for rule in sorted(rules, key=lambda item: item["id"])]
+    await ctx.send(("🌍 **早期目的地通知の登録一覧**\n" + "\n".join(lines))[:1990])
 
 
 # ============ 管理者用スラッシュコマンド ============
