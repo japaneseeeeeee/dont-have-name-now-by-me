@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -443,8 +443,22 @@ def append_personal_special_events(events):
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def _in_quiet_hours(config, now):
+    quiet = config.get("quiet_hours") or {}
+    try:
+        start_hour, start_minute = map(int, str(quiet["start"]).split(":"))
+        end_hour, end_minute = map(int, str(quiet["end"]).split(":"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    current = datetime.fromtimestamp(now, timezone(timedelta(hours=9)))
+    minute = current.hour * 60 + current.minute
+    start = start_hour * 60 + start_minute
+    end = end_hour * 60 + end_minute
+    return start <= minute < end if start < end else minute >= start or minute < end
+
+
 def find_personal_special_events(states, settings, notified, now):
-    """個人SPECIAL登録機を日本国内で検出し、ユーザー別DMイベントを作る。"""
+    """個人登録機を条件に従って検出し、ユーザー別DMイベントを作る。"""
     notified = dict(notified)
     aircraft_by_icao = {
         (aircraft[0] or "").strip().lower(): aircraft
@@ -465,6 +479,13 @@ def find_personal_special_events(states, settings, notified, now):
             region_key = classify_region(aircraft[6], aircraft[5])
             if region_key is None:
                 continue
+            selected_regions = config.get("regions") or []
+            if selected_regions and region_key not in selected_regions:
+                continue
+            entry = entry if isinstance(entry, dict) else {}
+            priority = str(entry.get("priority") or "SPECIAL").upper()
+            if _in_quiet_hours(config, now) and priority != "SPECIAL":
+                continue
             state_key = f"{user_id}:{icao24}"
             active_keys.add(state_key)
             last = notified.get(state_key)
@@ -475,12 +496,12 @@ def find_personal_special_events(states, settings, notified, now):
             ):
                 continue
             notified[state_key] = now
-            entry = entry if isinstance(entry, dict) else {}
             events.append({
                 "user_id": str(user_id),
                 "icao24": icao24,
                 "label": entry.get("label") or icao24,
                 "type": entry.get("type") or "不明",
+                "priority": priority,
                 "region": REGIONS[region_key]["name"],
                 "repeat": repeat,
                 "callsign": (aircraft[1] or "").strip(),

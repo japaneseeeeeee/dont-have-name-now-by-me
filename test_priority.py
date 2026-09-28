@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import monitor
 from route_corrections import correct_route
@@ -214,6 +214,28 @@ class PriorityTests(unittest.TestCase):
             [aircraft], disabled, {}, 2000
         )
         self.assertEqual(events, [])
+
+    def test_personal_watchlist_respects_selected_regions(self):
+        kanto = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        settings = {"123": {
+            "enabled": True,
+            "regions": ["kyushu"],
+            "aircraft": {"abc123": {"label": "JA0001", "priority": "NORMAL"}},
+        }}
+        events, _ = monitor.find_personal_special_events([kanto], settings, {}, 100)
+        self.assertEqual(events, [])
+
+    def test_quiet_hours_suppress_normal_but_not_special(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        quiet_time = datetime(2026, 9, 28, 23, 30, tzinfo=timezone(timedelta(hours=9))).timestamp()
+        base = {"enabled": True, "quiet_hours": {"start": "23:00", "end": "07:00"}}
+        normal = {"123": {**base, "aircraft": {"abc123": {"label": "JA0001", "priority": "NORMAL"}}}}
+        special = {"123": {**base, "aircraft": {"abc123": {"label": "JA0001", "priority": "SPECIAL"}}}}
+        normal_events, _ = monitor.find_personal_special_events([aircraft], normal, {}, quiet_time)
+        special_events, _ = monitor.find_personal_special_events([aircraft], special, {}, quiet_time)
+        self.assertEqual(normal_events, [])
+        self.assertEqual(len(special_events), 1)
+        self.assertEqual(special_events[0]["priority"], "SPECIAL")
 
 
 if __name__ == "__main__":

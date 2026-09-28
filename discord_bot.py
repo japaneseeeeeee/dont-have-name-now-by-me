@@ -139,6 +139,11 @@ USAGE = {
     "my-special-remove": "!my-special-remove <登録記号 または icao24>",
     "my-special-list": "!my-special-list",
     "my-special-settings": "!my-special-settings <on または off>",
+    "my-watch-add": "!my-watch-add <登録記号 または icao24>",
+    "my-watch-remove": "!my-watch-remove <登録記号 または icao24>",
+    "my-watch-list": "!my-watch-list",
+    "my-watch-regions": "!my-watch-regions <地方名... または all>",
+    "my-watch-quiet": "!my-watch-quiet <開始時刻> <終了時刻> または off",
     "equipment-add": "!equipment-add <便名> <機材コード>",
     "equipment-remove": "!equipment-remove <登録ID>",
     "equipment-list": "!equipment-list",
@@ -836,10 +841,13 @@ async def personal_special_dispatch():
             user_id = int(event["user_id"])
             recipient = await bot.fetch_user(user_id)
             state = "引き続き検出しています" if event.get("repeat") else "新たに検出しました"
+            priority = str(event.get("priority") or "SPECIAL").upper()
+            title_prefix = "🚨 個人SPECIAL" if priority == "SPECIAL" else "🔔 個人watchlist"
+            color = 0xED4245 if priority == "SPECIAL" else 0x3498DB
             embed = discord.Embed(
-                title=f"🚨 個人SPECIAL｜{event['label']}を検出",
+                title=f"{title_prefix}｜{event['label']}を検出",
                 description=f"{event['region']}の監視範囲内で{state}。",
-                color=0xED4245,
+                color=color,
                 timestamp=datetime.fromtimestamp(
                     float(event.get("detected_at", time.time())), timezone.utc
                 ),
@@ -1328,12 +1336,18 @@ async def my_special_help(ctx):
         "`!my-special-list` — 自分の登録一覧\n"
         "`!my-special-settings on` — DM通知をON\n"
         "`!my-special-settings off` — DM通知をOFF\n\n"
+        "`!my-watch-add JA784A` — 通常の個人watchlistへ追加\n"
+        "`!my-watch-remove JA784A` — 個人登録を解除\n"
+        "`!my-watch-list` — 個人登録と設定を表示\n"
+        "`!my-watch-regions 関東 中部` — 通知する地方を指定\n"
+        "`!my-watch-regions all` — 全国の地方を対象\n"
+        "`!my-watch-quiet 23:00 07:00` — 通常通知を休止（SPECIALは通知）\n"
+        "`!my-watch-quiet off` — 時間制限を解除\n\n"
         "登録内容はほかのメンバーには表示されません。"
     )
 
 
-@bot.command(name="my-special-add")
-async def my_special_add(ctx, aircraft: str):
+async def add_personal_aircraft(ctx, aircraft, priority):
     if not await require_personal_special_dm(ctx):
         return
     user_id = str(ctx.author.id)
@@ -1341,7 +1355,7 @@ async def my_special_add(ctx, aircraft: str):
     config = settings.get(user_id) or {"enabled": True, "aircraft": {}}
     registered = config.get("aircraft") or {}
     if len(registered) >= PERSONAL_SPECIAL_LIMIT:
-        await ctx.send(f"⚠️ 個人SPECIALは1人{PERSONAL_SPECIAL_LIMIT}機まで登録できます。")
+        await ctx.send(f"⚠️ 個人watchlistは1人{PERSONAL_SPECIAL_LIMIT}機まで登録できます。")
         return
 
     async with ctx.typing():
@@ -1354,17 +1368,28 @@ async def my_special_add(ctx, aircraft: str):
         return
     icao24, label, type_name = result
     if icao24 in registered:
-        await ctx.send(f"ℹ️ `{label}` ({icao24}) はすでに個人SPECIALへ登録されています。")
+        await ctx.send(f"ℹ️ `{label}` ({icao24}) はすでに個人watchlistへ登録されています。")
         return
-    registered[icao24] = {"label": label, "type": type_name}
+    registered[icao24] = {"label": label, "type": type_name, "priority": priority}
     config["aircraft"] = registered
     config.setdefault("enabled", True)
     settings[user_id] = config
     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
     await ctx.send(
-        f"✅ `{label}` ({icao24} / {type_name}) を個人SPECIALへ追加しました。\n"
+        f"✅ `{label}` ({icao24} / {type_name}) を個人watchlistへ追加しました。\n"
+        f"通知レベル: **{priority}**\n"
         "日本国内で検出すると、ここへDMで通知します。"
     )
+
+
+@bot.command(name="my-special-add")
+async def my_special_add(ctx, aircraft: str):
+    await add_personal_aircraft(ctx, aircraft, "SPECIAL")
+
+
+@bot.command(name="my-watch-add")
+async def my_watch_add(ctx, aircraft: str):
+    await add_personal_aircraft(ctx, aircraft, "NORMAL")
 
 
 @bot.command(name="my-special-remove")
@@ -1385,13 +1410,18 @@ async def my_special_remove(ctx, aircraft: str):
         None,
     )
     if match is None:
-        await ctx.send(f"⚠️ `{aircraft}` は自分の個人SPECIALに登録されていません。")
+        await ctx.send(f"⚠️ `{aircraft}` は自分の個人watchlistに登録されていません。")
         return
     removed = registered.pop(match)
     config["aircraft"] = registered
     settings[user_id] = config
     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-    await ctx.send(f"🗑️ `{removed.get('label', match)}` ({match}) を個人SPECIALから解除しました。")
+    await ctx.send(f"🗑️ `{removed.get('label', match)}` ({match}) を個人watchlistから解除しました。")
+
+
+@bot.command(name="my-watch-remove")
+async def my_watch_remove(ctx, aircraft: str):
+    await my_special_remove.callback(ctx, aircraft)
 
 
 @bot.command(name="my-special-list")
@@ -1403,17 +1433,72 @@ async def my_special_list(ctx):
     state = "ON" if config.get("enabled", True) else "OFF"
     if not registered:
         await ctx.send(
-            f"🚨 **自分の個人SPECIAL**（DM通知: {state}）\n登録機はありません。\n"
-            "`!my-special-add JA784A` で追加できます。"
+            f"👤 **自分の個人watchlist**（DM通知: {state}）\n登録機はありません。\n"
+            "`!my-watch-add JA784A` または `!my-special-add JA784A` で追加できます。"
         )
         return
     lines = [
-        f"`{entry.get('label', icao24)}` ({icao24} / {entry.get('type') or '不明'})"
+        f"`{entry.get('label', icao24)}` ({icao24} / {entry.get('type') or '不明'}) · **{entry.get('priority') or 'SPECIAL'}**"
         for icao24, entry in sorted(registered.items(), key=lambda item: item[1].get("label", ""))
     ]
     await ctx.send(
-        (f"🚨 **自分の個人SPECIAL**（DM通知: {state} / {len(lines)}機）\n" + "\n".join(lines))[:1990]
+        (f"👤 **自分の個人watchlist**（DM通知: {state} / {len(lines)}機）\n" + "\n".join(lines))[:1990]
     )
+
+
+@bot.command(name="my-watch-list")
+async def my_watch_list(ctx):
+    await my_special_list.callback(ctx)
+
+
+PERSONAL_REGION_ALIASES = {
+    "北海道": "hokkaido", "東北": "tohoku", "関東": "kanto", "中部": "chubu",
+    "近畿": "kinki", "関西": "kinki", "中国・四国": "chugoku_shikoku",
+    "中国四国": "chugoku_shikoku", "九州": "kyushu", "沖縄": "okinawa",
+}
+
+
+@bot.command(name="my-watch-regions")
+async def my_watch_regions(ctx, *regions: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    if not regions:
+        await ctx.send("⚠️ 例: `!my-watch-regions 関東 中部` または `!my-watch-regions all`")
+        return
+    values = [] if len(regions) == 1 and regions[0].lower() == "all" else [
+        PERSONAL_REGION_ALIASES.get(region) for region in regions
+    ]
+    if any(value is None for value in values):
+        await ctx.send("⚠️ 地方名は 北海道・東北・関東・中部・近畿・中国・四国・九州・沖縄 から指定してください。")
+        return
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(ctx.author.id)) or {"enabled": True, "aircraft": {}}
+    config["regions"] = list(dict.fromkeys(values))
+    settings[str(ctx.author.id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    label = "すべての地方" if not values else "・".join(regions)
+    await ctx.send(f"✅ 個人通知の対象を **{label}** に設定しました。")
+
+
+@bot.command(name="my-watch-quiet")
+async def my_watch_quiet(ctx, start: str, end: str = None):
+    if not await require_personal_special_dm(ctx):
+        return
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(ctx.author.id)) or {"enabled": True, "aircraft": {}}
+    if start.lower() == "off":
+        config.pop("quiet_hours", None)
+        message = "✅ 通知時間の制限を解除しました。"
+    else:
+        pattern = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+        if end is None or not pattern.fullmatch(start) or not pattern.fullmatch(end):
+            await ctx.send("⚠️ 例: `!my-watch-quiet 23:00 07:00` または `!my-watch-quiet off`")
+            return
+        config["quiet_hours"] = {"start": start, "end": end}
+        message = f"✅ **{start}〜{end}** は通常通知を休止します。SPECIALは通知します。"
+    settings[str(ctx.author.id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    await ctx.send(message)
 
 
 @bot.command(name="my-special-settings")
