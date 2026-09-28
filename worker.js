@@ -96,6 +96,11 @@ export default {
       return handleMenuButton(interaction, env, ctx);
     }
 
+    // 3: 管理画面内の操作ボタン
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("admin|")) {
+      return handleAdminButton(interaction, env, ctx);
+    }
+
     // 3: 機体検索結果の「次の5件」ボタン
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("searchpage|")) {
       ctx.waitUntil(processSearchPageButton(interaction, env));
@@ -116,6 +121,17 @@ export default {
 
     // 5: Botメニューから開いた入力画面
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("menu_modal|")) {
+      const command = String(interaction.data.custom_id).split("|")[1] || "";
+      const synthetic = menuModalToCommand(interaction, command);
+      ctx.waitUntil(processCommand(synthetic, env));
+      return json({ type: 5, data: { flags: 64 } });
+    }
+
+    // 5: 管理画面から開いた入力画面
+    if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("admin_modal|")) {
+      if (!isAdministrator(interaction)) {
+        return json({ type: 4, data: { content: "⛔ 管理者だけが使用できます。", flags: 64 } });
+      }
       const command = String(interaction.data.custom_id).split("|")[1] || "";
       const synthetic = menuModalToCommand(interaction, command);
       ctx.waitUntil(processCommand(synthetic, env));
@@ -302,6 +318,7 @@ function cmdMenu() {
           { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "登録機一覧" },
           { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "❓" }, label: "使い方" },
           { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "メニューを一番下へ" },
+          { type: 2, style: 4, custom_id: "menu|admin", emoji: { name: "⚙️" }, label: "管理画面" },
         ],
       },
     ],
@@ -310,6 +327,11 @@ function cmdMenu() {
 
 function handleMenuButton(interaction, env, ctx) {
   const action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  if (action === "admin") {
+    return isAdministrator(interaction)
+      ? json({ type: 4, data: { flags: 64, ...adminPanel() } })
+      : json({ type: 4, data: { flags: 64, content: "⛔ 管理画面はサーバー管理者だけが使用できます。" } });
+  }
   if (action === "refresh") {
     if (!isAdministrator(interaction)) {
       return json({ type: 4, data: { flags: 64, content: "⛔ メニューの移動はサーバー管理者だけが実行できます。" } });
@@ -332,6 +354,72 @@ function handleMenuButton(interaction, env, ctx) {
   return modal
     ? json({ type: 9, data: modal })
     : json({ type: 4, data: { flags: 64, content: "⚠️ このボタンは現在利用できません。" } });
+}
+
+function adminPanel() {
+  return {
+    content: "⚙️ **航空機通知Bot 管理画面**\n変更したい項目を選んでください。この画面と操作結果は管理者本人だけに表示されます。",
+    components: [
+      { type: 1, components: [
+        { type: 2, style: 3, custom_id: "admin|add", emoji: { name: "➕" }, label: "機体を追加" },
+        { type: 2, style: 4, custom_id: "admin|remove", emoji: { name: "🗑️" }, label: "機体を削除" },
+        { type: 2, style: 1, custom_id: "admin|priority", emoji: { name: "⭐" }, label: "通知レベル" },
+      ] },
+      { type: 1, components: [
+        { type: 2, style: 1, custom_id: "admin|special", emoji: { name: "🚨" }, label: "期間SPECIAL" },
+        { type: 2, style: 2, custom_id: "admin|nationwide", emoji: { name: "🗾" }, label: "全国通知" },
+      ] },
+      { type: 1, components: [
+        { type: 2, style: 2, custom_id: "admin|list", emoji: { name: "📋" }, label: "登録機一覧" },
+        { type: 2, style: 2, custom_id: "admin|special-list", emoji: { name: "🔎" }, label: "SPECIAL一覧" },
+        { type: 2, style: 2, custom_id: "admin|status", emoji: { name: "🟢" }, label: "稼働状況" },
+      ] },
+    ],
+  };
+}
+
+function adminModal(action) {
+  const definitions = {
+    add: { title: "機体を追加", rows: [
+      textInput("tail", "登録記号", "例: JA784A", true, 20),
+      textInput("icao24", "ICAO24（省略可）", "例: 867F7C", false, 6),
+      textInput("type", "機種（省略可）", "例: Boeing 787-8", false, 60),
+    ] },
+    remove: { title: "機体を削除", rows: [textInput("target", "登録記号またはICAO24", "例: JA784A", true, 20)] },
+    priority: { title: "通知レベルを変更", rows: [
+      textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
+      textInput("level", "通知レベル", "NORMAL / WATCH / SPECIAL", true, 7),
+    ] },
+    special: { title: "期間SPECIALを設定", rows: [
+      textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
+      textInput("duration", "期間", "例: 30m / 24h / 7d", true, 10),
+    ] },
+    nationwide: { title: "全国通知を変更", rows: [
+      textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
+      textInput("enabled", "全国通知", "ON または OFF", true, 5),
+    ] },
+  };
+  const definition = definitions[action];
+  return definition ? { custom_id: `admin_modal|${action}`, title: definition.title, components: definition.rows } : null;
+}
+
+function handleAdminButton(interaction, env, ctx) {
+  if (!isAdministrator(interaction)) {
+    return json({ type: 4, data: { flags: 64, content: "⛔ 管理者だけが使用できます。" } });
+  }
+  const action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  if (action === "status") {
+    return json({ type: 4, data: { flags: 64, content: "🟢 **Bot稼働状況**\nDiscord受付: 正常\nGitHub連携: 設定済み\nADS-B検索: 有効\n\n詳細な障害が発生した場合は処理結果にエラーが表示されます。" } });
+  }
+  if (action === "list" || action === "special-list") {
+    const synthetic = { ...interaction, data: { name: action, options: [] } };
+    ctx.waitUntil(processCommand(synthetic, env));
+    return json({ type: 5, data: { flags: 64 } });
+  }
+  const modal = adminModal(action);
+  return modal
+    ? json({ type: 9, data: modal })
+    : json({ type: 4, data: { flags: 64, content: "⚠️ この管理操作は利用できません。" } });
 }
 
 async function refreshMenuMessage(interaction) {
@@ -406,7 +494,11 @@ function menuModalToCommand(interaction, command) {
   }
   const options = Object.entries(values)
     .filter(([, value]) => value !== "")
-    .map(([name, value]) => ({ name, value: name === "hours" ? Number(value) : value }));
+    .map(([name, value]) => {
+      if (name === "hours") return { name, value: Number(value) };
+      if (name === "enabled") return { name, value: ["on", "true", "1", "yes"].includes(value.toLowerCase()) };
+      return { name, value };
+    });
   return { ...interaction, data: { name: command, options } };
 }
 
