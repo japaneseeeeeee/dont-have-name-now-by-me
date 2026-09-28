@@ -274,6 +274,7 @@ function cmdMenu() {
         components: [
           { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "登録機一覧" },
           { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "❓" }, label: "使い方" },
+          { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "メニューを一番下へ" },
         ],
       },
     ],
@@ -282,6 +283,13 @@ function cmdMenu() {
 
 function handleMenuButton(interaction, env, ctx) {
   const action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  if (action === "refresh") {
+    if (!isAdministrator(interaction)) {
+      return json({ type: 4, data: { flags: 64, content: "⛔ メニューの移動はサーバー管理者だけが実行できます。" } });
+    }
+    ctx.waitUntil(refreshMenuMessage(interaction));
+    return json({ type: 6 });
+  }
   if (action === "help") {
     return json({ type: 4, data: {
       flags: 64,
@@ -297,6 +305,26 @@ function handleMenuButton(interaction, env, ctx) {
   return modal
     ? json({ type: 9, data: modal })
     : json({ type: 4, data: { flags: 64, content: "⚠️ このボタンは現在利用できません。" } });
+}
+
+async function refreshMenuMessage(interaction) {
+  // 新しいメニューを先に作り、成功した場合だけ古いメニューを削除する。
+  const created = await fetch(`${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}?wait=true`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": UA },
+    body: JSON.stringify({ allowed_mentions: { parse: [] }, ...cmdMenu() }),
+  });
+  if (!created.ok) {
+    console.error("refresh menu create failed:", created.status, await created.text());
+    return;
+  }
+  const removed = await fetch(
+    `${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`,
+    { method: "DELETE", headers: { "user-agent": UA } },
+  );
+  if (!removed.ok && removed.status !== 404) {
+    console.error("refresh menu delete failed:", removed.status, await removed.text());
+  }
 }
 
 function textInput(customId, label, placeholder, required = true, maxLength = 100) {
