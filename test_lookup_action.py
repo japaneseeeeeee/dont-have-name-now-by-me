@@ -7,7 +7,7 @@ os.environ.setdefault("GITHUB_REPOSITORY", "example/example")
 os.environ.setdefault("GITHUB_TOKEN", "test")
 os.environ.setdefault("DISCORD_BOT_TOKEN", "test")
 
-from lookup_action import search_tar1090
+from lookup_action import airline_matches, lookup_live_type, search_result_components, search_tar1090
 
 
 SAMPLE_DATABASE = """\
@@ -42,6 +42,26 @@ class SearchTar1090Tests(unittest.TestCase):
     def test_registration_prefix_still_has_priority(self):
         results = self.search("N100")
         self.assertEqual(results[0]["registration"], "N100AA")
+
+    def test_live_type_search_normalizes_alias_and_filters_airline(self):
+        payload = gzip.compress(b"")
+        response = b'{"ac":[{"hex":"840001","r":"JA731A","t":"B77W","flight":"ANA101"},{"hex":"aa0001","r":"N100AA","t":"B77W","flight":"AAL1"}]}'
+        with patch("lookup_action.request", return_value=response) as mocked:
+            results = lookup_live_type("77W", "NH")
+        self.assertEqual([item["registration"] for item in results], ["JA731A"])
+        self.assertIn("/v2/type/B77W", mocked.call_args.args[0])
+
+    def test_airline_filter_accepts_iata_or_icao(self):
+        aircraft = {"flight": "ANA101"}
+        self.assertTrue(airline_matches(aircraft, "NH"))
+        self.assertTrue(airline_matches(aircraft, "ANA"))
+        self.assertFalse(airline_matches(aircraft, "JAL"))
+
+    def test_results_have_compact_register_row_and_next_button(self):
+        results = self.search("B77W")
+        rows = search_result_components(results, "B77W", "", 5)
+        self.assertEqual(len(rows[0]["components"]), 5)
+        self.assertTrue(rows[1]["components"][0]["custom_id"].startswith("searchpage|5|"))
 
 
 if __name__ == "__main__":

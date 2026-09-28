@@ -5,6 +5,7 @@ import gzip
 import urllib.request
 import urllib.error
 import urllib.parse
+import re
 from datetime import datetime, timezone
 
 from equipment_alerts import normalize_equipment
@@ -16,6 +17,16 @@ DISCORD_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 
 API = "https://api.github.com"
 TAR1090_URL = "https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz"
+IATA_TO_ICAO = {
+    "JL": "JAL", "NH": "ANA", "MM": "APJ", "GK": "JJP", "BC": "SKY",
+    "7G": "SFJ", "NU": "JTA", "HD": "ADO", "IJ": "SJO", "6J": "SNJ",
+    "FW": "IBX", "OC": "ORC", "3X": "JAC", "KE": "KAL", "OZ": "AAR",
+    "CX": "CPA", "CI": "CAL", "BR": "EVA", "SQ": "SIA", "TG": "THA",
+    "VN": "HVN", "PR": "PAL", "QF": "QFA", "NZ": "ANZ", "AA": "AAL",
+    "DL": "DAL", "UA": "UAL", "AC": "ACA", "HA": "HAL", "BA": "BAW",
+    "LH": "DLH", "AF": "AFR", "KL": "KLM", "AY": "FIN", "EK": "UAE",
+    "QR": "QTR", "EY": "ETD", "FX": "FDX", "5X": "UPS", "KZ": "NCA",
+}
 
 
 def request(url, method="GET", data=None, headers=None, timeout=60):
@@ -121,7 +132,7 @@ def lookup_tar1090(registration):
     return None
 
 
-def search_tar1090(query, limit=5):
+def search_tar1090(query, limit=5, offset=0):
     """登録記号の一部・ICAO24・機種コード・機種名から候補を探す。"""
     target = normalize_reg(query)
     equipment_target = normalize_equipment(query)
@@ -173,36 +184,102 @@ def search_tar1090(query, limit=5):
     ))
     for item in matches:
         item.pop("_search_rank", None)
-    return matches[:limit]
+    return matches[offset:offset + limit]
 
 
-def search_result_components(results):
-    rows = []
+def looks_like_type_code(query):
+    target = normalize_reg(query)
+    normalized = normalize_equipment(query)
+    return normalized != target or bool(re.fullmatch(r"[A-Z][0-9][A-Z0-9]{2}", normalized))
+
+
+def airline_matches(aircraft, airline):
+    wanted = normalize_reg(airline)
+    if not wanted:
+        return True
+    wanted_icao = IATA_TO_ICAO.get(wanted, wanted)
+    callsign = normalize_reg(aircraft.get("flight") or "")
+    operator = normalize_reg(aircraft.get("ownOp") or aircraft.get("operator") or "")
+    return callsign.startswith(wanted) or callsign.startswith(wanted_icao) or wanted in operator
+
+
+def lookup_live_type(query, airline=""):
+    """機種コードに一致する現在飛行中の機体を取得する。"""
+    if not looks_like_type_code(query):
+        return []
+    typecode = normalize_equipment(query)
+    try:
+        payload = json.loads(request(
+            "https://api.adsb.lol/v2/type/" + urllib.parse.quote(typecode),
+            timeout=15,
+        ))
+    except Exception as error:
+        print(f"ADS-B type lookup failed: {type(error).__name__}: {error}")
+        return []
+    results = []
+    for aircraft in payload.get("ac") or []:
+        if not airline_matches(aircraft, airline):
+            continue
+        icao24 = str(aircraft.get("hex") or "").lower()
+        registration = str(aircraft.get("r") or "").upper()
+        if not icao24 or not registration:
+            continue
+        results.append({
+            "icao24": icao24,
+            "registration": registration,
+            "typecode": str(aircraft.get("t") or typecode),
+            "description": str(aircraft.get("desc") or ""),
+            "live": True,
+            "callsign": str(aircraft.get("flight") or "").strip(),
+        })
+    return sorted(results, key=lambda item: (
+        not normalize_reg(item["registration"]).startswith("JA"),
+        normalize_reg(item["registration"]),
+    ))
+
+
+def search_result_components(results, query="", airline="", next_offset=None):
+    buttons = []
     for item in results[:5]:
         registration = item["registration"]
         if registration == "不明":
             continue
-        rows.append({
-            "type": 1,
-            "components": [{
-                "type": 2,
-                "style": 1,
-                "label": f"{registration} を登録"[:80],
-                "custom_id": f"watchadd|{item['icao24']}|{registration}"[:100],
-            }],
+        buttons.append({
+            "type": 2,
+            "style": 1,
+            "label": f"{registration} を登録"[:80],
+            "custom_id": f"watchadd|{item['icao24']}|{registration}"[:100],
         })
+    rows = [{"type": 1, "components": buttons}] if buttons else []
+    if next_offset is not None:
+        encoded_query = urllib.parse.quote(query, safe="")
+        encoded_airline = urllib.parse.quote(airline, safe="")
+        custom_id = f"searchpage|{next_offset}|{encoded_query}|{encoded_airline}"
+        if len(custom_id.encode("utf-8")) <= 100:
+            rows.append({"type": 1, "components": [{
+                "type": 2,
+                "style": 2,
+                "label": "次の5件",
+                "emoji": {"name": "➡️"},
+                "custom_id": custom_id,
+            }]})
     return rows
 
 
-def format_search_results(query, results):
+def format_search_results(query, results, airline="", offset=0):
     lines = [f"🔎 **「{query}」の検索結果**", "登録する機体のボタンを押してください。", ""]
+    if airline:
+        lines.insert(1, f"航空会社: **{airline}**（現在飛行中の機体）")
     for item in results:
         aircraft_type = item.get("description") or item.get("typecode") or "不明"
         if item.get("description") and item.get("typecode"):
             aircraft_type = f"{item['description']} ({item['typecode']})"
-        lines.append(
-            f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}"
-        )
+        callsign = item.get("callsign")
+        live = (f"🟢 飛行中{' · ' + callsign if callsign else ''}"
+                if item.get("live") else "⚪ 機体データベース")
+        lines.append(f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}\n{live}")
+    if offset:
+        lines.append(f"\n{offset + 1}件目から表示")
     lines.append("\n※ watchlistへの登録は管理者のみ実行できます。")
     return "\n".join(lines)
 
@@ -258,22 +335,6 @@ def add_to_watchlist(icao24, registration, type_name):
 
 
 
-# IATA航空会社コード → ICAOコールサイン
-IATA_TO_ICAO = {
-    "JL": "JAL",
-    "NH": "ANA",
-    "MM": "APJ",
-    "GK": "JJP",
-    "BC": "SKY",
-    "7G": "SFJ",
-    "NU": "JTA",
-    "HD": "ADO",
-    "IJ": "SJO",
-    "6J": "SNJ",
-    "FW": "IBX",
-    "OC": "ORC",
-    "3X": "JAC",
-}
 AIRPORT_SHORT_NAMES = {
     "NRT": "Narita", "HND": "Haneda", "NGO": "Chubu", "KIX": "Kansai",
     "ITM": "Itami", "CTS": "New Chitose", "FUK": "Fukuoka", "OKA": "Naha",
@@ -567,33 +628,56 @@ def main():
 
     if op == "search":
         query = str(args[0]).strip().upper()
-        results = []
+        airline = str(args[1]).strip().upper() if len(args) > 1 else ""
+        try:
+            offset = max(0, int(args[2])) if len(args) > 2 else 0
+        except (TypeError, ValueError):
+            offset = 0
+        candidates = []
 
-        # 便名・コールサインの場合は、現在飛行中の実機を最優先で候補にする。
-        live = lookup_live_callsign(query)
-        if live and live.get("hex") and live.get("r"):
-            results.append({
-                "icao24": str(live["hex"]).lower(),
-                "registration": str(live["r"]).upper(),
-                "typecode": str(live.get("t") or ""),
-                "description": str(live.get("desc") or ""),
-            })
+        # 機種コードなら同型の飛行中機をまとめて取得し、最優先にする。
+        candidates.extend(lookup_live_type(query, airline))
+        if not candidates and not looks_like_type_code(query):
+            live = lookup_live_callsign(query)
+            if live and live.get("hex") and live.get("r") and airline_matches(live, airline):
+                candidates.append({
+                    "icao24": str(live["hex"]).lower(),
+                    "registration": str(live["r"]).upper(),
+                    "typecode": str(live.get("t") or ""),
+                    "description": str(live.get("desc") or ""),
+                    "live": True,
+                    "callsign": str(live.get("flight") or "").strip(),
+                })
 
-        if not results:
-            results = search_tar1090(query)
+        # 静的DBには航空会社がないため、航空会社未指定時だけ補完する。
+        if not airline:
+            candidates.extend(search_tar1090(query, limit=offset + 6))
+
+        unique = []
+        seen = set()
+        for item in candidates:
+            key = item.get("icao24") or normalize_reg(item.get("registration") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        page = unique[offset:offset + 6]
+        results = page[:5]
+        next_offset = offset + 5 if len(page) > 5 else None
 
         if not results:
             discord_send(
                 channel_id,
                 f"❓ `{query}` に一致する機体を見つけられませんでした。\n"
-                "登録記号、ICAO24、現在飛行中の便名、機種コードで検索できます。",
+                + (f"航空会社 `{airline}` を指定した検索は、現在飛行中の機体が対象です。"
+                   if airline else "登録記号、ICAO24、現在飛行中の便名、機種コードで検索できます。"),
             )
             return
 
         discord_send(
             channel_id,
-            format_search_results(query, results),
-            components=search_result_components(results),
+            format_search_results(query, results, airline, offset),
+            components=search_result_components(results, query, airline, next_offset),
         )
         return
 

@@ -96,6 +96,12 @@ export default {
       return handleMenuButton(interaction, env, ctx);
     }
 
+    // 3: 機体検索結果の「次の5件」ボタン
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("searchpage|")) {
+      ctx.waitUntil(processSearchPageButton(interaction, env));
+      return json({ type: 4, data: { flags: 64, content: "🔎 次の5件を詳しく検索しています（1分ほどかかります）。" } });
+    }
+
     // 3: 検索結果の「watchlistへ登録」ボタン
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("watchadd|")) {
       if (!isAdministrator(interaction)) {
@@ -203,6 +209,27 @@ async function processWatchAddButton(interaction, env) {
     message = { content: "⚠️ 登録に失敗しました。もう一度検索してください。", components: [] };
   }
   await editOriginal(interaction, message);
+}
+
+async function processSearchPageButton(interaction, env) {
+  try {
+    const [, offsetText, encodedQuery, encodedAirline = ""] = String(interaction.data.custom_id || "").split("|");
+    const offset = Math.max(0, Number(offsetText) || 0);
+    const query = decodeURIComponent(encodedQuery || "");
+    const airline = decodeURIComponent(encodedAirline || "");
+    if (!query) throw new Error("missing search query");
+    const r = await gh(env, "/dispatches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        event_type: "lookup",
+        client_payload: { op: "search", args: [query, airline, offset], channel_id: interaction.channel_id },
+      }),
+    });
+    if (r.status !== 204) throw new Error(`dispatch failed: ${r.status} ${await r.text()}`);
+  } catch (err) {
+    console.error("search next page failed:", (err && err.stack) || err);
+  }
 }
 
 async function editOriginal(interaction, message) {
@@ -343,7 +370,10 @@ function menuModal(action) {
   const definitions = {
     "aircraft-search": {
       title: "機体を検索",
-      rows: [textInput("query", "検索する機体", "例: JA78 / 8691AA / JL12 / B77W", true, 50)],
+      rows: [
+        textInput("query", "検索する機体", "例: JA78 / 8691AA / JL12 / B77W", true, 50),
+        textInput("airline", "航空会社（省略可）", "例: ANA / NH / JAL / JL", false, 20),
+      ],
     },
     info: {
       title: "機体情報を表示",
@@ -382,10 +412,11 @@ function menuModalToCommand(interaction, command) {
 
 async function cmdAircraftSearch(o, env, interaction) {
   const query = String(o.query || "").trim();
+  const airline = String(o.airline || "").trim();
   if (query.replace(/[\s-]/g, "").length < 3) {
     return { content: "⚠️ 3文字以上入力してください。例: `/aircraft-search query:JA78`" };
   }
-  return startSlowLookup(env, "search", [query], interaction, {
+  return startSlowLookup(env, "search", [query, airline, 0], interaction, {
     failure: `❓ \`${query}\` に一致する機体を見つけられませんでした。`,
   });
 }
