@@ -80,6 +80,7 @@ FEEDBACK_MARKER = "📮"
 PHOTO_CHANNEL_ID = int(os.environ.get("PHOTO_CHANNEL_ID", "1552676837581389956"))
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
 PERSONAL_SPECIAL_LIMIT = 20
+PERSONAL_DESTINATION_LIMIT = 20
 PERSONAL_AIRPORT_LIMIT = 10
 PERSONAL_AIRPORTS = ("HND", "NRT", "CTS", "ITM", "KIX", "NGO", "FUK", "OKA")
 EQUIPMENT_ALERT_LIMIT = 20
@@ -163,6 +164,10 @@ USAGE = {
     "destination-add": "!destination-add <登録記号またはicao24> <目的空港>",
     "destination-remove": "!destination-remove <登録ID>",
     "destination-list": "!destination-list",
+    "my-destination-add": "!my-destination-add <登録記号またはicao24> <目的空港>",
+    "my-destination-remove": "!my-destination-remove <登録ID>",
+    "my-destination-list": "!my-destination-list",
+    "my-destination-panel": "!my-destination-panel",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -971,6 +976,108 @@ class PersonalSettingsView(discord.ui.View):
         await interaction.response.send_message("飛行状態・航空会社・機種の絞り込みを解除しました。", ephemeral=True)
 
 
+async def create_personal_destination_rule(user_id, aircraft, destination):
+    resolved = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
+    if resolved is None:
+        return f"⚠️ `{aircraft}` のICAO24を特定できませんでした。"
+    icao24, registration, aircraft_type = resolved
+    store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
+    personal_rules = [
+        rule for rule in store.get("rules", [])
+        if rule.get("scope") == "personal" and str(rule.get("owner_id")) == str(user_id)
+    ]
+    if len(personal_rules) >= PERSONAL_DESTINATION_LIMIT:
+        return f"⚠️ 個人早期通知は{PERSONAL_DESTINATION_LIMIT}件まで登録できます。"
+    rule, created = add_destination_rule(
+        store, registration=registration, icao24=icao24, aircraft_type=aircraft_type,
+        destination=destination, owner_id=user_id, scope="personal",
+    )
+    if rule is None:
+        return "⚠️ 空港コードは `NRT` または `RJAA` のように3〜4文字で指定してください。"
+    if not created:
+        return f"ℹ️ ID `{rule['id']}`：`{rule['registration']}` → `{rule['destination']}` は登録済みです。"
+    save_locked_json(DESTINATION_ALERTS_PATH, store)
+    return f"✅ ID `{rule['id']}`：`{rule['registration']}` → `{rule['destination']}` を個人早期通知へ登録しました。"
+
+
+def personal_destination_rules(user_id):
+    store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
+    return store, [
+        rule for rule in store.get("rules", [])
+        if rule.get("scope") == "personal" and str(rule.get("owner_id")) == str(user_id)
+    ]
+
+
+class PersonalDestinationAddModal(discord.ui.Modal, title="個人早期通知を追加"):
+    aircraft = discord.ui.TextInput(label="登録記号またはICAO24", placeholder="A7-BBA")
+    destination = discord.ui.TextInput(label="目的空港", placeholder="NRT / RJAA", min_length=3, max_length=4)
+
+    def __init__(self, user_id):
+        super().__init__()
+        self.user_id = int(user_id)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        message = await create_personal_destination_rule(
+            self.user_id, str(self.aircraft), str(self.destination)
+        )
+        await interaction.followup.send(message, ephemeral=True)
+
+
+class PersonalDestinationRemoveModal(discord.ui.Modal, title="個人早期通知を解除"):
+    rule_id = discord.ui.TextInput(label="登録ID", placeholder="1", max_length=8)
+
+    def __init__(self, user_id):
+        super().__init__()
+        self.user_id = int(user_id)
+
+    async def on_submit(self, interaction):
+        try:
+            target_id = int(str(self.rule_id))
+        except ValueError:
+            await interaction.response.send_message("登録IDは数字で入力してください。", ephemeral=True)
+            return
+        store, rules = personal_destination_rules(self.user_id)
+        rule = next((item for item in rules if item.get("id") == target_id), None)
+        if rule is None:
+            await interaction.response.send_message(f"⚠️ ID `{target_id}` は見つかりませんでした。", ephemeral=True)
+            return
+        store["rules"].remove(rule)
+        save_locked_json(DESTINATION_ALERTS_PATH, store)
+        await interaction.response.send_message(
+            f"🗑️ `{rule['registration']}` → `{rule['destination']}` を解除しました。", ephemeral=True
+        )
+
+
+class PersonalDestinationView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=15 * 60)
+        self.user_id = int(user_id)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message("本人だけが操作できます。", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="追加", emoji="➕", style=discord.ButtonStyle.success)
+    async def add_rule_button(self, interaction, button):
+        await interaction.response.send_modal(PersonalDestinationAddModal(self.user_id))
+
+    @discord.ui.button(label="一覧", emoji="📋", style=discord.ButtonStyle.primary)
+    async def list_rules_button(self, interaction, button):
+        _, rules = personal_destination_rules(self.user_id)
+        if not rules:
+            await interaction.response.send_message("個人早期通知は登録されていません。", ephemeral=True)
+            return
+        lines = [f"ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules]
+        await interaction.response.send_message("🌍 **個人早期通知**\n" + "\n".join(lines), ephemeral=True)
+
+    @discord.ui.button(label="解除", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def remove_rule_button(self, interaction, button):
+        await interaction.response.send_modal(PersonalDestinationRemoveModal(self.user_id))
+
+
 @tasks.loop(seconds=10)
 async def personal_special_dispatch():
     """監視処理が検出した個人SPECIALを、登録者本人へDMする。"""
@@ -1160,8 +1267,12 @@ async def destination_alert_dispatch():
             if not should_notify_destination(notified, fingerprint, now):
                 continue
             try:
-                channel = bot.get_channel(DESTINATION_ALERT_CHANNEL_ID) or await bot.fetch_channel(DESTINATION_ALERT_CHANNEL_ID)
-                await channel.send(embed=build_destination_alert_embed(rule, aircraft, route))
+                if rule.get("scope") == "personal":
+                    recipient = await bot.fetch_user(int(rule["owner_id"]))
+                    await recipient.send(embed=build_destination_alert_embed(rule, aircraft, route))
+                else:
+                    channel = bot.get_channel(DESTINATION_ALERT_CHANNEL_ID) or await bot.fetch_channel(DESTINATION_ALERT_CHANNEL_ID)
+                    await channel.send(embed=build_destination_alert_embed(rule, aircraft, route))
                 notified[fingerprint], changed = now, True
             except discord.Forbidden:
                 logger.warning("早期目的地通知を送信できません: rule=%s", rule.get("id"))
@@ -2046,10 +2157,11 @@ async def destination_add(ctx, aircraft: str, destination: str):
         return
     icao24, registration, aircraft_type = resolved
     store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
-    if len(store.get("rules") or []) >= DESTINATION_ALERT_LIMIT:
+    server_rules = [rule for rule in store.get("rules", []) if rule.get("scope", "server") == "server"]
+    if len(server_rules) >= DESTINATION_ALERT_LIMIT:
         await ctx.send(f"⚠️ 早期目的地通知は全体で{DESTINATION_ALERT_LIMIT}件まで登録できます。")
         return
-    rule, created = add_destination_rule(store, registration=registration, icao24=icao24, aircraft_type=aircraft_type, destination=destination, owner_id=ctx.author.id)
+    rule, created = add_destination_rule(store, registration=registration, icao24=icao24, aircraft_type=aircraft_type, destination=destination, owner_id=ctx.guild.id, scope="server")
     if rule is None:
         await ctx.send("⚠️ 空港コードは `NRT` または `RJAA` のように3〜4文字で指定してください。")
         return
@@ -2064,7 +2176,7 @@ async def destination_add(ctx, aircraft: str, destination: str):
 @commands.has_permissions(administrator=True)
 async def destination_remove(ctx, rule_id: int):
     store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
-    rule = next((item for item in store.get("rules", []) if item.get("id") == rule_id), None)
+    rule = next((item for item in store.get("rules", []) if item.get("id") == rule_id and item.get("scope", "server") == "server"), None)
     if rule is None:
         await ctx.send(f"⚠️ ID `{rule_id}` の早期通知は見つかりませんでした。")
         return
@@ -2076,12 +2188,60 @@ async def destination_remove(ctx, rule_id: int):
 @bot.command(name="destination-list")
 @commands.has_permissions(administrator=True)
 async def destination_list(ctx):
-    rules = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store()).get("rules") or []
+    rules = [
+        rule for rule in load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store()).get("rules") or []
+        if rule.get("scope", "server") == "server"
+    ]
     if not rules:
         await ctx.send("登録中の早期目的地通知はありません。")
         return
     lines = [f"ID `{rule['id']}`｜`{rule['registration']}` (`{rule['icao24']}`) → `{rule['destination']}`" for rule in sorted(rules, key=lambda item: item["id"])]
     await ctx.send(("🌍 **早期目的地通知の登録一覧**\n" + "\n".join(lines))[:1990])
+
+
+@bot.command(name="my-destination-add")
+async def my_destination_add(ctx, aircraft: str, destination: str):
+    if not await require_personal_special_dm(ctx):
+        return
+    async with ctx.typing():
+        message = await create_personal_destination_rule(ctx.author.id, aircraft, destination)
+    await ctx.send(message)
+
+
+@bot.command(name="my-destination-remove")
+async def my_destination_remove(ctx, rule_id: int):
+    if not await require_personal_special_dm(ctx):
+        return
+    store, rules = personal_destination_rules(ctx.author.id)
+    rule = next((item for item in rules if item.get("id") == rule_id), None)
+    if rule is None:
+        await ctx.send(f"⚠️ ID `{rule_id}` の個人早期通知は見つかりませんでした。")
+        return
+    store["rules"].remove(rule)
+    save_locked_json(DESTINATION_ALERTS_PATH, store)
+    await ctx.send(f"🗑️ `{rule['registration']}` → `{rule['destination']}` を解除しました。")
+
+
+@bot.command(name="my-destination-list")
+async def my_destination_list(ctx):
+    if not await require_personal_special_dm(ctx):
+        return
+    _, rules = personal_destination_rules(ctx.author.id)
+    if not rules:
+        await ctx.send("個人早期通知は登録されていません。")
+        return
+    lines = [f"ID `{rule['id']}`｜`{rule['registration']}` (`{rule['icao24']}`) → `{rule['destination']}`" for rule in rules]
+    await ctx.send(("🌍 **個人早期通知の登録一覧**\n" + "\n".join(lines))[:1990])
+
+
+@bot.command(name="my-destination-panel")
+async def my_destination_panel(ctx):
+    if not await require_personal_special_dm(ctx):
+        return
+    await ctx.send(
+        "🌍 **個人早期通知パネル**\n追加・一覧確認・解除をボタンから操作できます。",
+        view=PersonalDestinationView(ctx.author.id),
+    )
 
 
 # ============ 管理者用スラッシュコマンド ============

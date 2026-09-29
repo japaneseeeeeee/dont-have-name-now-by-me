@@ -10,6 +10,13 @@ class DestinationAlertTests(unittest.TestCase):
         self.assertFalse(created_again)
         self.assertEqual(first["id"], second["id"])
 
+    def test_personal_rules_are_separate_per_user(self):
+        store = empty_store()
+        first, _ = add_rule(store, registration="A7-BBA", icao24="06a0aa", aircraft_type="B77L", destination="NRT", owner_id=1, scope="personal")
+        second, created = add_rule(store, registration="A7-BBA", icao24="06a0aa", aircraft_type="B77L", destination="NRT", owner_id=2, scope="personal")
+        self.assertTrue(created)
+        self.assertNotEqual(first["id"], second["id"])
+
     def test_matches_iata_or_icao_exactly(self):
         route = {"destination": {"iata_code": "NRT", "icao_code": "RJAA"}}
         self.assertTrue(route_matches_destination(route, "NRT"))

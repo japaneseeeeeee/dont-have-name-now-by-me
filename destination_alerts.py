@@ -14,15 +14,19 @@ def normalize_airport(value):
     code = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
     return code if AIRPORT_RE.fullmatch(code) else ""
 
-def add_rule(store, *, registration, icao24, aircraft_type, destination, owner_id):
+def add_rule(store, *, registration, icao24, aircraft_type, destination, owner_id, scope="server"):
     destination = normalize_airport(destination)
     if not destination:
         return None, False
     normalized_icao = str(icao24 or "").strip().lower()
+    owner_id = str(owner_id)
     for rule in store.setdefault("rules", []):
-        if rule.get("icao24") == normalized_icao and rule.get("destination") == destination:
+        if (rule.get("icao24") == normalized_icao
+                and rule.get("destination") == destination
+                and rule.get("scope", "server") == scope
+                and str(rule.get("owner_id")) == owner_id):
             return rule, False
-    rule = {"id": int(store.get("next_id", 1)), "registration": str(registration or normalized_icao).upper(), "icao24": normalized_icao, "type": aircraft_type or "不明", "destination": destination, "owner_id": str(owner_id), "created_at": time.time()}
+    rule = {"id": int(store.get("next_id", 1)), "registration": str(registration or normalized_icao).upper(), "icao24": normalized_icao, "type": aircraft_type or "不明", "destination": destination, "owner_id": owner_id, "scope": scope, "created_at": time.time()}
     store["next_id"] = rule["id"] + 1
     store["rules"].append(rule)
     return rule, True
@@ -39,7 +43,7 @@ def event_fingerprint(rule, aircraft, route):
     callsign = str(aircraft.get("flight") or "").strip().upper()
     origin = "/".join(sorted(airport_codes(route.get("origin"))))
     destination = "/".join(sorted(airport_codes(route.get("destination"))))
-    raw = f"{rule['icao24']}|{callsign}|{origin}|{destination}"
+    raw = f"{rule.get('scope', 'server')}|{rule.get('owner_id')}|{rule.get('id')}|{rule['icao24']}|{callsign}|{origin}|{destination}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 def should_notify(notified, fingerprint, now=None):
