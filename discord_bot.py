@@ -168,6 +168,7 @@ USAGE = {
     "my-destination-remove": "!my-destination-remove <登録ID>",
     "my-destination-list": "!my-destination-list",
     "my-destination-panel": "!my-destination-panel",
+    "personal-panel-setup": "!personal-panel-setup",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -183,6 +184,8 @@ class AircraftBot(commands.Bot):
         # ここでtree.sync()すると、Python側に定義した一部コマンドだけで
         # /infoなどWorker専用コマンドを上書きしてしまうため同期しない。
         logger.info("スラッシュコマンドの登録はWorker側で管理します")
+        self.add_view(PersonalPanelLauncherView())
+        self.add_view(PersonalControlPanelView())
 
 
 bot = AircraftBot(command_prefix=PREFIX, intents=intents)
@@ -1076,6 +1079,146 @@ class PersonalDestinationView(discord.ui.View):
     @discord.ui.button(label="解除", emoji="🗑️", style=discord.ButtonStyle.danger)
     async def remove_rule_button(self, interaction, button):
         await interaction.response.send_modal(PersonalDestinationRemoveModal(self.user_id))
+
+
+class PersonalAircraftAddModal(discord.ui.Modal, title="個人機体通知を追加"):
+    aircraft = discord.ui.TextInput(label="登録記号またはICAO24", placeholder="JA784A")
+    level = discord.ui.TextInput(label="通知レベル", placeholder="NORMAL または SPECIAL", default="NORMAL")
+
+    async def on_submit(self, interaction):
+        priority = str(self.level).strip().upper()
+        if priority not in {"NORMAL", "SPECIAL"}:
+            await interaction.response.send_message("通知レベルは NORMAL または SPECIAL で入力してください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await asyncio.to_thread(resolve_personal_aircraft, str(self.aircraft))
+        if result is None:
+            await interaction.followup.send("機体を確認できませんでした。", ephemeral=True)
+            return
+        icao24, label, type_name = result
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        config = settings.get(str(interaction.user.id)) or {"enabled": True, "aircraft": {}}
+        registered = config.get("aircraft") or {}
+        if icao24 not in registered and len(registered) >= PERSONAL_SPECIAL_LIMIT:
+            await interaction.followup.send(f"個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。", ephemeral=True)
+            return
+        registered[icao24] = {"label": label, "type": type_name, "priority": priority}
+        config["aircraft"] = registered
+        settings[str(interaction.user.id)] = config
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+        await interaction.followup.send(f"✅ `{label}`を **{priority}** で登録しました。", ephemeral=True)
+
+
+class PersonalEquipmentAddModal(discord.ui.Modal, title="個人機材通知を追加"):
+    flight = discord.ui.TextInput(label="便名", placeholder="JL12")
+    equipment = discord.ui.TextInput(label="機材コード", placeholder="B77W")
+
+    async def on_submit(self, interaction):
+        store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+        current = equipment_rules_for(store, interaction.user.id, "personal")
+        if len(current) >= EQUIPMENT_ALERT_LIMIT:
+            await interaction.response.send_message(f"機材通知は{EQUIPMENT_ALERT_LIMIT}件までです。", ephemeral=True)
+            return
+        rule, created = add_rule(store, owner_id=interaction.user.id, scope="personal", flight=str(self.flight), equipment=str(self.equipment))
+        if not rule["flight"] or not rule["equipment"]:
+            await interaction.response.send_message("便名と機材コードを確認してください。", ephemeral=True)
+            return
+        if created:
+            save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+        message = (f"✅ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` を登録しました。" if created else f"ℹ️ ID `{rule['id']}` は登録済みです。")
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+def personal_panel_summary(user_id):
+    config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
+    _, destinations = personal_destination_rules(user_id)
+    equipment = equipment_rules_for(load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store()), user_id, "personal")
+    return (
+        f"DM通知: **{'ON' if config.get('enabled', True) else 'OFF'}**\n"
+        f"✈️ 登録機体: **{len(config.get('aircraft') or {})}機**\n"
+        f"🌍 目的地早期通知: **{len(destinations)}件**\n"
+        f"🏢 空港ウォッチ: **{len(config.get('airports') or {})}件**\n"
+        f"🔔 機材投入通知: **{len(equipment)}件**"
+    )
+
+
+class PersonalControlPanelView(discord.ui.View):
+    """本人専用チャンネルへ固定する、再起動後も動く統合パネル。"""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction):
+        topic = str(getattr(interaction.channel, "topic", "") or "")
+        marker = f"aircraft-personal-panel:{interaction.user.id}"
+        if marker in topic:
+            return True
+        await interaction.response.send_message("このパネルはチャンネルの所有者本人だけが操作できます。", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="機体通知", emoji="✈️", style=discord.ButtonStyle.primary, custom_id="personal_panel:aircraft")
+    async def aircraft(self, interaction, button):
+        await interaction.response.send_modal(PersonalAircraftAddModal())
+
+    @discord.ui.button(label="目的地早期通知", emoji="🌍", style=discord.ButtonStyle.primary, custom_id="personal_panel:destination")
+    async def destination(self, interaction, button):
+        await interaction.response.send_message("追加・一覧・解除を選んでください。", view=PersonalDestinationView(interaction.user.id), ephemeral=True)
+
+    @discord.ui.button(label="空港ウォッチ", emoji="🏢", style=discord.ButtonStyle.primary, custom_id="personal_panel:airport")
+    async def airport(self, interaction, button):
+        await interaction.response.send_modal(AirportWatchModal(interaction.user.id))
+
+    @discord.ui.button(label="機材投入通知", emoji="🔔", style=discord.ButtonStyle.primary, custom_id="personal_panel:equipment")
+    async def equipment(self, interaction, button):
+        await interaction.response.send_modal(PersonalEquipmentAddModal())
+
+    @discord.ui.button(label="通知設定", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings")
+    async def settings(self, interaction, button):
+        await interaction.response.send_message("個人通知の設定です。", view=PersonalSettingsView(interaction.user.id), ephemeral=True)
+
+    @discord.ui.button(label="登録状況", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary")
+    async def summary(self, interaction, button):
+        await interaction.response.send_message("👤 **現在の個人設定**\n" + personal_panel_summary(interaction.user.id), ephemeral=True)
+
+
+class PersonalPanelLauncherView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="自分専用の設定チャンネルを作る", emoji="🔒", style=discord.ButtonStyle.success, custom_id="personal_panel:create")
+    async def create_panel(self, interaction, button):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("サーバー内で使用してください。", ephemeral=True)
+            return
+        marker = f"aircraft-personal-panel:{interaction.user.id}"
+        existing = next((channel for channel in guild.text_channels if marker in str(channel.topic or "")), None)
+        if existing:
+            await interaction.response.send_message(f"専用チャンネルはすでにあります：{existing.mention}", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            category = discord.utils.get(guild.categories, name="🔒｜個人設定")
+            if category is None:
+                category = await guild.create_category("🔒｜個人設定", reason="航空機Bot 個人設定パネル")
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True),
+            }
+            safe_name = re.sub(r"[^a-z0-9ぁ-んァ-ヶ一-龠_-]", "-", interaction.user.display_name.lower()).strip("-")[:40] or str(interaction.user.id)
+            channel = await guild.create_text_channel(f"個人設定-{safe_name}", category=category, overwrites=overwrites, topic=marker, reason="航空機Bot 個人設定パネル")
+            embed = discord.Embed(title="✈️ 航空機Bot 個人設定", description="下のボタンから個人通知を設定できます。登録内容は本人とBot以外には表示されません。", color=0x5865F2)
+            message = await channel.send(embed=embed, view=PersonalControlPanelView())
+            try:
+                await message.pin(reason="個人設定パネルを常に表示するため")
+            except discord.HTTPException:
+                pass
+            await interaction.followup.send(f"✅ 専用チャンネルを作成しました：{channel.mention}", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("チャンネルを作成できません。Botに「チャンネルの管理」権限を付けてください。", ephemeral=True)
+        except discord.HTTPException as exc:
+            logger.error("個人設定チャンネルの作成に失敗: %s", exc)
+            await interaction.followup.send("チャンネル作成に失敗しました。しばらくしてから再度お試しください。", ephemeral=True)
 
 
 @tasks.loop(seconds=10)
@@ -2242,6 +2385,20 @@ async def my_destination_panel(ctx):
         "🌍 **個人早期通知パネル**\n追加・一覧確認・解除をボタンから操作できます。",
         view=PersonalDestinationView(ctx.author.id),
     )
+
+
+@bot.command(name="personal-panel-setup")
+@commands.has_permissions(administrator=True)
+async def personal_panel_setup(ctx):
+    embed = discord.Embed(
+        title="🔒 航空機Bot 個人設定パネル",
+        description=(
+            "下のボタンを押すと、本人とBotだけが見られる専用チャンネルを作成します。\n"
+            "機体通知・目的地早期通知・空港ウォッチ・機材投入通知を個別に設定できます。"
+        ),
+        color=0x5865F2,
+    )
+    await ctx.send(embed=embed, view=PersonalPanelLauncherView())
 
 
 # ============ 管理者用スラッシュコマンド ============
