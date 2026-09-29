@@ -169,6 +169,7 @@ USAGE = {
     "my-destination-list": "!my-destination-list",
     "my-destination-panel": "!my-destination-panel",
     "personal-panel-setup": "!personal-panel-setup",
+    "personal-panel-create": "!personal-panel-create",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -2393,12 +2394,48 @@ async def personal_panel_setup(ctx):
     embed = discord.Embed(
         title="🔒 航空機Bot 個人設定パネル",
         description=(
-            "下のボタンを押すと、本人とBotだけが見られる専用チャンネルを作成します。\n"
+            "下のボタン、または `!personal-panel-create` で、本人とBotだけが見られる専用チャンネルを作成します。\n"
             "機体通知・目的地早期通知・空港ウォッチ・機材投入通知を個別に設定できます。"
         ),
         color=0x5865F2,
     )
     await ctx.send(embed=embed, view=PersonalPanelLauncherView())
+
+
+@bot.command(name="personal-panel-create")
+async def personal_panel_create(ctx):
+    if ctx.guild is None:
+        await ctx.send("このコマンドはサーバー内で使用してください。")
+        return
+    guild = ctx.guild
+    marker = f"aircraft-personal-panel:{ctx.author.id}"
+    existing = next((channel for channel in guild.text_channels if marker in str(channel.topic or "")), None)
+    if existing:
+        await ctx.send(f"専用チャンネルはすでにあります：{existing.mention}", delete_after=30)
+        return
+    try:
+        category = discord.utils.get(guild.categories, name="🔒｜個人設定")
+        if category is None:
+            category = await guild.create_category("🔒｜個人設定", reason="航空機Bot 個人設定パネル")
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            ctx.author: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True),
+        }
+        safe_name = re.sub(r"[^a-z0-9ぁ-んァ-ヶ一-龠_-]", "-", ctx.author.display_name.lower()).strip("-")[:40] or str(ctx.author.id)
+        channel = await guild.create_text_channel(f"個人設定-{safe_name}", category=category, overwrites=overwrites, topic=marker, reason="航空機Bot 個人設定パネル")
+        embed = discord.Embed(title="✈️ 航空機Bot 個人設定", description="個人通知の設定画面です。登録内容は本人とBot以外には表示されません。", color=0x5865F2)
+        message = await channel.send(embed=embed, view=PersonalControlPanelView())
+        try:
+            await message.pin(reason="個人設定パネルを常に表示するため")
+        except discord.HTTPException:
+            pass
+        await ctx.send(f"✅ 専用チャンネルを作成しました：{channel.mention}", delete_after=30)
+    except discord.Forbidden:
+        await ctx.send("チャンネルを作成できません。Botに「チャンネルの管理」権限を付けてください。")
+    except discord.HTTPException as exc:
+        logger.error("個人設定チャンネルの作成に失敗: %s", exc)
+        await ctx.send("チャンネル作成に失敗しました。しばらくしてから再度お試しください。")
 
 
 # ============ 管理者用スラッシュコマンド ============
