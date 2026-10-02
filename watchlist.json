@@ -1070,5 +1070,9 @@
     "a999df": {
         "label": "N718BA",
         "type": "BOEING 747-400LCF Dreamlifter (BLCF)"
+    },
+    "06a370": {
+        "label": "A7-CHI",
+        "type": "GULFSTREAM G700 (GA7C)"
     }
 }
