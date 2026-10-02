@@ -1074,5 +1074,9 @@
     "06a038": {
         "label": "A7-HHM",
         "type": "AIRBUS A-330-200 (A332)"
+    },
+    "06a01c": {
+        "label": "A7-HJJ",
+        "type": "AIRBUS A-330-200 (A332)"
     }
 }
