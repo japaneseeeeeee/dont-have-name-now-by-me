@@ -707,6 +707,10 @@
     "label": "N804SN",
     "type": "McDonnell Douglas MD-11F"
   },
+  "ac01ae": {
+    "label": "N873CA",
+    "type": "Airbus A330 343E"
+  },
   "ac2d32": {
     "label": "N884FD",
     "type": "Boeing 777-FS2"
