@@ -15,6 +15,7 @@ const interaction = { channel_id: "123" };
 let watchlist = {};
 let airportRequestUrl = "";
 let airportSchedule = { airport: { iata: "HND", icao: "RJTT", name: "Haneda" }, arrivals: [], departures: [] };
+let dispatchStatus = 204;
 
 globalThis.fetch = async (url, init = {}) => {
   const value = String(url);
@@ -36,7 +37,7 @@ globalThis.fetch = async (url, init = {}) => {
     watchlist = JSON.parse(Buffer.from(body.content, "base64").toString("utf8"));
     return new Response("{}", { status: 200 });
   }
-  if (value.endsWith("/dispatches")) return new Response(null, { status: 204 });
+  if (value.endsWith("/dispatches")) return new Response(null, { status: dispatchStatus });
   throw new Error(`Unexpected fetch: ${value}`);
 };
 
@@ -75,6 +76,8 @@ result = await worker.cmdAirport({ airport: "HND", date: "2026-02-30" }, env);
 assert.match(result.content, /実在する日付/);
 result = await worker.cmdAirport({ airport: "HND", start_time: "15:00" }, env);
 assert.match(result.content, /date/);
+result = await worker.cmdAirport({ airport: "HND" }, env);
+assert.match(result.content, /現在一時的に利用できません/);
 result = await worker.cmdAirport({ airport: "HND", date: "2026-10-03", start_time: "15:00", hours: 6 }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
 assert.match(airportRequestUrl, /2026-10-03T15%3A00\/2026-10-03T21%3A00/);
 assert.match(result.content, /2026-10-03 15:00から6時間/);
@@ -135,6 +138,23 @@ response = worker.handleLegacyPersonalAlertButton({
 });
 responseBody = await response.json();
 assert.match(responseBody.data.content, /__PERSONAL_ALERT__\|123\|alert_mute\|1420070400000000002/);
+assert.match(responseBody.data.content, /\|24h/);
+
+for (const [duration, id] of [["1h", "1420070400000000010"], ["6h", "1420070400000000011"], ["morning", "1420070400000000012"], ["24h", "1420070400000000013"]]) {
+  response = worker.handlePersonalAlertButton({
+    id,
+    user: { id: "123" },
+    data: { custom_id: `personal_alert|mute|123|${duration}` },
+    message: { embeds: [], components: [] },
+  });
+  responseBody = await response.json();
+  assert.match(responseBody.data.content, new RegExp(`__PERSONAL_ALERT__\\|123\\|alert_mute\\|${id}\\|${duration}`));
+}
+
+dispatchStatus = 503;
+result = await worker.cmdFlight({ query: "JL12" }, env, interaction);
+assert.match(result.content, /現在一時的に利用できません/);
+dispatchStatus = 204;
 
 response = worker.handlePersonalAlertButton({
   id: "1420070400000000003",

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -106,9 +107,14 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
             "personal_alert|stop|123|87c003|",
         )
         self.assertEqual(
-            custom_ids["個人通知を24時間休止"],
-            "personal_alert|mute|123",
+            custom_ids["1時間休止"],
+            "personal_alert|mute|123|1h",
         )
+        self.assertEqual(custom_ids["6時間休止"], "personal_alert|mute|123|6h")
+        self.assertEqual(
+            custom_ids["翌朝7時まで休止"], "personal_alert|mute|123|morning"
+        )
+        self.assertEqual(custom_ids["24時間休止"], "personal_alert|mute|123|24h")
 
     def test_personal_alert_bridge_actions_update_settings(self):
         self.store = {
@@ -143,6 +149,37 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         discord_bot.apply_personal_alert_action(123, "alert_mute", action_id=action_id)
         self.assertEqual(self.store["123"]["muted_until"], first_deadline)
         self.assertEqual(first_deadline, clicked_at + 24 * 3600)
+
+    def test_all_personal_mute_durations(self):
+        clicked_at = 1_700_000_000
+        action_id = str(((clicked_at * 1000) - 1420070400000) << 22)
+        for duration, seconds, text in (
+            ("1h", 3600, "1時間"),
+            ("6h", 6 * 3600, "6時間"),
+            ("24h", 24 * 3600, "24時間"),
+        ):
+            result = discord_bot.apply_personal_alert_action(
+                123, "alert_mute", duration, action_id=action_id
+            )
+            self.assertEqual(self.store["123"]["muted_until"], clicked_at + seconds)
+            self.assertIn(text, result)
+
+    def test_mute_until_next_morning_uses_japan_time(self):
+        jst = timezone(timedelta(hours=9))
+        clicked = datetime(2026, 10, 6, 20, 0, tzinfo=jst).timestamp()
+        deadline, label = discord_bot.personal_mute_deadline("morning", clicked)
+        self.assertEqual(
+            datetime.fromtimestamp(deadline, tz=jst),
+            datetime(2026, 10, 7, 7, 0, tzinfo=jst),
+        )
+        self.assertEqual(label, "翌朝7時まで")
+
+    async def test_flight_command_explains_adsb_outage(self):
+        with patch.object(
+            discord_bot, "find_live_aircraft", side_effect=discord_bot.AdsbUnavailableError
+        ):
+            await discord_bot.flight_lookup.callback(self.ctx, query="JL123")
+        self.assertIn("現在一時的に利用できません", self.ctx.messages[-1])
 
     async def test_airport_watch_add_list_and_remove(self):
         await discord_bot.my_airport_add.callback(self.ctx, "HND", 75)

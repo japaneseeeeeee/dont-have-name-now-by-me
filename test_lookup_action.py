@@ -7,7 +7,13 @@ os.environ.setdefault("GITHUB_REPOSITORY", "example/example")
 os.environ.setdefault("GITHUB_TOKEN", "test")
 os.environ.setdefault("DISCORD_BOT_TOKEN", "test")
 
-from lookup_action import airline_matches, lookup_live_type, search_result_components, search_tar1090
+from lookup_action import (
+    airline_matches,
+    lookup_live_callsign,
+    lookup_live_type,
+    search_result_components,
+    search_tar1090,
+)
 
 
 SAMPLE_DATABASE = """\
@@ -62,6 +68,17 @@ class SearchTar1090Tests(unittest.TestCase):
         rows = search_result_components(results, "B77W", "", 5)
         self.assertEqual(len(rows[0]["components"]), 5)
         self.assertTrue(rows[1]["components"][0]["custom_id"].startswith("searchpage|5|"))
+
+    def test_live_callsign_reports_api_availability(self):
+        with patch("lookup_action.request", return_value=b'{"ac":[]}'):
+            aircraft, available = lookup_live_callsign("JL123")
+        self.assertIsNone(aircraft)
+        self.assertTrue(available)
+
+        with patch("lookup_action.request", side_effect=OSError("offline")):
+            aircraft, available = lookup_live_callsign("JL123")
+        self.assertIsNone(aircraft)
+        self.assertFalse(available)
 
 
 if __name__ == "__main__":

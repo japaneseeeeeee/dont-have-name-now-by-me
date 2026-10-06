@@ -728,19 +728,30 @@ def callsign_candidates(text: str):
 
 def adsb_lookup(kind: str, value: str):
     """kind は callsign / hex。見つかった機体(dict)のリストを返す。なければ[]。"""
+    api_responded = False
     for base in ADSB_API_BASES:
         try:
             r = requests.get(
                 f"{base}/v2/{kind}/{value}", timeout=ADSB_TIMEOUT, headers=HTTP_HEADERS
             )
+            if r.status_code == 404:
+                api_responded = True
+                continue
             if r.status_code != 200:
                 continue
+            api_responded = True
             aircraft = r.json().get("ac") or []
             if aircraft:
                 return aircraft
         except (requests.RequestException, ValueError):
             continue
+    if not api_responded:
+        raise AdsbUnavailableError("all ADS-B providers are unavailable")
     return []
+
+
+class AdsbUnavailableError(RuntimeError):
+    """すべてのADS-B提供元に接続できなかった場合。"""
 
 
 def find_live_aircraft(text: str):
@@ -921,12 +932,16 @@ class PersonalAlertView(discord.ui.View):
         self.stop_aircraft.custom_id = (
             f"personal_alert|stop|{self.user_id}|{self.icao24}|{self.airport}"
         )
-        self.mute_day.custom_id = f"personal_alert|mute|{self.user_id}"
+        self.mute_one_hour.custom_id = f"personal_alert|mute|{self.user_id}|1h"
+        self.mute_six_hours.custom_id = f"personal_alert|mute|{self.user_id}|6h"
+        self.mute_until_morning.custom_id = f"personal_alert|mute|{self.user_id}|morning"
+        self.mute_day.custom_id = f"personal_alert|mute|{self.user_id}|24h"
         if self.airport:
             self.stop_aircraft.label = f"{self.airport}の空港通知を停止"
         self.add_item(discord.ui.Button(
             label="地図を見る", emoji="🗺️",
             url=f"https://globe.adsbexchange.com/?icao={self.icao24}",
+            row=2,
         ))
 
     async def interaction_check(self, interaction):
@@ -961,17 +976,60 @@ class PersonalAlertView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(
-        label="個人通知を24時間休止", emoji="🌙",
-        style=discord.ButtonStyle.secondary, custom_id="personal_alert|mute",
-    )
-    async def mute_day(self, interaction, button):
+    async def _mute(self, interaction, duration):
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(self.user_id)) or {"aircraft": {}}
-        config["muted_until"] = time.time() + 24 * 3600
+        deadline, label = personal_mute_deadline(duration)
+        config["muted_until"] = deadline
         settings[str(self.user_id)] = config
         save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-        await interaction.response.send_message("🌙 個人通知を24時間休止しました。", ephemeral=True)
+        await interaction.response.send_message(f"🌙 個人通知を{label}休止しました。", ephemeral=True)
+
+    @discord.ui.button(
+        label="1時間休止", emoji="🌙", row=1,
+        style=discord.ButtonStyle.secondary, custom_id="personal_alert|mute|1h",
+    )
+    async def mute_one_hour(self, interaction, button):
+        await self._mute(interaction, "1h")
+
+    @discord.ui.button(
+        label="6時間休止", emoji="🌙", row=1,
+        style=discord.ButtonStyle.secondary, custom_id="personal_alert|mute|6h",
+    )
+    async def mute_six_hours(self, interaction, button):
+        await self._mute(interaction, "6h")
+
+    @discord.ui.button(
+        label="翌朝7時まで休止", emoji="🌅", row=1,
+        style=discord.ButtonStyle.secondary, custom_id="personal_alert|mute|morning",
+    )
+    async def mute_until_morning(self, interaction, button):
+        await self._mute(interaction, "morning")
+
+    @discord.ui.button(
+        label="24時間休止", emoji="🌙", row=1,
+        style=discord.ButtonStyle.secondary, custom_id="personal_alert|mute|24h",
+    )
+    async def mute_day(self, interaction, button):
+        await self._mute(interaction, "24h")
+
+
+def personal_mute_deadline(duration, clicked_at=None):
+    """休止種別から終了時刻と利用者向け表示名を返す。翌朝は日本時間の翌日7時。"""
+    clicked_at = time.time() if clicked_at is None else float(clicked_at)
+    duration = str(duration or "24h").lower()
+    if duration == "1h":
+        return clicked_at + 3600, "1時間"
+    if duration == "6h":
+        return clicked_at + 6 * 3600, "6時間"
+    if duration == "morning":
+        jst = timezone(timedelta(hours=9))
+        clicked_jst = datetime.fromtimestamp(clicked_at, tz=jst)
+        next_morning = (clicked_jst + timedelta(days=1)).replace(
+            hour=7, minute=0, second=0, microsecond=0
+        )
+        return next_morning.timestamp(), "翌朝7時まで"
+    return clicked_at + 24 * 3600, "24時間"
 
 
 def apply_personal_alert_action(user_id, operation, icao24="", airport="", action_id=""):
@@ -980,13 +1038,13 @@ def apply_personal_alert_action(user_id, operation, icao24="", airport="", actio
     config = settings.get(str(user_id)) or {"aircraft": {}}
     if operation == "alert_mute":
         # Discord Interaction IDから押下時刻を復元すると、再送されても休止期限が
-        # 24時間ずつ延長されない。旧形式は従来どおり処理時刻を使う。
+        # 延長されない。旧形式は従来どおり処理時刻を使う。
         try:
             clicked_at = ((int(action_id) >> 22) + 1420070400000) / 1000
         except (TypeError, ValueError):
             clicked_at = time.time()
-        config["muted_until"] = clicked_at + 24 * 3600
-        result = "🌙 個人通知を24時間休止しました。"
+        config["muted_until"], label = personal_mute_deadline(icao24, clicked_at)
+        result = f"🌙 個人通知を{label}休止しました。"
     elif operation == "alert_stop":
         airport = str(airport or "").upper()
         if airport:
@@ -2894,7 +2952,14 @@ async def list_aircraft(ctx, page: int = 1):
 @bot.command(name="flight", aliases=["fl"])
 async def flight_lookup(ctx, *, query: str):
     async with ctx.typing():
-        aircraft_list = await asyncio.to_thread(find_live_aircraft, query)
+        try:
+            aircraft_list = await asyncio.to_thread(find_live_aircraft, query)
+        except AdsbUnavailableError:
+            await ctx.send(
+                "⚠️ 現在一時的に利用できません。ADS-Bデータサービスで障害または混雑が"
+                "発生しています。少し待ってから再度お試しください。"
+            )
+            return
         if not aircraft_list:
             await ctx.send(
                 f"❓ 「{query}」に一致する機体は、いまのADS-Bでは見つかりませんでした。"

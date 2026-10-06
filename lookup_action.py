@@ -356,7 +356,8 @@ def callsign_candidates(text):
 
 
 def lookup_live_callsign(query):
-    """adsb.lol から現在飛行中の機体を検索する。"""
+    """adsb.lolから検索し、(機体またはNone, API応答あり)を返す。"""
+    api_available = False
     for callsign in callsign_candidates(query):
         url = (
             "https://api.adsb.lol/v2/callsign/"
@@ -370,16 +371,19 @@ def lookup_live_callsign(query):
             data = json.loads(raw)
         except urllib.error.HTTPError as e:
             print(f"ADS-B HTTP error: {e.code} ({callsign})")
+            if e.code == 404:
+                api_available = True
             continue
         except Exception as e:
             print(f"ADS-B lookup failed: {type(e).__name__}: {e}")
             continue
 
         aircraft = data.get("ac") or []
+        api_available = True
         if aircraft:
-            return aircraft[0]
+            return aircraft[0], True
 
-    return None
+    return None, api_available
 
 
 
@@ -589,7 +593,7 @@ def main():
         query = str(args[0]).strip().upper()
 
         # まずリアルタイムADS-Bを検索
-        live = lookup_live_callsign(query)
+        live, adsb_available = lookup_live_callsign(query)
 
         if live:
             discord_send(
@@ -616,14 +620,19 @@ def main():
                 f"運航会社/所有者: {details.get('operator') or '不明'}\n"
                 f"登録国: {details.get('country') or '不明'}\n"
                 f"監視情報: {status}\n"
-                f"現在位置はADS-Bで確認できませんでした。",
+                + ("現在位置はADS-Bで確認できませんでした。" if adsb_available else
+                   "⚠️ 現在位置サービスは現在一時的に利用できません。"),
             )
             return
 
-        discord_send(
-            channel_id,
-            f"❓ `{query}` の現在のADS-B情報を取得できませんでした。",
-        )
+        if not adsb_available:
+            discord_send(
+                channel_id,
+                "⚠️ 現在一時的に利用できません。ADS-Bデータサービスで障害または混雑が"
+                "発生しています。少し待ってから再度お試しください。",
+            )
+        else:
+            discord_send(channel_id, f"❓ `{query}` の現在のADS-B情報を取得できませんでした。")
         return
 
     if op == "search":
@@ -638,7 +647,7 @@ def main():
         # 機種コードなら同型の飛行中機をまとめて取得し、最優先にする。
         candidates.extend(lookup_live_type(query, airline))
         if not candidates and not looks_like_type_code(query):
-            live = lookup_live_callsign(query)
+            live, _ = lookup_live_callsign(query)
             if live and live.get("hex") and live.get("r") and airline_matches(live, airline):
                 candidates.append({
                     "icao24": str(live["hex"]).lower(),

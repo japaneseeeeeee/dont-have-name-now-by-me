@@ -27,6 +27,8 @@ const HEX6 = /^[0-9a-fA-F]{6}$/;
 const UNKNOWN_TYPE = "不明";
 const COLOR_AIRBORNE = 0x3498db;
 const COLOR_GROUND = 0x2ecc71;
+const TEMPORARILY_UNAVAILABLE =
+  "⚠️ 現在一時的に利用できません。外部データサービスで障害または混雑が発生しています。少し待ってから再度お試しください。";
 const AIRPORT_SHORT_NAMES = {
   NRT: "Narita", HND: "Haneda", NGO: "Chubu", KIX: "Kansai",
   ITM: "Itami", CTS: "New Chitose", FUK: "Fukuoka", OKA: "Naha",
@@ -371,7 +373,7 @@ async function processCommand(interaction, env) {
     message = await runCommand(interaction, env);
   } catch (err) {
     console.error("command failed:", (err && err.stack) || err);
-    message = { content: "⚠️ 処理中にエラーが起きました。少し待ってから、もう一度試してください。" };
+    message = { content: TEMPORARILY_UNAVAILABLE };
   }
   await editOriginal(interaction, message);
   for (const followup of message.followups || []) {
@@ -390,7 +392,7 @@ async function processListPageButton(interaction, env) {
   } catch (err) {
     console.error("list page failed:", (err && err.stack) || err);
     await editOriginal(interaction, {
-      content: "⚠️ 一覧のページを取得できませんでした。少し待ってから再度お試しください。",
+      content: TEMPORARILY_UNAVAILABLE,
       components: [],
     });
   }
@@ -761,7 +763,10 @@ function handlePersonalAlertButton(interaction) {
   if (!/^\d+$/.test(ownerId) || ownerId !== userId) {
     return personalAlertError("この通知は登録者本人だけが操作できます。");
   }
-  if (action === "mute") return personalAlertBridge(interaction, "alert_mute");
+  if (action === "mute") {
+    const duration = ["1h", "6h", "morning", "24h"].includes(parts[3]) ? parts[3] : "24h";
+    return personalAlertBridge(interaction, "alert_mute", [duration]);
+  }
   if (action === "stop") {
     const icao24 = HEX6.test(parts[3] || "") ? parts[3].toLowerCase() : personalAlertIcao24(interaction);
     const airport = String(parts[4] || "").toUpperCase();
@@ -778,7 +783,7 @@ function handleLegacyPersonalAlertButton(interaction) {
   const component = clickedComponent(interaction);
   const label = String(component?.label || "");
   if (label === "個人通知を24時間休止") {
-    return personalAlertBridge(interaction, "alert_mute");
+    return personalAlertBridge(interaction, "alert_mute", ["24h"]);
   }
   if (label === "この機体の通知を停止" || /^(?:[A-Z0-9]{3,4})の空港通知を停止$/.test(label)) {
     const icao24 = personalAlertIcao24(interaction);
@@ -1284,7 +1289,7 @@ async function cmdAirport(o, env) {
   }
   if (!env.AERODATABOX_RAPIDAPI_KEY) {
     return {
-      content: "⚠️ 発着予定データAPIが未設定です。`AERODATABOX_RAPIDAPI_KEY` をWorkerのSecretに設定すると `/airport` を利用できます。\n現在のADS-Bだけでは、離陸前を含む正確な発着予定は取得できません。",
+      content: "⚠️ 空港の発着予定は現在一時的に利用できません。管理者側のAPI設定を確認してください。",
     };
   }
 
@@ -1323,7 +1328,7 @@ async function cmdAirport(o, env) {
     });
   } catch (err) {
     console.error("airport schedule failed:", err?.name, err?.message);
-    return { content: "⚠️ 発着予定サービスへ接続できませんでした。少し待ってから再試行してください。" };
+    return { content: "⚠️ 空港の発着予定は現在一時的に利用できません。少し待ってから再度お試しください。" };
   }
   if (response.status === 204 || response.status === 404) {
     return { content: `❓ 空港 \`${code}\` の発着予定は見つかりませんでした。コードを確認してください。` };
@@ -1331,7 +1336,7 @@ async function cmdAirport(o, env) {
   if (!response.ok) {
     console.error("airport schedule HTTP error:", response.status, await response.text());
     const hint = [401, 403, 429].includes(response.status) ? "APIキー・契約枠・利用上限を確認してください。" : "少し待ってから再試行してください。";
-    return { content: `⚠️ 発着予定を取得できませんでした（${response.status}）。${hint}` };
+    return { content: `⚠️ 空港の発着予定は現在一時的に利用できません。${hint}` };
   }
   const schedule = await response.json();
   const { data: watchlist } = await readWatchlist(env);
@@ -1370,14 +1375,20 @@ function looksLikeRegistration(query) {
 // ============ 詳しい検索(GitHub Actionsに依頼) ============
 
 async function startSlowLookup(env, op, args, interaction, { failure }) {
-  const r = await gh(env, "/dispatches", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ event_type: "lookup", client_payload: { op, args, channel_id: interaction.channel_id } }),
-  });
+  let r;
+  try {
+    r = await gh(env, "/dispatches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event_type: "lookup", client_payload: { op, args, channel_id: interaction.channel_id } }),
+    });
+  } catch (err) {
+    console.error("dispatch failed:", err?.name, err?.message);
+    return { content: TEMPORARILY_UNAVAILABLE };
+  }
   if (r.status !== 204) {
     console.error("dispatch failed:", r.status, await r.text());
-    return { content: failure };
+    return { content: TEMPORARILY_UNAVAILABLE };
   }
   return {
     content: "🔎 すぐには見つからなかったため、詳しく検索しています(1分ほどかかります)。" +
