@@ -21,6 +21,12 @@ personal_special_events.json
 personal_specials.json.lock
 personal_special_notified.json.lock
 personal_special_events.json.lock
+personal_alert_actions.json
+personal_alert_actions.json.lock
+system_alert_events.json
+system_alert_events.json.lock
+system_alert_state.json
+system_alert_state.json.lock
 destination_alerts.json
 destination_alerts.json.lock
 equipment_alerts.json

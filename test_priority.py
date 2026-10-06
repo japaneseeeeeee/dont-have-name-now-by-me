@@ -1,4 +1,7 @@
 import unittest
+import json
+import os
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 
 import monitor
@@ -197,6 +200,56 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual(events[0]["label"], "JA0001")
         self.assertEqual(events[0]["region"], "関東")
         self.assertIn("123456789012345678:abc123", notified)
+
+    def test_personal_subscription_index_groups_same_aircraft_users(self):
+        settings = {
+            "100": {"aircraft": {"ABC123": {"label": "A"}}},
+            "200": {"aircraft": {"abc123": {"label": "B"}}},
+            "300": {"enabled": False, "aircraft": {"abc123": {"label": "C"}}},
+        }
+        subscriptions, configs = monitor.build_personal_subscriptions(settings)
+        self.assertEqual([item[0] for item in subscriptions["abc123"]], ["100", "200"])
+        self.assertNotIn("300", configs)
+
+    def test_same_aircraft_position_is_reused_for_multiple_subscribers(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        settings = {
+            "100": {"aircraft": {"abc123": {"label": "A"}}},
+            "200": {"aircraft": {"abc123": {"label": "B"}}},
+        }
+        events, _ = monitor.find_personal_special_events([aircraft], settings, {}, 100)
+        self.assertEqual({event["user_id"] for event in events}, {"100", "200"})
+        self.assertEqual({event["event_key"] for event in events}, {"100:abc123", "200:abc123"})
+
+    def test_personal_event_queue_deduplicates_event_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "events.json")
+            old_path = monitor.PERSONAL_SPECIAL_EVENTS_PATH
+            monitor.PERSONAL_SPECIAL_EVENTS_PATH = path
+            try:
+                event = {"event_key": "100:abc123", "user_id": "100", "icao24": "abc123"}
+                monitor.append_personal_special_events([event])
+                monitor.append_personal_special_events([event])
+                with open(path, "r", encoding="utf-8") as data_file:
+                    self.assertEqual(json.load(data_file), [event])
+            finally:
+                monitor.PERSONAL_SPECIAL_EVENTS_PATH = old_path
+
+    def test_system_alert_queue_has_six_hour_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_events = monitor.SYSTEM_ALERT_EVENTS_PATH
+            old_state = monitor.SYSTEM_ALERT_STATE_PATH
+            monitor.SYSTEM_ALERT_EVENTS_PATH = os.path.join(directory, "events.json")
+            monitor.SYSTEM_ALERT_STATE_PATH = os.path.join(directory, "state.json")
+            try:
+                self.assertTrue(monitor.queue_system_alert("OpenSky", "利用制限", status_code=429, now=100))
+                self.assertFalse(monitor.queue_system_alert("OpenSky", "利用制限", status_code=429, now=200))
+                self.assertTrue(monitor.queue_system_alert("OpenSky", "利用制限", status_code=429, now=100 + 6 * 3600))
+                with open(monitor.SYSTEM_ALERT_EVENTS_PATH, "r", encoding="utf-8") as data_file:
+                    self.assertEqual(len(json.load(data_file)), 1)
+            finally:
+                monitor.SYSTEM_ALERT_EVENTS_PATH = old_events
+                monitor.SYSTEM_ALERT_STATE_PATH = old_state
 
     def test_personal_special_respects_cooldown_and_setting(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]

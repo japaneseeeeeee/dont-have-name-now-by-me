@@ -5,9 +5,15 @@ on:
   # 併用すると、別々のnotified.jsonを基に同じ機体を重複通知してしまう。
   workflow_dispatch:
 
+# 手動実行を連打しても、同じ監視処理を並列に走らせない。
+concurrency:
+  group: aircraft-monitor
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: self-hosted
+    timeout-minutes: 10
     permissions:
       contents: write
 

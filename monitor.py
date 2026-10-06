@@ -107,6 +107,13 @@ STATE_PATH = os.path.join(BASE_DIR, "notified.json")
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_STATE_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
+SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
+SYSTEM_ALERT_STATE_PATH = os.path.join(BASE_DIR, "system_alert_state.json")
+SYSTEM_ALERT_COOLDOWN = 6 * 60 * 60
+# launchd本体とself-hosted Actionsのcheckout先が異なっても同じロックを使う。
+MONITOR_LOCK_PATH = os.environ.get(
+    "AIRCRAFT_MONITOR_LOCK", "/tmp/aircraft-alert-monitor.lock"
+)
 
 PERSONAL_AIRLINE_ALIASES = {
     "JL": "JAL", "NH": "ANA", "MM": "APJ", "GK": "JJP", "BC": "SKY",
@@ -249,6 +256,8 @@ def load_watchlist():
             raise ValueError("watchlist must be an object")
     except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
         logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        queue_system_alert("GitHub", "共通watchlistの取得に失敗", str(exc), status)
         with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
             raw = json.load(f)
 
@@ -326,7 +335,7 @@ def find_new_detections(states, watchlist, notified, now):
     return to_notify, notified, present
 
 
-def find_new_region_detections(states, watchlist, notified, now):
+def find_new_region_detections(states, watchlist, notified, now, region_by_icao=None):
     """登録機を地方へ振り分け、地方ごとに重複通知を管理する。"""
     notified = dict(notified)
     present = set()
@@ -336,7 +345,11 @@ def find_new_region_detections(states, watchlist, notified, now):
         icao24 = (aircraft[0] or "").strip().lower()
         if icao24 not in watchlist:
             continue
-        region_key = classify_region(aircraft[6], aircraft[5])
+        region_key = (
+            region_by_icao.get(icao24)
+            if region_by_icao is not None
+            else classify_region(aircraft[6], aircraft[5])
+        )
         if region_key is None:
             continue
         state_key = f"{region_key}:{icao24}"
@@ -437,7 +450,11 @@ def save_shared_json(path, data):
 
 
 def append_personal_special_events(events):
-    """検出イベントをBotのDM送信キューへ追加する。"""
+    """検出イベントをBotのDM送信キューへ追加する。
+
+    同じ検出キーが既にキューにある場合は追加しない。監視処理の異常終了後に
+    再実行されても、未送信の同一イベントが積み重なるのを防ぐ。
+    """
     if not events:
         return
     path = PERSONAL_SPECIAL_EVENTS_PATH
@@ -454,11 +471,55 @@ def append_personal_special_events(events):
                 except (OSError, ValueError):
                     queued = []
             queued = queued if isinstance(queued, list) else []
+            queued_keys = {
+                item.get("event_key") for item in queued if isinstance(item, dict)
+            }
+            events = [
+                item for item in events
+                if not item.get("event_key") or item.get("event_key") not in queued_keys
+            ]
             with open(tmp_path, "w", encoding="utf-8") as data_file:
                 json.dump(queued + events, data_file, ensure_ascii=False, indent=2)
             os.replace(tmp_path, path)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def queue_system_alert(service, summary, detail="", status_code=None, now=None):
+    """管理者DM用の障害イベントを、同じ内容は6時間に1回だけキューへ積む。"""
+    now = time.time() if now is None else float(now)
+    status = str(status_code) if status_code is not None else "error"
+    alert_key = f"{service}:{status}:{summary}"
+    state = load_shared_json(SYSTEM_ALERT_STATE_PATH, {})
+    if alert_key in state and now - float(state[alert_key]) < SYSTEM_ALERT_COOLDOWN:
+        return False
+    event = {
+        "event_key": alert_key, "service": str(service), "summary": str(summary),
+        "detail": str(detail)[:800], "status_code": status_code, "detected_at": now,
+    }
+    path = SYSTEM_ALERT_EVENTS_PATH
+    lock_path, tmp_path = path + ".lock", path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            queued = []
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        queued = json.load(data_file)
+                except (OSError, ValueError):
+                    queued = []
+            queued = queued if isinstance(queued, list) else []
+            if not any(item.get("event_key") == alert_key for item in queued if isinstance(item, dict)):
+                queued.append(event)
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump(queued, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    state[alert_key] = now
+    save_shared_json(SYSTEM_ALERT_STATE_PATH, state)
+    return True
 
 
 def _in_quiet_hours(config, now):
@@ -512,35 +573,58 @@ def _distance_km(lat1, lon1, lat2, lon2):
     return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
 
 
-def find_personal_special_events(states, settings, notified, now, watchlist=None):
-    """個人登録機を条件に従って検出し、ユーザー別DMイベントを作る。"""
-    notified = dict(notified)
-    aircraft_by_icao = {
-        (aircraft[0] or "").strip().lower(): aircraft
-        for aircraft in states
-        if aircraft and aircraft[0]
-    }
-    active_keys = set()
-    events = []
-    watchlist = watchlist or {}
+def build_aircraft_index(states):
+    """1回のAPI応答をicao24で索引化し、位置の地方判定も1回だけ行う。"""
+    aircraft_by_icao = {}
+    region_by_icao = {}
+    for aircraft in states:
+        if not aircraft or not aircraft[0]:
+            continue
+        icao24 = str(aircraft[0]).strip().lower()
+        aircraft_by_icao[icao24] = aircraft
+        region_by_icao[icao24] = classify_region(aircraft[6], aircraft[5])
+    return aircraft_by_icao, region_by_icao
+
+
+def build_personal_subscriptions(settings):
+    """機体→購読ユーザーの逆引きを作り、全ユーザー総当たりを避ける。"""
+    subscriptions = {}
+    active_configs = {}
     for user_id, config in settings.items():
         if not isinstance(config, dict) or config.get("enabled", True) is False:
             continue
-        if float(config.get("muted_until") or 0) > now:
+        user_id = str(user_id)
+        active_configs[user_id] = config
+        for icao24, entry in (config.get("aircraft") or {}).items():
+            subscriptions.setdefault(str(icao24).lower(), []).append(
+                (user_id, entry if isinstance(entry, dict) else {})
+            )
+    return subscriptions, active_configs
+
+
+def find_personal_special_events(states, settings, notified, now, watchlist=None):
+    """個人登録機を条件に従って検出し、ユーザー別DMイベントを作る。"""
+    notified = dict(notified)
+    aircraft_by_icao, region_by_icao = build_aircraft_index(states)
+    subscriptions, active_configs = build_personal_subscriptions(settings)
+    active_keys = set()
+    events = []
+    watchlist = watchlist or {}
+    # APIに現れた登録機だけを、逆引きした購読者へ照合する。
+    for icao24, subscribers in subscriptions.items():
+        aircraft = aircraft_by_icao.get(icao24)
+        if aircraft is None:
             continue
-        registered = config.get("aircraft") or {}
-        for icao24, entry in registered.items():
-            icao24 = icao24.lower()
-            aircraft = aircraft_by_icao.get(icao24)
-            if aircraft is None:
-                continue
-            region_key = classify_region(aircraft[6], aircraft[5])
-            if region_key is None:
+        region_key = region_by_icao.get(icao24)
+        if region_key is None:
+            continue
+        for user_id, entry in subscribers:
+            config = active_configs[user_id]
+            if float(config.get("muted_until") or 0) > now:
                 continue
             selected_regions = config.get("regions") or []
             if selected_regions and region_key not in selected_regions:
                 continue
-            entry = entry if isinstance(entry, dict) else {}
             priority = str(entry.get("priority") or "SPECIAL").upper()
             if _in_quiet_hours(config, now) and priority != "SPECIAL":
                 continue
@@ -557,7 +641,8 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
                 continue
             notified[state_key] = now
             events.append({
-                "user_id": str(user_id),
+                "event_key": state_key,
+                "user_id": user_id,
                 "icao24": icao24,
                 "label": entry.get("label") or icao24,
                 "type": entry.get("type") or "不明",
@@ -575,6 +660,10 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
                 "detected_at": now,
             })
 
+    for user_id, config in active_configs.items():
+        if float(config.get("muted_until") or 0) > now:
+            continue
+        registered = config.get("aircraft") or {}
         # 空港ウォッチは、サーバーwatchlist内の注目機が指定空港へ近づいた時に通知する。
         for code, airport_config in (config.get("airports") or {}).items():
             point = AIRPORT_WATCH_POINTS.get(str(code).upper())
@@ -603,6 +692,7 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
                     continue
                 notified[state_key] = now
                 events.append({
+                    "event_key": state_key,
                     "user_id": str(user_id), "icao24": icao24,
                     "label": entry.get("label") or icao24, "type": entry.get("type") or "不明",
                     "priority": priority, "region": f"{airport_name}から約{distance:.0f}km",
@@ -872,6 +962,9 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     }
     try:
         response = request_with_retry("post", webhook_url, json=payload)
+        if response.status_code >= 400:
+            queue_system_alert("Discord", "航空機通知の送信に失敗", f"{region_name} / HTTP {response.status_code}", response.status_code)
+            response.raise_for_status()
         logger.info(
             "Discord通知: %s (%s / %s) %s 写真=%s 区間=%s",
             response.status_code, f"{region_name}/{label}", aircraft_type,
@@ -880,9 +973,11 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
         )
     except requests.exceptions.RequestException as exc:
         logger.error("Discord通知に失敗しました(%s): %s", label, exc)
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        queue_system_alert("Discord", "航空機通知の送信に失敗", str(exc), status)
 
 
-def main():
+def run_monitor():
     logger.info("チェック開始")
 
     missing = [name for name, value in (
@@ -893,10 +988,12 @@ def main():
     ) if not value]
     if missing:
         logger.error(".env に次の設定がありません: %s", ", ".join(missing))
+        queue_system_alert("設定", "必須設定が不足", ", ".join(missing))
         return
 
     watchlist = load_watchlist()
     notified = load_notified()
+    original_notified = notified
 
     # 1. OAuth2 トークンの取得
     token_url = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
@@ -910,10 +1007,12 @@ def main():
         token_res = request_with_retry("post", token_url, data=token_data)
     except requests.exceptions.RequestException as exc:
         logger.error("トークン取得に失敗しました(リトライ上限到達): %s", exc)
+        queue_system_alert("OpenSky", "認証サーバーへ接続できません", str(exc))
         return
 
     if token_res.status_code != 200:
         logger.error("トークン取得エラー: %d / 詳細: %s", token_res.status_code, token_res.text)
+        queue_system_alert("OpenSky", "認証または利用制限エラー", token_res.text, token_res.status_code)
         return
 
     access_token = token_res.json().get("access_token")
@@ -926,27 +1025,33 @@ def main():
         response = request_with_retry("get", url, params=JAPAN_BBOX, headers=headers)
     except requests.exceptions.RequestException as exc:
         logger.error("API取得に失敗しました(リトライ上限到達): %s", exc)
+        queue_system_alert("OpenSky", "航空機データAPIへ接続できません", str(exc))
         return
 
     if response.status_code != 200:
         logger.error("APIエラー: %d / 詳細: %s", response.status_code, response.text)
+        queue_system_alert("OpenSky", "航空機データAPIの利用制限または障害", response.text, response.status_code)
         return
 
     data = response.json()
     states = data.get("states") or []
+    _, region_by_icao = build_aircraft_index(states)
+    now = time.time()
 
     # メンバーごとの個人SPECIALを通常通知とは独立して判定し、
     # Botが本人へDMするためのイベントキューへ渡す。
     personal_settings = load_shared_json(PERSONAL_SPECIALS_PATH, {})
     personal_notified = load_shared_json(PERSONAL_SPECIAL_STATE_PATH, {})
+    original_personal_notified = personal_notified
     personal_events, personal_notified = find_personal_special_events(
-        states, personal_settings, personal_notified, time.time(), watchlist
+        states, personal_settings, personal_notified, now, watchlist
     )
-    save_shared_json(PERSONAL_SPECIAL_STATE_PATH, personal_notified)
+    if personal_notified != original_personal_notified:
+        save_shared_json(PERSONAL_SPECIAL_STATE_PATH, personal_notified)
     append_personal_special_events(personal_events)
 
     to_notify, notified, currently_present = find_new_region_detections(
-        states, watchlist, notified, time.time()
+        states, watchlist, notified, now, region_by_icao
     )
     region_notifications = set()
     for region_key, icao24, aircraft, repeat in to_notify:
@@ -963,10 +1068,13 @@ def main():
     # 地方へ入った後は地方通知へ切り替わるため、通常機が両方へ重複しない。
     outer_states = [
         aircraft for aircraft in states
-        if should_send_japan_outer_alert(aircraft, watchlist)
+        if (
+            (aircraft[0] or "").strip().lower() in watchlist
+            and region_by_icao.get((aircraft[0] or "").strip().lower()) is None
+        )
     ]
     outer_notify, notified, outer_present = find_new_area_detections(
-        outer_states, watchlist, notified, time.time(), "japan_outer"
+        outer_states, watchlist, notified, now, "japan_outer"
     )
     for icao24, aircraft, repeat in outer_notify:
         notify_discord(
@@ -985,11 +1093,11 @@ def main():
         if (
             entry
             and should_send_japan_alert(aircraft, entry)
-            and classify_region(aircraft[6], aircraft[5]) is not None
+            and region_by_icao.get(icao24) is not None
         ):
             nationwide_states.append(aircraft)
     nationwide_notify, notified, nationwide_present = find_new_area_detections(
-        nationwide_states, watchlist, notified, time.time(), "nationwide"
+        nationwide_states, watchlist, notified, now, "nationwide"
     )
     for icao24, aircraft, repeat in nationwide_notify:
         # Webhookの設定ミスで日本周辺と地方が同じチャンネルを指していても、
@@ -1006,7 +1114,8 @@ def main():
             repeat,
         )
 
-    save_notified(notified)
+    if notified != original_notified:
+        save_notified(notified)
 
     logger.info(
         "チェック完了。地方別=%s / 日本周辺=%s / 個人SPECIAL=%d件",
@@ -1016,5 +1125,21 @@ def main():
     )
 
 
+def main():
+    """同時起動を拒否して、API取得・状態更新・通知の二重実行を防ぐ。"""
+    with open(MONITOR_LOCK_PATH, "a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.warning("別の監視処理が実行中のため、今回の重複実行を省略します")
+            return
+        run_monitor()
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        logger.exception("監視処理が予期せず停止しました")
+        queue_system_alert("監視システム", "監視処理が予期せず停止", repr(exc))
+        raise

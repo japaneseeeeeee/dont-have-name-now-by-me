@@ -143,11 +143,23 @@
       },
       {
         "name": "hours",
-        "description": "今から何時間分を表示するか（1〜12、既定3）",
+        "description": "表示する時間（1〜12、通常3・日付指定時12）",
         "type": 4,
         "required": false,
         "min_value": 1,
         "max_value": 12
+      },
+      {
+        "name": "date",
+        "description": "空港現地の日付（YYYY-MM-DD、例: 2026-10-03）",
+        "type": 3,
+        "required": false
+      },
+      {
+        "name": "start_time",
+        "description": "日付指定時の開始時刻（HH:MM、既定00:00）",
+        "type": 3,
+        "required": false
       },
       {
         "name": "show_all",

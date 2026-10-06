@@ -34,6 +34,29 @@ file_mtime() {
     fi
 }
 
+# プロセスの経過時間を秒で返す。macOSのpsにはGNU版の`etimes`がないため、
+# 両方で使える`etime`（[[日-]時:]分:秒）を数値へ変換する。
+process_elapsed_seconds() {
+    local pid="$1" value days=0 hours=0 minutes=0 seconds=0 rest
+    value=$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')
+    [ -n "$value" ] || return 1
+    rest="$value"
+    if [[ "$rest" == *-* ]]; then
+        days=${rest%%-*}
+        rest=${rest#*-}
+    fi
+    IFS=: read -r first second third <<< "$rest"
+    if [ -n "$third" ]; then
+        hours=$first
+        minutes=$second
+        seconds=$third
+    else
+        minutes=$first
+        seconds=$second
+    fi
+    echo $((10#$days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+}
+
 # .env の Webhook に1行送る(失敗しても無視)
 notify_discord() {
     [ -f "$ENV_FILE" ] || return 0
@@ -51,7 +74,7 @@ notify_discord() {
 PID=$(pgrep -f "aircraft-alert/monitor.py")
 
 if [ -n "$PID" ]; then
-    ETIME=$(ps -p "$PID" -o etimes= | tr -d ' ')
+    ETIME=$(process_elapsed_seconds "$PID")
 
     if [ -n "$ETIME" ] && [ "$ETIME" -gt "$MAX_RUNTIME" ]; then
         log "[WARN] monitor.py (PID $PID) が ${ETIME}秒 経過しておりハングと判断。強制終了します。"
@@ -85,7 +108,7 @@ reason=""
 if [ "$BOT_PID" = "-" ]; then
     reason="Botのプロセスが停止していたため"
 else
-    uptime=$(ps -p "$BOT_PID" -o etimes= | tr -d ' ')
+    uptime=$(process_elapsed_seconds "$BOT_PID")
     if [ -n "$uptime" ] && [ "$uptime" -lt "$BOT_MIN_UPTIME" ]; then
         exit 0    # 起動直後
     fi

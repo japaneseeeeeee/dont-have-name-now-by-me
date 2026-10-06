@@ -37,6 +37,7 @@ import math
 import os
 import re
 import time
+from urllib.parse import unquote
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -66,12 +67,15 @@ STATE_PATH = os.path.join(BASE_DIR, "bot_state.json")          # チャンネル
 HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が更新時刻を見る
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
+SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
+PERSONAL_SPECIAL_NOTIFIED_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
+PERSONAL_ALERT_ACTIONS_PATH = os.path.join(BASE_DIR, "personal_alert_actions.json")
 EQUIPMENT_ALERTS_PATH = os.path.join(BASE_DIR, "equipment_alerts.json")
 DESTINATION_ALERTS_PATH = os.path.join(BASE_DIR, "destination_alerts.json")
 HEARTBEAT_INTERVAL = 30                                        # 秒
 CATCHUP_MAX_AGE = timedelta(hours=12)                          # これより古い取りこぼしは処理しない
 CATCHUP_LIMIT = 50                                             # 1回の再接続で拾う最大件数
-FEEDBACK_SOURCE_CHANNEL_ID = int(os.environ.get("FEEDBACK_SOURCE_CHANNEL_ID", "1552183795187322962"))
+FEEDBACK_SOURCE_CHANNEL_ID = int(os.environ.get("FEEDBACK_SOURCE_CHANNEL_ID", "1554454760038465576"))
 FEEDBACK_DESTINATION_CHANNEL_ID = int(
     os.environ.get("FEEDBACK_DESTINATION_CHANNEL_ID", "1552647426253389926")
 )
@@ -83,6 +87,12 @@ PERSONAL_SPECIAL_LIMIT = 20
 PERSONAL_DESTINATION_LIMIT = 20
 PERSONAL_AIRPORT_LIMIT = 10
 PERSONAL_AIRPORTS = ("HND", "NRT", "CTS", "ITM", "KIX", "NGO", "FUK", "OKA")
+PERSONAL_LAUNCHER_CHANNEL_NAME = "🔒｜個人設定を作る"
+PERSONAL_LAUNCHER_TOPIC = "aircraft-personal-launcher"
+PERSONAL_CATEGORY_NAMES = ("🔒｜個人設定", "🔒｜個人設定2", "🔒｜個人設定3")
+PERSONAL_CHANNEL_LIMIT = 150
+DISCORD_CATEGORY_CHANNEL_LIMIT = 50
+PERSONAL_LIMIT_NOTICE_COOLDOWN = 60 * 60
 EQUIPMENT_ALERT_LIMIT = 20
 EQUIPMENT_ALERT_CHANNEL_ID = int(
     os.environ.get("EQUIPMENT_ALERT_CHANNEL_ID", "1553395098249732157")
@@ -170,6 +180,7 @@ USAGE = {
     "my-destination-panel": "!my-destination-panel",
     "personal-panel-setup": "!personal-panel-setup",
     "personal-panel-create": "!personal-panel-create",
+    "feedback-panel-setup": "!feedback-panel-setup",
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -187,6 +198,9 @@ class AircraftBot(commands.Bot):
         logger.info("スラッシュコマンドの登録はWorker側で管理します")
         self.add_view(PersonalPanelLauncherView())
         self.add_view(PersonalControlPanelView())
+        self.add_view(FeedbackPanelView())
+        self.add_view(PhotoChannelPanelView())
+        self.add_view(EquipmentChannelPanelView())
 
 
 bot = AircraftBot(command_prefix=PREFIX, intents=intents)
@@ -288,6 +302,49 @@ def append_personal_special_events(events):
             queued = queued if isinstance(queued, list) else []
             with open(tmp_path, "w", encoding="utf-8") as data_file:
                 json.dump(queued + events, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def consume_system_alert_events():
+    """監視処理が作った管理者向け障害イベントをまとめて取り出す。"""
+    path, lock_path, tmp_path = SYSTEM_ALERT_EVENTS_PATH, SYSTEM_ALERT_EVENTS_PATH + ".lock", SYSTEM_ALERT_EVENTS_PATH + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            events = []
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        events = json.load(data_file)
+                except (OSError, ValueError):
+                    events = []
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump([], data_file)
+            os.replace(tmp_path, path)
+            return events if isinstance(events, list) else []
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def append_system_alert_events(events):
+    """管理者DMの一時的な失敗分をキューへ戻す。"""
+    if not events:
+        return
+    path, lock_path, tmp_path = SYSTEM_ALERT_EVENTS_PATH, SYSTEM_ALERT_EVENTS_PATH + ".lock", SYSTEM_ALERT_EVENTS_PATH + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            queued = []
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        queued = json.load(data_file)
+                except (OSError, ValueError):
+                    queued = []
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump((queued if isinstance(queued, list) else []) + events, data_file, ensure_ascii=False, indent=2)
             os.replace(tmp_path, path)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
@@ -859,6 +916,12 @@ class PersonalAlertView(discord.ui.View):
         self.user_id = int(user_id)
         self.icao24 = str(icao24).lower()
         self.airport = str(airport or "").upper()
+        # DiscordのInteraction EndpointがCloudflareを向いているため、
+        # Worker側でも判別できる固定custom_idを必ず付ける。
+        self.stop_aircraft.custom_id = (
+            f"personal_alert|stop|{self.user_id}|{self.icao24}|{self.airport}"
+        )
+        self.mute_day.custom_id = f"personal_alert|mute|{self.user_id}"
         if self.airport:
             self.stop_aircraft.label = f"{self.airport}の空港通知を停止"
         self.add_item(discord.ui.Button(
@@ -872,7 +935,10 @@ class PersonalAlertView(discord.ui.View):
         await interaction.response.send_message("この通知は登録者本人だけが操作できます。", ephemeral=True)
         return False
 
-    @discord.ui.button(label="この機体の通知を停止", emoji="🔕", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="この機体の通知を停止", emoji="🔕",
+        style=discord.ButtonStyle.danger, custom_id="personal_alert|stop",
+    )
     async def stop_aircraft(self, interaction, button):
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(self.user_id)) or {}
@@ -895,7 +961,10 @@ class PersonalAlertView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(label="個人通知を24時間休止", emoji="🌙", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="個人通知を24時間休止", emoji="🌙",
+        style=discord.ButtonStyle.secondary, custom_id="personal_alert|mute",
+    )
     async def mute_day(self, interaction, button):
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(self.user_id)) or {"aircraft": {}}
@@ -903,6 +972,40 @@ class PersonalAlertView(discord.ui.View):
         settings[str(self.user_id)] = config
         save_locked_json(PERSONAL_SPECIALS_PATH, settings)
         await interaction.response.send_message("🌙 個人通知を24時間休止しました。", ephemeral=True)
+
+
+def apply_personal_alert_action(user_id, operation, icao24="", airport="", action_id=""):
+    """通知DMの操作を反映し、利用者向けの結果文を返す。"""
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(user_id)) or {"aircraft": {}}
+    if operation == "alert_mute":
+        # Discord Interaction IDから押下時刻を復元すると、再送されても休止期限が
+        # 24時間ずつ延長されない。旧形式は従来どおり処理時刻を使う。
+        try:
+            clicked_at = ((int(action_id) >> 22) + 1420070400000) / 1000
+        except (TypeError, ValueError):
+            clicked_at = time.time()
+        config["muted_until"] = clicked_at + 24 * 3600
+        result = "🌙 個人通知を24時間休止しました。"
+    elif operation == "alert_stop":
+        airport = str(airport or "").upper()
+        if airport:
+            airports = config.get("airports") or {}
+            removed = airports.pop(airport, None)
+            config["airports"] = airports
+            result = (f"🔕 {airport}の空港通知を停止しました。"
+                      if removed else "対象はすでに解除されています。")
+        else:
+            registered = config.get("aircraft") or {}
+            removed = registered.pop(str(icao24 or "").lower(), None)
+            config["aircraft"] = registered
+            result = ("🔕 この機体の個人通知を停止しました。"
+                      if removed else "対象はすでに解除されています。")
+    else:
+        return "⚠️ この通知操作には対応していません。"
+    settings[str(user_id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    return result
 
 
 class AirportWatchModal(discord.ui.Modal, title="空港ウォッチを追加"):
@@ -944,7 +1047,7 @@ class PersonalSettingsView(discord.ui.View):
         await interaction.response.send_message("本人だけが操作できます。", ephemeral=True)
         return False
 
-    @discord.ui.button(label="登録・条件を表示", emoji="📋", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="登録・条件を表示", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|summary")
     async def show_settings(self, interaction, button):
         config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(self.user_id)) or {}
         aircraft = config.get("aircraft") or {}
@@ -957,7 +1060,7 @@ class PersonalSettingsView(discord.ui.View):
         lines.append("機種: " + (", ".join(filters.get("types") or []) or "すべて"))
         await interaction.response.send_message("👤 **個人設定**\n" + "\n".join(lines), ephemeral=True)
 
-    @discord.ui.button(label="通知ON/OFF", emoji="🔔", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="通知ON/OFF", emoji="🔔", style=discord.ButtonStyle.secondary, custom_id="personal_action|settings_toggle")
     async def toggle(self, interaction, button):
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(self.user_id)) or {"aircraft": {}}
@@ -966,11 +1069,11 @@ class PersonalSettingsView(discord.ui.View):
         save_locked_json(PERSONAL_SPECIALS_PATH, settings)
         await interaction.response.send_message(f"DM通知を **{'ON' if config['enabled'] else 'OFF'}** にしました。", ephemeral=True)
 
-    @discord.ui.button(label="空港を追加", emoji="🏢", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="空港を追加", emoji="🏢", style=discord.ButtonStyle.success, custom_id="personal_action|airport_add")
     async def add_airport(self, interaction, button):
         await interaction.response.send_modal(AirportWatchModal(self.user_id))
 
-    @discord.ui.button(label="絞り込み解除", emoji="↩️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="絞り込み解除", emoji="↩️", style=discord.ButtonStyle.secondary, custom_id="personal_action|filters_reset")
     async def reset_filters(self, interaction, button):
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(self.user_id)) or {"aircraft": {}}
@@ -1064,11 +1167,11 @@ class PersonalDestinationView(discord.ui.View):
         await interaction.response.send_message("本人だけが操作できます。", ephemeral=True)
         return False
 
-    @discord.ui.button(label="追加", emoji="➕", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="追加", emoji="➕", style=discord.ButtonStyle.success, custom_id="personal_action|destination_add")
     async def add_rule_button(self, interaction, button):
         await interaction.response.send_modal(PersonalDestinationAddModal(self.user_id))
 
-    @discord.ui.button(label="一覧", emoji="📋", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|destination_list")
     async def list_rules_button(self, interaction, button):
         _, rules = personal_destination_rules(self.user_id)
         if not rules:
@@ -1077,7 +1180,7 @@ class PersonalDestinationView(discord.ui.View):
         lines = [f"ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules]
         await interaction.response.send_message("🌍 **個人早期通知**\n" + "\n".join(lines), ephemeral=True)
 
-    @discord.ui.button(label="解除", emoji="🗑️", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|destination_remove")
     async def remove_rule_button(self, interaction, button):
         await interaction.response.send_modal(PersonalDestinationRemoveModal(self.user_id))
 
@@ -1143,6 +1246,552 @@ def personal_panel_summary(user_id):
     )
 
 
+def delete_personal_notification_data(user_id):
+    """個人チャンネル削除時に、その利用者の通知設定と待機データをすべて消す。"""
+    owner_id = str(user_id)
+    removed = {"settings": 0, "destinations": 0, "equipment": 0, "events": 0, "history": 0}
+
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    if settings.pop(owner_id, None) is not None:
+        removed["settings"] = 1
+        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+
+    events = load_locked_json(PERSONAL_SPECIAL_EVENTS_PATH, [])
+    if isinstance(events, list):
+        kept_events = [event for event in events if str(event.get("user_id")) != owner_id]
+        removed["events"] = len(events) - len(kept_events)
+        if removed["events"]:
+            save_locked_json(PERSONAL_SPECIAL_EVENTS_PATH, kept_events)
+
+    notified = load_locked_json(PERSONAL_SPECIAL_NOTIFIED_PATH, {})
+    if isinstance(notified, dict):
+        history_keys = [key for key in notified if str(key).startswith(f"{owner_id}:")]
+        for key in history_keys:
+            notified.pop(key, None)
+        removed["history"] += len(history_keys)
+        if history_keys:
+            save_locked_json(PERSONAL_SPECIAL_NOTIFIED_PATH, notified)
+
+    destination_store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
+    destination_rules = destination_store.get("rules") or []
+    kept_destinations = [
+        rule for rule in destination_rules
+        if not (rule.get("scope") == "personal" and str(rule.get("owner_id")) == owner_id)
+    ]
+    removed["destinations"] = len(destination_rules) - len(kept_destinations)
+    if removed["destinations"]:
+        destination_store["rules"] = kept_destinations
+        save_locked_json(DESTINATION_ALERTS_PATH, destination_store)
+
+    equipment_store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+    equipment_rules = equipment_store.get("rules") or []
+    removed_rule_ids = {
+        str(rule.get("id")) for rule in equipment_rules
+        if rule.get("scope") == "personal" and str(rule.get("owner_id")) == owner_id
+    }
+    kept_equipment = [rule for rule in equipment_rules if str(rule.get("id")) not in removed_rule_ids]
+    removed["equipment"] = len(equipment_rules) - len(kept_equipment)
+    if removed_rule_ids:
+        equipment_store["rules"] = kept_equipment
+        equipment_notified = equipment_store.get("notified") or {}
+        equipment_store["notified"] = {
+            key: value for key, value in equipment_notified.items()
+            if str(key).split(":", 1)[0] not in removed_rule_ids
+        }
+        save_locked_json(EQUIPMENT_ALERTS_PATH, equipment_store)
+
+    return removed
+
+
+PERSONAL_PANEL_BRIDGE_PREFIX = "__PERSONAL_PANEL__|"
+PERSONAL_ALERT_BRIDGE_PREFIX = "__PERSONAL_ALERT__|"
+PERSONAL_ALERT_ACTION_HISTORY_LIMIT = 500
+_personal_limit_notified_at = {}
+
+
+def parse_personal_alert_bridge(content):
+    """Discord上に残した通知操作キューを解析する。旧形式も移行期間中は受け付ける。"""
+    text = str(content or "")
+    marker_at = text.find(PERSONAL_ALERT_BRIDGE_PREFIX)
+    if marker_at >= 0:
+        payload = text[marker_at:].split("||", 1)[0].strip()
+        parts = payload.split("|")
+        if len(parts) >= 4 and parts[1].isdigit():
+            return {
+                "user_id": int(parts[1]),
+                "operation": parts[2],
+                "action_id": parts[3],
+                "args": parts[4:],
+            }
+        return None
+
+    if text.startswith(PERSONAL_PANEL_BRIDGE_PREFIX):
+        parts = text.split("|")
+        if len(parts) >= 3 and parts[1].isdigit() and parts[2] in {"alert_stop", "alert_mute"}:
+            return {
+                "user_id": int(parts[1]),
+                "operation": parts[2],
+                "action_id": "",
+                "args": parts[3:],
+            }
+    return None
+
+
+def personal_alert_action_handled(action_id):
+    if not action_id:
+        return False
+    state = load_locked_json(PERSONAL_ALERT_ACTIONS_PATH, {"handled": []})
+    return str(action_id) in set(str(value) for value in state.get("handled", []))
+
+
+def mark_personal_alert_action_handled(action_id):
+    if not action_id:
+        return
+    state = load_locked_json(PERSONAL_ALERT_ACTIONS_PATH, {"handled": []})
+    handled = [str(value) for value in state.get("handled", []) if value]
+    action_id = str(action_id)
+    if action_id not in handled:
+        handled.append(action_id)
+    state["handled"] = handled[-PERSONAL_ALERT_ACTION_HISTORY_LIMIT:]
+    save_locked_json(PERSONAL_ALERT_ACTIONS_PATH, state)
+
+
+async def handle_personal_alert_bridge(message):
+    """Workerの通知操作を実行する。失敗時はメッセージを残し、再接続後に再試行する。"""
+    queued = parse_personal_alert_bridge(message.content)
+    if queued is None:
+        return False
+    user_id = queued["user_id"]
+    operation = queued["operation"]
+    action_id = queued["action_id"]
+    args = queued["args"]
+    recipient = getattr(message.channel, "recipient", None)
+    if message.guild is not None or (recipient is not None and recipient.id != user_id):
+        logger.warning("個人通知DM操作を拒否: user=%s channel=%s", user_id, message.channel.id)
+        return True
+    if operation not in {"alert_stop", "alert_mute"}:
+        logger.warning("未対応の個人通知DM操作: %s", operation)
+        return True
+
+    if action_id and personal_alert_action_handled(action_id):
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+        return True
+
+    try:
+        result = apply_personal_alert_action(
+            user_id,
+            operation,
+            args[0] if args else "",
+            args[1] if len(args) > 1 else "",
+            action_id=action_id,
+        )
+        mark_personal_alert_action_handled(action_id)
+        await message.channel.send(result)
+        await message.delete()
+        logger.info("個人通知DM操作を反映: operation=%s user=%s", operation, user_id)
+    except Exception as exc:
+        # キュー本体を消さないことで、Mac/Bot復旧後のcatch-upで再試行できる。
+        logger.exception("個人通知DM操作の反映に失敗: %s", exc)
+        try:
+            await message.channel.send(
+                "⚠️ 通知設定の変更を保留しています。Bot復旧後に自動で再試行します。"
+            )
+        except discord.HTTPException:
+            pass
+    return True
+
+
+personal_alert_catchup_lock = asyncio.Lock()
+
+
+async def catch_up_personal_alert_bridges():
+    """Mac停止中にDiscord DMへ残った通知操作を再接続時に処理する。"""
+    async with personal_alert_catchup_lock:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+        user_ids = {int(value) for value in settings if str(value).isdigit()}
+        channels = {
+            channel.id: channel for channel in list(bot.private_channels)
+            if isinstance(channel, discord.DMChannel)
+        }
+        # BotのREADYで過去DMがキャッシュされない場合もあるため、登録利用者のDMを
+        # 明示的に開く。これでMac停止中の操作も取りこぼさない。
+        for user_id in sorted(user_ids):
+            try:
+                user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+                channel = user.dm_channel or await user.create_dm()
+                channels[channel.id] = channel
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning("個人通知DMの確認準備に失敗: user=%s error=%s", user_id, exc)
+
+        for channel in channels.values():
+            try:
+                async for message in channel.history(limit=50, oldest_first=True):
+                    if not bot.user or message.author.id != bot.user.id:
+                        continue
+                    if message.created_at < cutoff:
+                        continue
+                    if parse_personal_alert_bridge(message.content) is not None:
+                        await handle_personal_alert_bridge(message)
+            except discord.HTTPException as exc:
+                logger.warning("個人通知操作のcatch-up失敗: channel=%s error=%s", channel.id, exc)
+
+
+async def notify_personal_channel_limit(guild, member, current_count):
+    """個人チャンネル上限への到達を管理者へDMする（同一利用者は1時間に1回）。"""
+    if not bot.is_ready() or bot.is_closed():
+        return
+    now = time.time()
+    notice_key = (getattr(guild, "id", None), getattr(member, "id", None))
+    if now - _personal_limit_notified_at.get(notice_key, 0) < PERSONAL_LIMIT_NOTICE_COOLDOWN:
+        return
+    try:
+        owner = await bot.fetch_user(FEEDBACK_OWNER_ID)
+        embed = discord.Embed(
+            title="⚠️ 個人チャンネル上限に到達",
+            description=(
+                f"**{getattr(member, 'display_name', member)}** "
+                f"(`{getattr(member, 'id', '不明')}`) が個人チャンネルの作成を試みました。"
+            ),
+            color=0xF39C12,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="サーバー", value=f"{getattr(guild, 'name', '不明')} (`{getattr(guild, 'id', '不明')}`)",
+            inline=False,
+        )
+        embed.add_field(
+            name="現在の個人チャンネル数",
+            value=f"{current_count} / {PERSONAL_CHANNEL_LIMIT}",
+            inline=False,
+        )
+        await owner.send(embed=embed)
+        _personal_limit_notified_at[notice_key] = now
+    except (discord.Forbidden, discord.HTTPException, TypeError, ValueError) as exc:
+        logger.error("個人チャンネル上限の管理者通知に失敗しました: %s", exc)
+
+
+async def create_personal_settings_channel(guild, member):
+    """本人専用チャンネルを重複させず、3カテゴリへ最大150件作成する。"""
+    marker = f"aircraft-personal-panel:{member.id}"
+    existing = next((channel for channel in guild.text_channels if marker in str(channel.topic or "")), None)
+    if existing:
+        return existing, False
+
+    personal_channels = [
+        channel for channel in guild.text_channels
+        if "aircraft-personal-panel:" in str(channel.topic or "")
+    ]
+    if len(personal_channels) >= PERSONAL_CHANNEL_LIMIT:
+        await notify_personal_channel_limit(guild, member, len(personal_channels))
+        return None, False
+
+    category = None
+    for category_name in PERSONAL_CATEGORY_NAMES:
+        candidate = discord.utils.get(guild.categories, name=category_name)
+        if candidate is not None and len(candidate.channels) < DISCORD_CATEGORY_CHANNEL_LIMIT:
+            category = candidate
+            break
+    if category is None:
+        for category_name in PERSONAL_CATEGORY_NAMES:
+            if discord.utils.get(guild.categories, name=category_name) is None:
+                category = await guild.create_category(
+                    category_name, reason="航空機Bot 個人設定パネル"
+                )
+                break
+    if category is None:
+        await notify_personal_channel_limit(guild, member, len(personal_channels))
+        return None, False
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True),
+    }
+    safe_name = re.sub(r"[^a-z0-9ぁ-んァ-ヶ一-龠_-]", "-", member.display_name.lower()).strip("-")[:40] or str(member.id)
+    channel = await guild.create_text_channel(
+        f"個人設定-{safe_name}", category=category, overwrites=overwrites,
+        topic=marker, reason="航空機Bot 個人設定パネル",
+    )
+    embed = discord.Embed(
+        title="✈️ 航空機Bot 個人設定",
+        description="下のボタンから個人通知を設定できます。登録内容は本人とBot以外には表示されません。",
+        color=0x5865F2,
+    )
+    embed.set_footer(text="個人設定パネル")
+    panel = await channel.send(embed=embed, view=PersonalControlPanelView())
+    try:
+        await panel.pin(reason="個人設定パネルを常に表示するため")
+    except discord.HTTPException:
+        pass
+    return channel, True
+
+
+async def handle_personal_panel_bridge(message):
+    """Workerが受けた個人パネル操作を、ローカル保存データへ安全に反映する。"""
+    content = str(message.content or "")
+    if not content.startswith(PERSONAL_PANEL_BRIDGE_PREFIX):
+        return False
+    parts = content.split("|")
+    if len(parts) < 3 or not parts[1].isdigit():
+        return True
+    user_id = int(parts[1])
+    operation = parts[2]
+    args = parts[3:]
+    topic = str(getattr(message.channel, "topic", "") or "")
+    if operation == "launcher_refresh":
+        if PERSONAL_LAUNCHER_TOPIC not in topic:
+            logger.warning("個人設定入口パネルの移動を拒否: user=%s channel=%s", user_id, message.channel.id)
+            return True
+        try:
+            async for old_message in message.channel.history(limit=100):
+                if old_message.id == message.id:
+                    continue
+                if (old_message.author.id == bot.user.id and old_message.embeds
+                        and str(old_message.embeds[0].footer.text or "") == "personal-launcher-panel"):
+                    try:
+                        await old_message.delete()
+                    except discord.HTTPException:
+                        pass
+            await message.channel.send("✅ 個人設定作成パネルを一番下へ移動しました。", delete_after=5)
+            await send_personal_launcher_panel(message.channel)
+        except discord.HTTPException as exc:
+            logger.error("個人設定入口パネルの移動に失敗: %s", exc)
+            await message.channel.send("⚠️ パネルの移動に失敗しました。", delete_after=15)
+        finally:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+        return True
+    if operation == "create":
+        if PERSONAL_LAUNCHER_TOPIC not in topic or message.guild is None:
+            logger.warning("個人チャンネル作成を拒否: user=%s channel=%s", user_id, message.channel.id)
+            return True
+        try:
+            member = message.guild.get_member(user_id) or await message.guild.fetch_member(user_id)
+            channel, created = await create_personal_settings_channel(message.guild, member)
+            if channel is None:
+                text = f"<@{user_id}> ⚠️ 個人チャンネルは最大{PERSONAL_CHANNEL_LIMIT}人までです。"
+            else:
+                text = (f"<@{user_id}> ✅ 専用チャンネルを作成しました：{channel.mention}"
+                        if created else f"<@{user_id}> 専用チャンネルはすでにあります：{channel.mention}")
+            await message.channel.send(text, delete_after=30, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.Forbidden:
+            await message.channel.send("チャンネルを作成できません。Botに「チャンネルの管理」権限を付けてください。", delete_after=30)
+        except discord.HTTPException as exc:
+            logger.error("個人設定チャンネルの作成に失敗: %s", exc)
+            await message.channel.send("チャンネル作成に失敗しました。しばらくしてから再度お試しください。", delete_after=30)
+        finally:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+        return True
+    if f"aircraft-personal-panel:{user_id}" not in topic:
+        logger.warning("個人パネル連携を拒否: user=%s channel=%s", user_id, message.channel.id)
+        return True
+
+    result = "⚠️ この操作には対応していません。"
+    try:
+        if operation == "aircraft_add" and args:
+            aircraft = args[0]
+            priority = (args[1] if len(args) > 1 else "NORMAL").upper()
+            if priority not in {"NORMAL", "SPECIAL"}:
+                result = "⚠️ 通知レベルは NORMAL または SPECIAL で指定してください。"
+            else:
+                resolved = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
+                if resolved is None:
+                    result = f"⚠️ `{aircraft}` の機体を確認できませんでした。"
+                else:
+                    icao24, label, type_name = resolved
+                    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+                    config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
+                    registered = config.get("aircraft") or {}
+                    if icao24 not in registered and len(registered) >= PERSONAL_SPECIAL_LIMIT:
+                        result = f"⚠️ 個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。"
+                    else:
+                        registered[icao24] = {"label": label, "type": type_name, "priority": priority}
+                        config["aircraft"] = registered
+                        settings[str(user_id)] = config
+                        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                        result = f"✅ `{label}` ({icao24} / {type_name}) を **{priority}** で登録しました。"
+        elif operation == "aircraft_list":
+            config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
+            registered = config.get("aircraft") or {}
+            result = ("✈️ **個人機体通知**\n" + "\n".join(
+                f"`{value.get('label') or icao24}` ({icao24})｜{str(value.get('priority') or 'NORMAL').upper()}"
+                for icao24, value in sorted(registered.items())
+            )) if registered else "個人機体通知は登録されていません。"
+        elif operation == "aircraft_remove" and args:
+            target = args[0].strip().upper()
+            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+            config = settings.get(str(user_id)) or {}
+            registered = config.get("aircraft") or {}
+            found = next((icao24 for icao24, value in registered.items()
+                          if icao24.upper() == target or str(value.get("label") or "").upper() == target), None)
+            if found is None:
+                result = f"⚠️ `{target}` は個人機体通知に見つかりませんでした。"
+            else:
+                label = registered[found].get("label") or found
+                del registered[found]
+                config["aircraft"] = registered
+                settings[str(user_id)] = config
+                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                result = f"🗑️ `{label}` ({found}) の個人機体通知を解除しました。"
+        elif operation == "destination_add" and len(args) >= 2:
+            result = await create_personal_destination_rule(user_id, args[0], args[1])
+        elif operation == "destination_list":
+            _, rules = personal_destination_rules(user_id)
+            result = ("🌍 **個人早期通知**\n" + "\n".join(
+                f"ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules
+            )) if rules else "個人早期通知は登録されていません。"
+        elif operation == "destination_remove" and args and args[0].isdigit():
+            target_id = int(args[0])
+            store, rules = personal_destination_rules(user_id)
+            rule = next((item for item in rules if item.get("id") == target_id), None)
+            if rule is None:
+                result = f"⚠️ ID `{target_id}` は見つかりませんでした。"
+            else:
+                store["rules"].remove(rule)
+                save_locked_json(DESTINATION_ALERTS_PATH, store)
+                result = f"🗑️ `{rule['registration']}` → `{rule['destination']}` を解除しました。"
+        elif operation == "airport_add" and args:
+            code = args[0].upper()
+            try:
+                radius = max(10, min(int(args[1] if len(args) > 1 and args[1] else "50"), 200))
+            except ValueError:
+                radius = 0
+            if code not in PERSONAL_AIRPORTS:
+                result = "⚠️ 対応空港: " + " / ".join(PERSONAL_AIRPORTS)
+            elif not radius:
+                result = "⚠️ 半径は10〜200kmの数字で入力してください。"
+            else:
+                settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+                config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
+                airports = config.get("airports") or {}
+                if code not in airports and len(airports) >= PERSONAL_AIRPORT_LIMIT:
+                    result = f"⚠️ 空港ウォッチは{PERSONAL_AIRPORT_LIMIT}空港までです。"
+                else:
+                    airports[code] = {"radius_km": radius}
+                    config["airports"] = airports
+                    settings[str(user_id)] = config
+                    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                    result = f"✅ `{code}`を半径{radius}kmで空港ウォッチへ追加しました。"
+        elif operation == "airport_list":
+            config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
+            airports = config.get("airports") or {}
+            result = ("🏢 **空港ウォッチ**\n" + "\n".join(
+                f"`{code}`｜半径{value.get('radius_km', 50)}km" for code, value in sorted(airports.items())
+            )) if airports else "空港ウォッチは登録されていません。"
+        elif operation == "airport_remove" and args:
+            code = args[0].strip().upper()
+            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+            config = settings.get(str(user_id)) or {}
+            airports = config.get("airports") or {}
+            if airports.pop(code, None) is None:
+                result = f"⚠️ `{code}` は空港ウォッチに見つかりませんでした。"
+            else:
+                config["airports"] = airports
+                settings[str(user_id)] = config
+                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                result = f"🗑️ `{code}` の空港ウォッチを解除しました。"
+        elif operation == "equipment_add" and len(args) >= 2:
+            store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+            current = equipment_rules_for(store, user_id, "personal")
+            if len(current) >= EQUIPMENT_ALERT_LIMIT:
+                result = f"⚠️ 機材通知は{EQUIPMENT_ALERT_LIMIT}件までです。"
+            else:
+                rule, created = add_rule(store, owner_id=user_id, scope="personal", flight=args[0], equipment=args[1])
+                if not rule["flight"] or not rule["equipment"]:
+                    result = "⚠️ 便名と機材コードを確認してください。"
+                elif created:
+                    save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+                    result = f"✅ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` を登録しました。"
+                else:
+                    result = f"ℹ️ ID `{rule['id']}` は登録済みです。"
+        elif operation == "equipment_list":
+            store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+            rules = equipment_rules_for(store, user_id, "personal")
+            result = ("🔔 **個人機材投入通知**\n" + "\n".join(
+                f"ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`" for rule in rules
+            )) if rules else "個人機材投入通知は登録されていません。"
+        elif operation == "equipment_remove" and args and args[0].isdigit():
+            target_id = int(args[0])
+            store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+            rules = equipment_rules_for(store, user_id, "personal")
+            rule = next((item for item in rules if item.get("id") == target_id), None)
+            if rule is None:
+                result = f"⚠️ ID `{target_id}` は見つかりませんでした。"
+            else:
+                store["rules"].remove(rule)
+                save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+                result = f"🗑️ `{rule['flight']}` × `{rule['equipment']}` を解除しました。"
+        elif operation == "settings_toggle":
+            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+            config = settings.get(str(user_id)) or {"aircraft": {}}
+            config["enabled"] = not config.get("enabled", True)
+            settings[str(user_id)] = config
+            save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+            result = f"✅ 個人通知を **{'ON' if config['enabled'] else 'OFF'}** にしました。"
+        elif operation == "filters_reset":
+            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+            config = settings.get(str(user_id)) or {"aircraft": {}}
+            config.pop("filters", None)
+            settings[str(user_id)] = config
+            save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+            result = "✅ 飛行状態・航空会社・機種の絞り込みを解除しました。"
+        elif operation == "summary":
+            result = "👤 **現在の個人設定**\n" + personal_panel_summary(user_id)
+        elif operation == "refresh":
+            async for old_message in message.channel.history(limit=100):
+                if old_message.id == message.id:
+                    continue
+                if (old_message.author.id == bot.user.id and old_message.embeds
+                        and old_message.embeds[0].title == "✈️ 航空機Bot 個人設定"):
+                    try:
+                        await old_message.delete()
+                    except discord.HTTPException:
+                        pass
+            await message.channel.send("✅ 個人設定パネルを一番下へ移動しました。", delete_after=5)
+            embed = discord.Embed(
+                title="✈️ 航空機Bot 個人設定",
+                description="下のボタンから個人通知を設定できます。登録内容は本人とBot以外には表示されません。",
+                color=0x5865F2,
+            )
+            embed.set_footer(text="個人設定パネル")
+            await message.channel.send(embed=embed, view=PersonalControlPanelView())
+            result = ""
+        elif operation == "channel_delete":
+            channel = message.channel
+            await channel.delete(reason=f"本人の操作による個人設定チャンネル削除: {user_id}")
+            removed = await asyncio.to_thread(delete_personal_notification_data, user_id)
+            try:
+                recipient = message.guild.get_member(user_id) if message.guild else None
+                if recipient is None:
+                    recipient = await bot.fetch_user(user_id)
+                await recipient.send(
+                    "🗑️ 個人設定チャンネルを削除しました。個人通知の登録内容と設定データもすべて削除したため、個人通知は停止しました。"
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            logger.info("個人設定とチャンネルを削除: user=%s removed=%s", user_id, removed)
+            return True
+        if result:
+            await message.channel.send(result[:1990])
+    except Exception as exc:
+        logger.exception("個人パネル連携の処理に失敗: %s", exc)
+        await message.channel.send("⚠️ 個人設定の処理に失敗しました。しばらくしてから再度お試しください。")
+    finally:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+    return True
+
+
 class PersonalControlPanelView(discord.ui.View):
     """本人専用チャンネルへ固定する、再起動後も動く統合パネル。"""
     def __init__(self):
@@ -1156,36 +1805,91 @@ class PersonalControlPanelView(discord.ui.View):
         await interaction.response.send_message("このパネルはチャンネルの所有者本人だけが操作できます。", ephemeral=True)
         return False
 
-    @discord.ui.button(label="機体通知", emoji="✈️", style=discord.ButtonStyle.primary, custom_id="personal_panel:aircraft")
-    async def aircraft(self, interaction, button):
-        await interaction.response.send_modal(PersonalAircraftAddModal())
+    # Discordの上限（5行×5個）に収まるため、各機能を1行ずつ配置する。
+    # Interaction EndpointはWorkerのため、ここのcallbackは永続View登録用。
+    @discord.ui.button(label="機体を通知登録", emoji="✈️", style=discord.ButtonStyle.success, custom_id="personal_action|aircraft_add", row=0)
+    async def aircraft_add(self, interaction, button): pass
+    @discord.ui.button(label="機体の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|aircraft_list", row=0)
+    async def aircraft_list(self, interaction, button): pass
+    @discord.ui.button(label="機体の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|aircraft_remove", row=0)
+    async def aircraft_remove(self, interaction, button): pass
 
-    @discord.ui.button(label="目的地早期通知", emoji="🌍", style=discord.ButtonStyle.primary, custom_id="personal_panel:destination")
-    async def destination(self, interaction, button):
-        await interaction.response.send_message("追加・一覧・解除を選んでください。", view=PersonalDestinationView(interaction.user.id), ephemeral=True)
+    @discord.ui.button(label="目的地を通知登録", emoji="🌍", style=discord.ButtonStyle.success, custom_id="personal_action|destination_add", row=1)
+    async def destination_add(self, interaction, button): pass
+    @discord.ui.button(label="目的地の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|destination_list", row=1)
+    async def destination_list(self, interaction, button): pass
+    @discord.ui.button(label="目的地の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|destination_remove", row=1)
+    async def destination_remove(self, interaction, button): pass
 
-    @discord.ui.button(label="空港ウォッチ", emoji="🏢", style=discord.ButtonStyle.primary, custom_id="personal_panel:airport")
-    async def airport(self, interaction, button):
-        await interaction.response.send_modal(AirportWatchModal(interaction.user.id))
+    @discord.ui.button(label="空港周辺を通知登録", emoji="🏢", style=discord.ButtonStyle.success, custom_id="personal_action|airport_add", row=2)
+    async def airport_add(self, interaction, button): pass
+    @discord.ui.button(label="空港の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|airport_list", row=2)
+    async def airport_list(self, interaction, button): pass
+    @discord.ui.button(label="空港の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|airport_remove", row=2)
+    async def airport_remove(self, interaction, button): pass
 
-    @discord.ui.button(label="機材投入通知", emoji="🔔", style=discord.ButtonStyle.primary, custom_id="personal_panel:equipment")
-    async def equipment(self, interaction, button):
-        await interaction.response.send_modal(PersonalEquipmentAddModal())
+    @discord.ui.button(label="便・機材を通知登録", emoji="🔔", style=discord.ButtonStyle.success, custom_id="personal_action|equipment_add", row=3)
+    async def equipment_add(self, interaction, button): pass
+    @discord.ui.button(label="便・機材の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|equipment_list", row=3)
+    async def equipment_list(self, interaction, button): pass
+    @discord.ui.button(label="便・機材の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|equipment_remove", row=3)
+    async def equipment_remove(self, interaction, button): pass
 
-    @discord.ui.button(label="通知設定", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings")
+    @discord.ui.button(label="通知ON・条件設定", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings", row=4)
     async def settings(self, interaction, button):
         await interaction.response.send_message("個人通知の設定です。", view=PersonalSettingsView(interaction.user.id), ephemeral=True)
 
-    @discord.ui.button(label="登録状況", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary")
+    @discord.ui.button(label="全登録・設定を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary", row=4)
     async def summary(self, interaction, button):
         await interaction.response.send_message("👤 **現在の個人設定**\n" + personal_panel_summary(interaction.user.id), ephemeral=True)
+
+    @discord.ui.button(label="パネルを一番下へ", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:refresh", row=4)
+    async def refresh(self, interaction, button): pass
+
+    @discord.ui.button(label="個人設定を全削除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_panel:delete", row=4)
+    async def delete_channel(self, interaction, button): pass
+
+    @discord.ui.button(label="この画面の使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=4)
+    async def help(self, interaction, button): pass
+
+
+async def refresh_personal_control_panels():
+    """既存の個人設定パネルを最新ボタンに更新し、必要なら最下部へ移動する。"""
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if "aircraft-personal-panel:" not in str(channel.topic or ""):
+                continue
+            try:
+                async for message in channel.history(limit=50):
+                    if (message.author.id == bot.user.id and message.embeds
+                            and message.embeds[0].title == "✈️ 航空機Bot 個人設定"):
+                        logger.info("個人設定パネルを確認: channel=%s footer=%r", channel.id, message.embeds[0].footer.text)
+                        footer_text = str(message.embeds[0].footer.text or "")
+                        if footer_text == "個人設定パネル":
+                            await message.edit(view=PersonalControlPanelView())
+                        elif footer_text == "personal-panel-v3":
+                            embed = message.embeds[0].copy()
+                            embed.set_footer(text="個人設定パネル")
+                            await message.edit(embed=embed, view=PersonalControlPanelView())
+                        else:
+                            embed = message.embeds[0].copy()
+                            embed.set_footer(text="個人設定パネル")
+                            new_message = await channel.send(embed=embed, view=PersonalControlPanelView())
+                            try:
+                                await new_message.pin(reason="個人設定パネルを常に表示するため")
+                            except discord.HTTPException:
+                                pass
+                            await message.delete()
+                        break
+            except discord.HTTPException as exc:
+                logger.error("個人設定パネルの更新に失敗: channel=%s %s", channel.id, exc)
 
 
 class PersonalPanelLauncherView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="自分専用の設定チャンネルを作る", emoji="🔒", style=discord.ButtonStyle.success, custom_id="personal_panel:create")
+    @discord.ui.button(label="自分専用の通知設定を作る", emoji="🔒", style=discord.ButtonStyle.success, custom_id="personal_panel:create")
     async def create_panel(self, interaction, button):
         guild = interaction.guild
         if guild is None:
@@ -1198,28 +1902,65 @@ class PersonalPanelLauncherView(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            category = discord.utils.get(guild.categories, name="🔒｜個人設定")
-            if category is None:
-                category = await guild.create_category("🔒｜個人設定", reason="航空機Bot 個人設定パネル")
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
-                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True),
-            }
-            safe_name = re.sub(r"[^a-z0-9ぁ-んァ-ヶ一-龠_-]", "-", interaction.user.display_name.lower()).strip("-")[:40] or str(interaction.user.id)
-            channel = await guild.create_text_channel(f"個人設定-{safe_name}", category=category, overwrites=overwrites, topic=marker, reason="航空機Bot 個人設定パネル")
-            embed = discord.Embed(title="✈️ 航空機Bot 個人設定", description="下のボタンから個人通知を設定できます。登録内容は本人とBot以外には表示されません。", color=0x5865F2)
-            message = await channel.send(embed=embed, view=PersonalControlPanelView())
-            try:
-                await message.pin(reason="個人設定パネルを常に表示するため")
-            except discord.HTTPException:
-                pass
+            channel, _ = await create_personal_settings_channel(guild, interaction.user)
+            if channel is None:
+                await interaction.followup.send(
+                    f"⚠️ 個人チャンネルは最大{PERSONAL_CHANNEL_LIMIT}人までです。",
+                    ephemeral=True,
+                )
+                return
             await interaction.followup.send(f"✅ 専用チャンネルを作成しました：{channel.mention}", ephemeral=True)
         except discord.Forbidden:
             await interaction.followup.send("チャンネルを作成できません。Botに「チャンネルの管理」権限を付けてください。", ephemeral=True)
         except discord.HTTPException as exc:
             logger.error("個人設定チャンネルの作成に失敗: %s", exc)
             await interaction.followup.send("チャンネル作成に失敗しました。しばらくしてから再度お試しください。", ephemeral=True)
+
+    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:launcher_refresh")
+    async def refresh(self, interaction, button): pass
+
+    @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:launcher_help")
+    async def help(self, interaction, button): pass
+
+
+class GeneralMenuView(discord.ui.View):
+    """一般コマンドチャンネルの常設メニューを最新表示へ更新する。"""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="機体を探して登録", emoji="🔍", style=discord.ButtonStyle.primary, custom_id="menu|aircraft-search", row=0)
+    async def search(self, interaction, button): pass
+    @discord.ui.button(label="機体の詳細を見る", emoji="🛩️", style=discord.ButtonStyle.secondary, custom_id="menu|info", row=0)
+    async def info(self, interaction, button): pass
+    @discord.ui.button(label="飛行中の便を探す", emoji="🛫", style=discord.ButtonStyle.primary, custom_id="menu|flight", row=0)
+    async def flight(self, interaction, button): pass
+    @discord.ui.button(label="現在の発着を見る", emoji="🏢", style=discord.ButtonStyle.secondary, custom_id="menu|airport", row=0)
+    async def airport(self, interaction, button): pass
+
+    @discord.ui.button(label="サーバー登録機を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="menu|list", row=1)
+    async def list_aircraft(self, interaction, button): pass
+    @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|help", row=1)
+    async def help(self, interaction, button): pass
+    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="menu|refresh", row=1)
+    async def refresh(self, interaction, button): pass
+    @discord.ui.button(label="管理者メニュー", emoji="⚙️", style=discord.ButtonStyle.danger, custom_id="menu|admin", row=1)
+    async def admin(self, interaction, button): pass
+
+
+async def refresh_general_menu_panel():
+    """既存の一般コマンドメニューを、新しいボタン名と構成へ更新する。"""
+    for guild in bot.guilds:
+        channels = [channel for channel in guild.text_channels if "一般コマンド" in channel.name]
+        for channel in channels:
+            try:
+                async for message in channel.history(limit=50):
+                    if (message.author.id == bot.user.id
+                            and "航空機通知Botメニュー" in str(message.content or "")):
+                        await message.edit(view=GeneralMenuView())
+                        logger.info("一般コマンドパネルを更新: channel=%s message=%s", channel.id, message.id)
+                        break
+            except discord.HTTPException as exc:
+                logger.error("一般コマンドパネルの更新に失敗: channel=%s %s", channel.id, exc)
 
 
 @tasks.loop(seconds=10)
@@ -1282,6 +2023,41 @@ async def personal_special_dispatch():
                 retry_events.append(event)
     if retry_events:
         await asyncio.to_thread(append_personal_special_events, retry_events)
+
+
+@tasks.loop(seconds=30)
+async def system_alert_dispatch():
+    """API制限・認証失敗・監視停止などを管理者へDMする。"""
+    if not bot.is_ready() or bot.is_closed():
+        return
+    events = await asyncio.to_thread(consume_system_alert_events)
+    retry_events = []
+    for event in events:
+        try:
+            owner = await bot.fetch_user(FEEDBACK_OWNER_ID)
+            status = event.get("status_code")
+            description = event.get("summary") or "システムで問題が発生しました。"
+            if status is not None:
+                description += f"\nHTTP状態: `{status}`"
+            detail = str(event.get("detail") or "").strip()
+            embed = discord.Embed(
+                title=f"⚠️ システム警告｜{event.get('service') or '不明'}",
+                description=description,
+                color=0xED4245,
+                timestamp=datetime.fromtimestamp(float(event.get("detected_at", time.time())), timezone.utc),
+            )
+            if detail:
+                embed.add_field(name="詳細", value=detail[:1000], inline=False)
+            embed.set_footer(text="同じ内容の通知は6時間抑制されます")
+            await owner.send(embed=embed)
+        except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
+            logger.error("システム警告の管理者DMに失敗しました: %s", exc)
+            retry_count = int(event.get("retry_count", 0)) + 1
+            if retry_count <= 3:
+                event["retry_count"] = retry_count
+                retry_events.append(event)
+    if retry_events:
+        await asyncio.to_thread(append_system_alert_events, retry_events)
 
 
 @tasks.loop(seconds=120)
@@ -1431,43 +2207,308 @@ async def destination_alert_dispatch():
 
 # ============ イベント ============
 
+FEEDBACK_BRIDGE_PREFIX = "__FEEDBACK__|"
+
+
+async def forward_feedback(author, description, *, kind="質問・改善要望", created_at=None):
+    """質問・改善要望を管理者用チャンネルへ転送する共通処理。"""
+    destination = bot.get_channel(FEEDBACK_DESTINATION_CHANNEL_ID)
+    if destination is None:
+        destination = await bot.fetch_channel(FEEDBACK_DESTINATION_CHANNEL_ID)
+    allowed = discord.AllowedMentions(
+        everyone=False, roles=False,
+        users=[discord.Object(id=FEEDBACK_OWNER_ID)], replied_user=False,
+    )
+    embed = discord.Embed(
+        title=f"📮 新しい{kind}", description=description[:4000],
+        color=0x5865F2, timestamp=created_at or discord.utils.utcnow(),
+    )
+    embed.add_field(name="送信者", value=f"{author.mention} (`{author.id}`)", inline=False)
+    await destination.send(f"<@{FEEDBACK_OWNER_ID}>", embed=embed, allowed_mentions=allowed)
+
+
+async def handle_feedback_bridge(message):
+    """Workerの質問パネル操作をローカルBotで転送・再配置する。"""
+    content = str(message.content or "")
+    if not content.startswith(FEEDBACK_BRIDGE_PREFIX):
+        return False
+    try:
+        _, user_text, operation, encoded, source_message_id = (content.split("|", 4) + ["", ""])[:5]
+        if message.channel.id != FEEDBACK_SOURCE_CHANNEL_ID or not user_text.isdigit():
+            return True
+        if operation == "refresh":
+            if source_message_id.isdigit():
+                try:
+                    old = await message.channel.fetch_message(int(source_message_id))
+                    await old.delete()
+                except discord.HTTPException:
+                    pass
+            await send_feedback_panel(message.channel)
+        elif operation in {"question", "request"}:
+            author = message.guild.get_member(int(user_text)) if message.guild else None
+            author = author or await bot.fetch_user(int(user_text))
+            text = unquote(encoded).strip()
+            await forward_feedback(author, text or "（本文なし）", kind="質問" if operation == "question" else "改善要望")
+            try:
+                await author.send("✅ 質問・改善要望を管理者へ送信しました。回答はこのDMに届きます。")
+            except discord.HTTPException:
+                pass
+    except (discord.HTTPException, ValueError) as exc:
+        logger.error("質問パネル連携に失敗しました: %s", exc)
+    finally:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+    return True
+
+
+class FeedbackPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="質問を送る", emoji="❓", style=discord.ButtonStyle.primary, custom_id="feedback:question")
+    async def question(self, interaction, button):
+        pass
+
+    @discord.ui.button(label="改善要望を送る", emoji="💡", style=discord.ButtonStyle.success, custom_id="feedback:request")
+    async def request(self, interaction, button):
+        pass
+
+    @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="feedback:help")
+    async def help(self, interaction, button):
+        pass
+
+    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="feedback:refresh")
+    async def refresh(self, interaction, button):
+        pass
+
+
+class PhotoChannelPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="ボタンの説明・投稿方法", emoji="📖", style=discord.ButtonStyle.primary, custom_id="photo:help")
+    async def help(self, interaction, button): pass
+
+    @discord.ui.button(label="機体情報を調べる", emoji="🛩️", style=discord.ButtonStyle.secondary, custom_id="menu|info")
+    async def info(self, interaction, button): pass
+
+    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="photo:refresh")
+    async def refresh(self, interaction, button): pass
+
+
+class EquipmentChannelPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="機材投入通知を追加", emoji="➕", style=discord.ButtonStyle.success, custom_id="equipment_server:add")
+    async def add(self, interaction, button): pass
+
+    @discord.ui.button(label="登録便を見る", emoji="📋", style=discord.ButtonStyle.primary, custom_id="equipment_server:list")
+    async def list(self, interaction, button): pass
+
+    @discord.ui.button(label="機材投入通知を解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="equipment_server:remove")
+    async def remove(self, interaction, button): pass
+
+    @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="equipment_server:help")
+    async def help(self, interaction, button): pass
+
+    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="equipment_server:refresh")
+    async def refresh(self, interaction, button): pass
+
+
+async def send_photo_channel_panel(channel):
+    embed = discord.Embed(
+        title="📸 航空機写真の投稿",
+        description="写真を添付し、本文の最初に登録記号、その下に撮影場所と感想を書いてください。Botが機体情報付きのスレッドを作成します。",
+        color=0x3498DB,
+    )
+    embed.set_footer(text="photo-channel-panel")
+    return await channel.send(embed=embed, view=PhotoChannelPanelView())
+
+
+async def send_equipment_channel_panel(channel):
+    embed = discord.Embed(
+        title="🔔 サーバー機材投入通知",
+        description="指定便に指定機材が実際に投入されたことをADS-Bで確認すると、このチャンネルへ通知します。設定変更は管理者専用です。",
+        color=0xF1C40F,
+    )
+    embed.set_footer(text="equipment-channel-panel")
+    return await channel.send(embed=embed, view=EquipmentChannelPanelView())
+
+
+async def send_personal_launcher_panel(channel):
+    embed = discord.Embed(
+        title="🔒 個人設定チャンネルを作成",
+        description=(
+            "下のボタンを押すと、本人とBotだけが見られる専用チャンネルを作成します。\n"
+            "作成後は、機体通知・目的地早期通知・空港ウォッチ・機材投入通知をボタンで設定できます。"
+        ),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="personal-launcher-panel")
+    return await channel.send(embed=embed, view=PersonalPanelLauncherView())
+
+
+async def ensure_personal_launcher_channel():
+    """個人設定の公開入口チャンネルと常設ボタンを用意する。"""
+    for guild in bot.guilds:
+        channel = next((item for item in guild.text_channels if PERSONAL_LAUNCHER_TOPIC in str(item.topic or "")), None)
+        if channel is None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True),
+            }
+            channel = await guild.create_text_channel(
+                PERSONAL_LAUNCHER_CHANNEL_NAME, overwrites=overwrites,
+                topic=PERSONAL_LAUNCHER_TOPIC, reason="航空機Bot 個人設定の入口",
+            )
+        async for message in channel.history(limit=30):
+            if (message.author.id == bot.user.id and message.embeds
+                    and str(message.embeds[0].footer.text or "") == "personal-launcher-panel"):
+                await message.edit(view=PersonalPanelLauncherView())
+                break
+        else:
+            panel = await send_personal_launcher_panel(channel)
+            try:
+                await panel.pin(reason="個人設定の入口を常に表示するため")
+            except discord.HTTPException:
+                pass
+
+
+async def ensure_channel_panel(channel_id, footer_text, sender, view):
+    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    async for message in channel.history(limit=50):
+        if (message.author.id == bot.user.id and message.embeds
+                and str(message.embeds[0].footer.text or "") == footer_text):
+            await message.edit(view=view())
+            return message
+    message = await sender(channel)
+    try:
+        await message.pin(reason="操作パネルを常に表示するため")
+    except discord.HTTPException:
+        pass
+    return message
+
+
+CHANNEL_PANEL_BRIDGE_PREFIX = "__CHANNEL_PANEL__|"
+
+
+async def handle_channel_panel_bridge(message):
+    content = str(message.content or "")
+    if not content.startswith(CHANNEL_PANEL_BRIDGE_PREFIX):
+        return False
+    parts = (content.split("|", 6) + ["", "", "", "", "", "", ""])[:7]
+    _, user_text, panel, operation, arg1, arg2, source_message_id = parts
+    logger.info(
+        "チャンネルパネル操作を受信: panel=%s operation=%s user=%s channel=%s",
+        panel, operation, user_text, message.channel.id,
+    )
+    try:
+        member = message.guild.get_member(int(user_text)) if message.guild and user_text.isdigit() else None
+        if member is None and message.guild and user_text.isdigit():
+            try:
+                member = await message.guild.fetch_member(int(user_text))
+            except discord.HTTPException:
+                member = None
+        if panel == "photo" and operation == "refresh":
+            if member is None or not member.guild_permissions.administrator:
+                return True
+            if source_message_id.isdigit():
+                try:
+                    source_message = await message.channel.fetch_message(int(source_message_id))
+                    await source_message.delete()
+                except discord.HTTPException:
+                    pass
+            await send_photo_channel_panel(message.channel)
+        elif panel == "equipment":
+            if member is None or not member.guild_permissions.administrator:
+                return True
+            owner_id = message.guild.id
+            store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
+            logger.info("機材通知データを読込: rules=%s", len(store.get("rules", [])))
+            if operation == "list":
+                rules = equipment_rules_for(store, owner_id, "server")
+                text = ("🔔 **サーバー機材通知の登録一覧**\n" + "\n".join(
+                    f"ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`" for rule in sorted(rules, key=lambda item: item["id"])
+                )) if rules else "登録されているサーバー機材通知はありません。"
+                logger.info("機材通知一覧を送信開始: rules=%s", len(rules))
+                response = await message.channel.send(text[:1990])
+                logger.info("機材通知一覧を送信: message=%s rules=%s", response.id, len(rules))
+            elif operation == "add":
+                current = equipment_rules_for(store, owner_id, "server")
+                if len(current) >= EQUIPMENT_ALERT_LIMIT:
+                    await message.channel.send(f"⚠️ 機材通知は{EQUIPMENT_ALERT_LIMIT}件まで登録できます。")
+                else:
+                    rule, created = add_rule(store, owner_id=owner_id, scope="server", flight=unquote(arg1), equipment=unquote(arg2))
+                    if created:
+                        save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+                    await message.channel.send(
+                        f"✅ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` を登録しました。" if created
+                        else f"ℹ️ ID `{rule['id']}` は登録済みです。"
+                    )
+            elif operation == "remove" and unquote(arg1).isdigit():
+                target_id = int(unquote(arg1))
+                rule = next((item for item in equipment_rules_for(store, owner_id, "server") if item.get("id") == target_id), None)
+                if rule is None:
+                    await message.channel.send(f"⚠️ ID `{target_id}` は見つかりませんでした。")
+                else:
+                    store["rules"].remove(rule)
+                    save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+                    await message.channel.send(f"🗑️ `{rule['flight']}` × `{rule['equipment']}` を解除しました。")
+            elif operation == "refresh":
+                if source_message_id.isdigit():
+                    try:
+                        source_message = await message.channel.fetch_message(int(source_message_id))
+                        await source_message.delete()
+                    except discord.HTTPException:
+                        pass
+                await send_equipment_channel_panel(message.channel)
+    except (discord.HTTPException, ValueError) as exc:
+        logger.error("チャンネルパネル連携に失敗しました: %s", exc)
+    finally:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+    return True
+
+
+async def send_feedback_panel(channel):
+    embed = discord.Embed(
+        title="📮 質問・改善要望",
+        description=(
+            "Botについての質問や改善してほしい内容を、下のボタンから送信できます。\n"
+            "送信内容は管理者へ転送され、回答はDMで届きます。\n\n"
+            "従来どおり、メッセージの先頭に `📮` を付ける方法も使用できます。"
+        ),
+        color=0x5865F2,
+    )
+    return await channel.send(embed=embed, view=FeedbackPanelView())
+
+
+async def ensure_feedback_panel():
+    """質問チャンネルにパネルが無い場合だけ自動設置する。"""
+    channel = bot.get_channel(FEEDBACK_SOURCE_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(FEEDBACK_SOURCE_CHANNEL_ID)
+    async for item in channel.history(limit=50):
+        if item.author.id == bot.user.id and item.embeds and item.embeds[0].title == "📮 質問・改善要望":
+            return item
+    return await send_feedback_panel(channel)
+
 async def notify_feedback(message):
     """質問箱への通常投稿を管理者専用チャンネルへ転送し、元投稿を消す。"""
     if message.author.id == FEEDBACK_OWNER_ID:
         return
-    destination = bot.get_channel(FEEDBACK_DESTINATION_CHANNEL_ID)
-    if destination is None:
-        try:
-            destination = await bot.fetch_channel(FEEDBACK_DESTINATION_CHANNEL_ID)
-        except discord.HTTPException as exc:
-            logger.error("質問箱の転送先を取得できません: %s", exc)
-            return
-    allowed = discord.AllowedMentions(
-        everyone=False,
-        roles=False,
-        users=[discord.Object(id=FEEDBACK_OWNER_ID)],
-        replied_user=False,
-    )
     attachments = "\n".join(attachment.url for attachment in message.attachments)
     description = message.content.strip()[len(FEEDBACK_MARKER):].strip()
     description = description or "（本文なし・添付ファイルのみ）"
     if attachments:
         description += f"\n\n**添付ファイル**\n{attachments}"
-    embed = discord.Embed(
-        title="📮 新しい質問・改善要望",
-        description=description[:4000],
-        color=0x5865F2,
-        timestamp=message.created_at,
-    )
-    embed.add_field(
-        name="送信者",
-        value=f"{message.author.mention} (`{message.author.id}`)",
-        inline=False,
-    )
     try:
-        await destination.send(
-            f"<@{FEEDBACK_OWNER_ID}>", embed=embed, allowed_mentions=allowed
-        )
+        await forward_feedback(message.author, description, created_at=message.created_at)
     except discord.HTTPException as exc:
         logger.error("質問箱の転送に失敗しました: %s", exc)
         return
@@ -1649,23 +2690,50 @@ async def on_ready():
         heartbeat.start()
     if not personal_special_dispatch.is_running():
         personal_special_dispatch.start()
+    if not system_alert_dispatch.is_running():
+        system_alert_dispatch.start()
     if not equipment_alert_dispatch.is_running():
         equipment_alert_dispatch.start()
     if not destination_alert_dispatch.is_running():
         destination_alert_dispatch.start()
     if not data_quality_check.is_running():
         data_quality_check.start()
+    try:
+        await ensure_feedback_panel()
+    except discord.HTTPException as exc:
+        logger.error("質問・改善要望パネルの自動設置に失敗しました: %s", exc)
+    try:
+        await ensure_channel_panel(PHOTO_CHANNEL_ID, "photo-channel-panel", send_photo_channel_panel, PhotoChannelPanelView)
+        await ensure_channel_panel(EQUIPMENT_ALERT_CHANNEL_ID, "equipment-channel-panel", send_equipment_channel_panel, EquipmentChannelPanelView)
+    except discord.HTTPException as exc:
+        logger.error("チャンネル操作パネルの自動設置に失敗しました: %s", exc)
+    try:
+        await ensure_personal_launcher_channel()
+    except discord.HTTPException as exc:
+        logger.error("個人設定入口チャンネルの自動設置に失敗しました: %s", exc)
+    await refresh_personal_control_panels()
+    await refresh_general_menu_panel()
+    await catch_up_personal_alert_bridges()
     await catch_up_missed_commands()
 
 
 @bot.event
 async def on_resumed():
+    await catch_up_personal_alert_bridges()
     await catch_up_missed_commands()
 
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        if bot.user and message.author.id == bot.user.id:
+            if await handle_personal_alert_bridge(message):
+                return
+            if await handle_feedback_bridge(message):
+                return
+            if await handle_channel_panel_bridge(message):
+                return
+            await handle_personal_panel_bridge(message)
         return
     if message.channel.id == PHOTO_CHANNEL_ID:
         await handle_photo_post(message)
@@ -2402,6 +3470,16 @@ async def personal_panel_setup(ctx):
     await ctx.send(embed=embed, view=PersonalPanelLauncherView())
 
 
+@bot.command(name="feedback-panel-setup")
+@commands.has_permissions(administrator=True)
+async def feedback_panel_setup(ctx):
+    """質問・改善要望チャンネルへ常設ボタンパネルを設置する。"""
+    if ctx.channel.id != FEEDBACK_SOURCE_CHANNEL_ID:
+        await ctx.send("このコマンドは質問・改善要望チャンネルで使用してください。")
+        return
+    await send_feedback_panel(ctx.channel)
+
+
 @bot.command(name="personal-panel-create")
 async def personal_panel_create(ctx):
     if ctx.guild is None:
@@ -2414,22 +3492,10 @@ async def personal_panel_create(ctx):
         await ctx.send(f"専用チャンネルはすでにあります：{existing.mention}", delete_after=30)
         return
     try:
-        category = discord.utils.get(guild.categories, name="🔒｜個人設定")
-        if category is None:
-            category = await guild.create_category("🔒｜個人設定", reason="航空機Bot 個人設定パネル")
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            ctx.author: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True),
-        }
-        safe_name = re.sub(r"[^a-z0-9ぁ-んァ-ヶ一-龠_-]", "-", ctx.author.display_name.lower()).strip("-")[:40] or str(ctx.author.id)
-        channel = await guild.create_text_channel(f"個人設定-{safe_name}", category=category, overwrites=overwrites, topic=marker, reason="航空機Bot 個人設定パネル")
-        embed = discord.Embed(title="✈️ 航空機Bot 個人設定", description="個人通知の設定画面です。登録内容は本人とBot以外には表示されません。", color=0x5865F2)
-        message = await channel.send(embed=embed, view=PersonalControlPanelView())
-        try:
-            await message.pin(reason="個人設定パネルを常に表示するため")
-        except discord.HTTPException:
-            pass
+        channel, _ = await create_personal_settings_channel(guild, ctx.author)
+        if channel is None:
+            await ctx.send(f"⚠️ 個人チャンネルは最大{PERSONAL_CHANNEL_LIMIT}人までです。")
+            return
         await ctx.send(f"✅ 専用チャンネルを作成しました：{channel.mention}", delete_after=30)
     except discord.Forbidden:
         await ctx.send("チャンネルを作成できません。Botに「チャンネルの管理」権限を付けてください。")
