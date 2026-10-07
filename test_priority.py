@@ -2,6 +2,7 @@ import unittest
 import json
 import os
 import tempfile
+from unittest.mock import Mock, patch
 from datetime import date, datetime, timedelta, timezone
 
 import monitor
@@ -9,6 +10,10 @@ from route_corrections import correct_route
 
 
 class PriorityTests(unittest.TestCase):
+    def setUp(self):
+        monitor._callsign_cache.clear()
+        monitor._route_cache.clear()
+
     def test_old_entries_default_to_normal(self):
         self.assertEqual(monitor.effective_priority({"label": "JA0001"}, now=100), "NORMAL")
 
@@ -79,6 +84,63 @@ class PriorityTests(unittest.TestCase):
         )
         names = [field["name"] for field in embed["fields"]]
         self.assertIn("区間(推定)", names)
+
+    def test_missing_opensky_callsign_is_filled_from_secondary_adsb(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "ac": [{"hex": "8691aa", "flight": "ANA111  ", "r": "JA784A"}],
+        }
+        with patch("monitor.requests.get", return_value=response) as mocked:
+            self.assertEqual(monitor.fetch_fallback_callsign("8691AA"), "ANA111")
+            self.assertEqual(monitor.fetch_fallback_callsign("8691AA"), "ANA111")
+        self.assertEqual(mocked.call_count, 1)
+        self.assertIn("/v2/hex/8691aa", mocked.call_args.args[0])
+
+    def test_resolved_callsign_adds_verified_route_to_notification(self):
+        route = {
+            "origin": {
+                "iata_code": "ORD", "name": "Chicago O'Hare",
+                "latitude": 41.9786, "longitude": -87.9048,
+            },
+            "destination": {
+                "iata_code": "HND", "name": "Haneda",
+                "latitude": 35.5494, "longitude": 139.7798,
+            },
+            "flight_iata": "NH111",
+        }
+        with (
+            patch("monitor.fetch_fallback_callsign", return_value="ANA111"),
+            patch("monitor.fetch_route_cached", return_value=route),
+        ):
+            callsign, verified = monitor.resolve_flight_context(
+                "8691aa", "", 35.946, 141.438,
+            )
+        self.assertEqual(callsign, "ANA111")
+        self.assertIs(verified, route)
+
+        aircraft = ["8691aa", callsign, None, None, None, 141.438, 35.946, 5227, False, 187, 270, -5]
+        embed = monitor.build_embed(
+            "8691aa", {"label": "JA784A", "type": "B77W"}, aircraft, route=verified,
+        )
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+        self.assertEqual(fields["コールサイン"], "`ANA111`")
+        self.assertIn("NH111", fields["区間(推定)"])
+        self.assertIn("ORD", fields["区間(推定)"])
+        self.assertIn("HND", fields["区間(推定)"])
+
+    def test_personal_event_receives_same_flight_context(self):
+        route = {
+            "origin": {"iata_code": "ORD", "latitude": 41.9786, "longitude": -87.9048},
+            "destination": {"iata_code": "HND", "latitude": 35.5494, "longitude": 139.7798},
+            "flight_iata": "NH111",
+        }
+        events = [{
+            "icao24": "8691aa", "callsign": "", "latitude": 35.946, "longitude": 141.438,
+        }]
+        with patch("monitor.resolve_flight_context", return_value=("ANA111", route)):
+            monitor.enrich_personal_event_flight_context(events)
+        self.assertEqual(events[0]["callsign"], "ANA111")
+        self.assertEqual(events[0]["route"]["flight_iata"], "NH111")
 
     def test_major_airports_use_short_name_and_iata_code(self):
         self.assertEqual(

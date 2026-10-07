@@ -140,6 +140,10 @@ REQUEST_TIMEOUT = 15  # 秒
 # 写真取得は通知を遅らせないよう短めのタイムアウトでリトライなし
 PHOTO_TIMEOUT = 5
 ROUTE_TIMEOUT = 5
+CALLSIGN_TIMEOUT = 5
+CALLSIGN_CACHE_SECONDS = 10 * 60
+CALLSIGN_NEGATIVE_CACHE_SECONDS = 90
+ROUTE_CACHE_SECONDS = 30 * 60
 
 UNKNOWN_TYPE = "不明"
 
@@ -171,6 +175,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("aircraft-alert")
+
+# OpenSky側でコールサインが空だった通知だけ、無料の補助ADS-B APIを照会する。
+# 同じ機体・便を地方通知、全国通知、個人通知で何度も問い合わせないようキャッシュする。
+_callsign_cache = {}
+_route_cache = {}
 
 
 def normalize_priority(value):
@@ -778,6 +787,91 @@ def fetch_route(callsign):
         return None
 
 
+def _cache_get(cache, key):
+    item = cache.get(key)
+    if item and item[0] > time.monotonic():
+        return True, item[1]
+    cache.pop(key, None)
+    return False, None
+
+
+def fetch_fallback_callsign(icao24):
+    """OpenSkyのコールサインが空の時、icao24から補助ADS-Bデータを1回だけ引く。"""
+    key = str(icao24 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{6}", key):
+        return ""
+    cached, value = _cache_get(_callsign_cache, key)
+    if cached:
+        return value
+    callsign = ""
+    try:
+        response = requests.get(
+            f"https://api.adsb.lol/v2/hex/{key}",
+            timeout=CALLSIGN_TIMEOUT,
+            headers={"User-Agent": "aircraft-alert/1.0"},
+        )
+        if response.status_code == 200:
+            aircraft = next((
+                item for item in (response.json().get("ac") or [])
+                if str(item.get("hex") or "").strip().lower() == key
+            ), None)
+            callsign = str((aircraft or {}).get("flight") or (aircraft or {}).get("callsign") or "").strip().upper()
+    except (requests.RequestException, ValueError, AttributeError):
+        callsign = ""
+    lifetime = CALLSIGN_CACHE_SECONDS if callsign else CALLSIGN_NEGATIVE_CACHE_SECONDS
+    _callsign_cache[key] = (time.monotonic() + lifetime, callsign)
+    if callsign:
+        logger.info("補助ADS-Bからコールサインを補完: %s -> %s", key, callsign)
+    return callsign
+
+
+def fetch_route_cached(callsign):
+    key = str(callsign or "").strip().upper()
+    if not key:
+        return None
+    cached, value = _cache_get(_route_cache, key)
+    if cached:
+        return value
+    route = fetch_route(key)
+    _route_cache[key] = (time.monotonic() + ROUTE_CACHE_SECONDS, route)
+    return route
+
+
+def resolve_flight_context(icao24, callsign, lat, lon):
+    """コールサインを補完し、現在位置と矛盾しない区間だけを返す。"""
+    resolved = str(callsign or "").strip().upper()
+    route = fetch_route_cached(resolved) if resolved else None
+
+    # OpenSkyで空欄、またはその値でルートを引けない時だけ別のADS-B受信網を照会する。
+    if not resolved or route is None:
+        fallback = fetch_fallback_callsign(icao24)
+        if fallback:
+            fallback_route = fetch_route_cached(fallback) if route is None else route
+            if not resolved or fallback_route is not None:
+                resolved = fallback
+            if route is None:
+                route = fallback_route
+
+    verified_route = route if route_matches_position(route, lat, lon) else None
+    return resolved, verified_route
+
+
+def enrich_personal_event_flight_context(events):
+    """個人通知イベントにも、サーバー通知と同じコールサイン・区間補完を付ける。"""
+    for event in events:
+        callsign, route = resolve_flight_context(
+            event.get("icao24"),
+            event.get("callsign"),
+            event.get("latitude"),
+            event.get("longitude"),
+        )
+        if callsign:
+            event["callsign"] = callsign
+        if route:
+            event["route"] = route
+    return events
+
+
 def format_airport(airport):
     iata = (airport.get("iata_code") or "").upper()
     code = iata or airport.get("icao_code") or "?"
@@ -947,9 +1041,14 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     priority = effective_priority(entry)
 
     photo = fetch_photo(icao24)
-    route = fetch_route((aircraft[1] or "").strip())
-    route_verified = route if route_matches_position(route, aircraft[6], aircraft[5]) else None
-    embed = build_embed(icao24, entry, aircraft, photo, route_verified, repeat, region_name)
+    callsign, route_verified = resolve_flight_context(
+        icao24, aircraft[1], aircraft[6], aircraft[5]
+    )
+    enriched_aircraft = list(aircraft)
+    enriched_aircraft[1] = callsign or aircraft[1]
+    embed = build_embed(
+        icao24, entry, enriched_aircraft, photo, route_verified, repeat, region_name
+    )
 
     payload = {
         # スマホのプッシュ通知プレビューはcontentが表示されるため入れておく
@@ -1046,6 +1145,7 @@ def run_monitor():
     personal_events, personal_notified = find_personal_special_events(
         states, personal_settings, personal_notified, now, watchlist
     )
+    enrich_personal_event_flight_context(personal_events)
     if personal_notified != original_personal_notified:
         save_shared_json(PERSONAL_SPECIAL_STATE_PATH, personal_notified)
     append_personal_special_events(personal_events)

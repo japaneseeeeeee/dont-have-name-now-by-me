@@ -2078,6 +2078,17 @@ async def personal_special_dispatch():
                 inline=True,
             )
             embed.add_field(name="ICAO24", value=f"`{event['icao24']}`", inline=True)
+            route = event.get("route") or {}
+            if route.get("origin") and route.get("destination"):
+                flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
+                embed.add_field(
+                    name="区間(推定)",
+                    value=(
+                        f"{flight}{format_airport(route['origin'])} → "
+                        f"{format_airport(route['destination'])}"
+                    ),
+                    inline=False,
+                )
             if event.get("altitude") is not None and not event.get("on_ground"):
                 altitude = float(event["altitude"])
                 embed.add_field(
