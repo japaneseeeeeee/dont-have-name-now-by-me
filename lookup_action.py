@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import gzip
+import csv
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -151,6 +152,8 @@ def search_tar1090(query, limit=5, offset=0):
         registration = parts[1].strip()
         typecode = parts[2].strip()
         description = parts[4].strip()
+        year_match = re.search(r"(?:19|20)\d{2}", parts[5]) if len(parts) > 5 else None
+        year = year_match.group(0) if year_match else ""
         normalized_reg = normalize_reg(registration)
         normalized_icao24 = normalize_reg(icao24)
         normalized_typecode = normalize_equipment(typecode)
@@ -164,6 +167,7 @@ def search_tar1090(query, limit=5, offset=0):
             "registration": registration or "不明",
             "typecode": typecode,
             "description": description,
+            "year": year,
         }
         # 登録記号・ICAO24の一致を最優先にする。機種コード検索では、
         # 日本の利用者が探している可能性が高いJA登録機を先に表示する。
@@ -185,6 +189,37 @@ def search_tar1090(query, limit=5, offset=0):
     for item in matches:
         item.pop("_search_rank", None)
     return matches[offset:offset + limit]
+
+
+def enrich_years_from_local_database(items, path="aircraftDatabase.csv"):
+    """OpenSkyの同梱DBに年情報があれば候補へ補完する（外部API消費なし）。"""
+    missing = {
+        str(item.get("icao24") or "").lower(): item
+        for item in items
+        if item.get("icao24") and not item.get("year")
+    }
+    if not missing or not os.path.exists(path):
+        return items
+    try:
+        with open(path, newline="", encoding="utf-8", errors="replace") as stream:
+            for row in csv.DictReader(stream):
+                item = missing.get(str(row.get("icao24") or "").lower())
+                if not item:
+                    continue
+                year_match = re.search(
+                    r"(?:19|20)\d{2}",
+                    " ".join(str(row.get(key) or "") for key in ("built", "firstflightdate", "registered")),
+                )
+                if year_match:
+                    item["year"] = year_match.group(0)
+                if not item.get("description") and row.get("model"):
+                    item["description"] = row["model"]
+                missing.pop(str(row.get("icao24") or "").lower(), None)
+                if not missing:
+                    break
+    except (OSError, csv.Error) as error:
+        print(f"Local aircraft year lookup failed: {type(error).__name__}: {error}")
+    return items
 
 
 def looks_like_type_code(query):
@@ -281,6 +316,58 @@ def format_search_results(query, results, airline="", offset=0):
     if offset:
         lines.append(f"\n{offset + 1}件目から表示")
     lines.append("\n※ watchlistへの登録は管理者のみ実行できます。")
+    return "\n".join(lines)
+
+
+def info_search_result_components(results, query="", next_offset=None):
+    buttons = []
+    for item in results[:5]:
+        registration = item.get("registration") or "不明"
+        icao24 = str(item.get("icao24") or "").lower()
+        if registration == "不明" or not re.fullmatch(r"[0-9a-f]{6}", icao24):
+            continue
+        custom_id = "|".join([
+            "inforesult",
+            icao24,
+            urllib.parse.quote(registration, safe=""),
+            urllib.parse.quote(str(item.get("typecode") or ""), safe=""),
+            urllib.parse.quote(str(item.get("year") or ""), safe=""),
+        ])
+        buttons.append({
+            "type": 2,
+            "style": 1,
+            "label": f"{registration} の詳細"[:80],
+            "custom_id": custom_id[:100],
+        })
+    rows = [{"type": 1, "components": buttons}] if buttons else []
+    if next_offset is not None:
+        encoded_query = urllib.parse.quote(query, safe="")
+        custom_id = f"infopage|{next_offset}|{encoded_query}"
+        if len(custom_id.encode("utf-8")) <= 100:
+            rows.append({"type": 1, "components": [{
+                "type": 2,
+                "style": 2,
+                "label": "次の5件",
+                "emoji": {"name": "➡️"},
+                "custom_id": custom_id,
+            }]})
+    return rows
+
+
+def format_info_search_results(query, results, offset=0):
+    lines = [
+        f"🛩️ **「{query}」の機体情報候補**",
+        "詳細を見たい機体のボタンを押してください。",
+        "",
+    ]
+    for item in results:
+        aircraft_type = item.get("description") or item.get("typecode") or "機種不明"
+        if item.get("description") and item.get("typecode"):
+            aircraft_type = f"{item['description']} ({item['typecode']})"
+        year = f"｜{item['year']}年" if item.get("year") else ""
+        lines.append(f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}{year}")
+    if offset:
+        lines.append(f"\n{offset + 1}件目から表示")
     return "\n".join(lines)
 
 
@@ -633,6 +720,29 @@ def main():
             )
         else:
             discord_send(channel_id, f"❓ `{query}` の現在のADS-B情報を取得できませんでした。")
+        return
+
+    if op == "info_search":
+        query = str(args[0]).strip().upper()
+        try:
+            offset = max(0, int(args[1])) if len(args) > 1 else 0
+        except (TypeError, ValueError):
+            offset = 0
+        page = enrich_years_from_local_database(search_tar1090(query, limit=6, offset=offset))
+        results = page[:5]
+        next_offset = offset + 5 if len(page) > 5 else None
+        if not results:
+            discord_send(
+                channel_id,
+                f"❓ `{query}` に一致する機体情報を見つけられませんでした。\n"
+                "登録記号は3文字以上で入力してください。",
+            )
+            return
+        discord_send(
+            channel_id,
+            format_info_search_results(query, results, offset),
+            components=info_search_result_components(results, query, next_offset),
+        )
         return
 
     if op == "search":

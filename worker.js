@@ -131,6 +131,20 @@ export default {
       return json({ type: 4, data: { flags: 64, content: "🔎 次の5件を詳しく検索しています（1分ほどかかります）。" } });
     }
 
+    // 3: 機体情報の候補選択・カード再読み込み・候補の続き
+    if (interaction.type === 3 && (
+      interaction.data?.custom_id?.startsWith("inforesult|") ||
+      interaction.data?.custom_id?.startsWith("inforefresh|")
+    )) {
+      ctx.waitUntil(processInfoButton(interaction, env));
+      return json({ type: 6 });
+    }
+
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("infopage|")) {
+      ctx.waitUntil(processInfoPageButton(interaction, env));
+      return json({ type: 4, data: { flags: 64, content: "🔎 次の候補を検索しています（1分ほどかかります）。" } });
+    }
+
     // 3: 検索結果の「watchlistへ登録」ボタン
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("watchadd|")) {
       if (!isAdministrator(interaction)) {
@@ -442,6 +456,45 @@ async function processSearchPageButton(interaction, env) {
   }
 }
 
+async function processInfoPageButton(interaction, env) {
+  try {
+    const [, offsetText, encodedQuery] = String(interaction.data.custom_id || "").split("|");
+    const offset = Math.max(0, Number(offsetText) || 0);
+    const query = decodeURIComponent(encodedQuery || "");
+    if (!query) throw new Error("missing info query");
+    const r = await gh(env, "/dispatches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        event_type: "lookup",
+        client_payload: { op: "info_search", args: [query, offset], channel_id: interaction.channel_id },
+      }),
+    });
+    if (r.status !== 204) throw new Error(`dispatch failed: ${r.status} ${await r.text()}`);
+  } catch (err) {
+    console.error("info next page failed:", (err && err.stack) || err);
+  }
+}
+
+async function processInfoButton(interaction, env) {
+  try {
+    const [, rawIcao24, encodedRegistration = "", encodedType = "", encodedYear = ""] =
+      String(interaction.data.custom_id || "").split("|");
+    const icao24 = String(rawIcao24 || "").toLowerCase();
+    if (!HEX6.test(icao24)) throw new Error("invalid info custom_id");
+    const message = await cmdInfo({
+      aircraft: icao24,
+      registration_hint: decodeURIComponent(encodedRegistration || ""),
+      type_hint: decodeURIComponent(encodedType || ""),
+      year_hint: decodeURIComponent(encodedYear || ""),
+    }, env, interaction);
+    await editOriginal(interaction, message);
+  } catch (err) {
+    console.error("info button failed:", (err && err.stack) || err);
+    await editOriginal(interaction, { content: TEMPORARILY_UNAVAILABLE, embeds: [], components: [] });
+  }
+}
+
 async function editOriginal(interaction, message) {
   const { followups: _followups, ...visibleMessage } = message;
   const payload = { allowed_mentions: { parse: [] }, ...visibleMessage };
@@ -481,7 +534,7 @@ async function runCommand(interaction, env) {
     case "remove": return cmdRemove(o, env);
     case "find": return cmdFind(o, env);
     case "list": return cmdList(o, env);
-    case "info": return cmdInfo(o, env);
+    case "info": return cmdInfo(o, env, interaction);
     case "flight": return cmdFlight(o, env, interaction);
     case "airport": return cmdAirport(o, env);
     case "menu": return cmdMenu();
@@ -536,7 +589,7 @@ function handleMenuButton(interaction, env, ctx) {
   if (action === "help") {
     return json({ type: 4, data: {
       flags: 64,
-      content: "✈️ **主な使い方**\n`機体を探して登録`：登録記号・便名・機種から検索して登録\n`機体の詳細を見る`：登録記号またはICAO24の詳細を表示\n`飛行中の便を探す`：現在ADS-Bで確認できる便を検索\n`現在の発着を見る`：現在からの到着・出発便を表示（航空会社・機種で絞り込み可能）\n`サーバー登録機を見る`：watchlistを表示\n\n従来のスラッシュコマンドも引き続き利用できます。",
+      content: "✈️ **主な使い方**\n`機体を探して登録`：登録記号・便名・機種から検索して登録\n`機体の詳細を見る`：登録記号（小文字・ハイフンなし・一部分も可）またはICAO24の詳細を表示\n`飛行中の便を探す`：現在ADS-Bで確認できる便を検索\n`現在の発着を見る`：現在からの到着・出発便を表示（航空会社・機種で絞り込み可能）\n`サーバー登録機を見る`：watchlistを表示\n\n従来のスラッシュコマンドも引き続き利用できます。",
     } });
   }
   if (action === "list") {
@@ -915,7 +968,7 @@ function menuModal(action) {
     },
     info: {
       title: "機体情報を表示",
-      rows: [textInput("aircraft", "登録記号またはICAO24", "例: JA784A / 867F7C", true, 20)],
+      rows: [textInput("aircraft", "登録記号（一部分も可）またはICAO24", "例: JA784A / ja784a / JA78 / 867F7C", true, 20)],
     },
     flight: {
       title: "運航中の便を検索",
@@ -1133,11 +1186,14 @@ async function cmdFind(o, env) {
   return { content: text };
 }
 
-async function cmdInfo(o, env) {
+async function cmdInfo(o, env, interaction = null) {
   const query = String(o.aircraft || "").trim().toUpperCase();
-  if (!query) return { content: "⚠️ 使い方: `/info aircraft:<登録記号 / icao24>`" };
+  if (!query) return { content: "⚠️ 使い方: 登録記号の全部または一部分、もしくはICAO24を入力してください。" };
 
-  const compact = query.replace(/[\s-]/g, "");
+  const compact = normalizeRegistration(query);
+  if (compact.length < 3) {
+    return { content: "⚠️ 登録記号の一部分で探す場合は、3文字以上入力してください。例: `JA78`" };
+  }
   let data = {};
   try {
     ({ data } = await readWatchlist(env));
@@ -1149,7 +1205,7 @@ async function cmdInfo(o, env) {
 
   if (!entry) {
     const found = Object.entries(data).find(([id, value]) =>
-      id.toUpperCase() === compact || normalize(value).label.toUpperCase() === query,
+      id.toUpperCase() === compact || normalizeRegistration(normalize(value).label) === compact,
     );
     if (found) {
       [icao24, entry] = found;
@@ -1160,49 +1216,94 @@ async function cmdInfo(o, env) {
   if (!entry && !icao24) {
     const canonical = await readCanonicalWatchlist();
     const found = Object.entries(canonical).find(([id, value]) =>
-      id.toUpperCase() === compact || normalize(value).label.toUpperCase() === query,
+      id.toUpperCase() === compact || normalizeRegistration(normalize(value).label) === compact,
     );
     if (found) {
       [icao24, entry] = found;
     }
   }
   if (!icao24) icao24 = await lookupIcao24(query);
-  if (!icao24) return { content: `❓ \`${query}\` の機体情報は見つかりませんでした。` };
+  if (!icao24) {
+    if (!interaction?.channel_id) return { content: `❓ \`${query}\` の機体情報は見つかりませんでした。` };
+    return startSlowLookup(env, "info_search", [query, 0], interaction, {
+      failure: `❓ \`${query}\` に一致する機体を見つけられませんでした。`,
+    });
+  }
 
-  const normalized = entry ? normalize(entry) : { label: query, type: UNKNOWN_TYPE };
+  const normalized = entry ? normalize(entry) : { label: "", type: UNKNOWN_TYPE };
   const [details, liveAircraft] = await Promise.all([
-    lookupAircraftDetails(icao24),
+    lookupAircraftDetails(icao24, env),
     adsbLookup("hex", icao24),
   ]);
-  const type = normalized.type !== UNKNOWN_TYPE ? normalized.type : details.type || UNKNOWN_TYPE;
+  const registration = (
+    normalized.label && normalized.label !== "?" ? normalized.label
+      : details.registration || String(o.registration_hint || "").trim().toUpperCase() || query
+  );
+  const typeHint = String(o.type_hint || "").trim();
+  const type = normalized.type !== UNKNOWN_TYPE ? normalized.type : details.type || typeHint || UNKNOWN_TYPE;
   const priority = effectivePriority(entry);
-  const year = details.year || "不明";
-  const age = aircraftAge(details.year);
-  const yearNote = details.yearSource === "first-flight" ? "（初飛行年を基準）" : "";
+  const hintedYear = firstYear(o.year_hint);
+  const year = details.year || hintedYear;
+  const age = aircraftAge(year);
+  const yearSource = details.year ? details.yearSource : hintedYear ? "database" : null;
+  const yearNote = yearSource === "first-flight" ? "（初飛行年）" : "";
   const live = liveAircraft[0] || null;
-  const status = live ? (live.alt_baro === "ground" ? "🟢 地上で受信中" : "🟢 飛行中") : "⚪ 現在位置なし";
+  const status = live ? (live.alt_baro === "ground" ? "🟢 地上で受信中" : "🟢 飛行中") : "⚪ 現在位置を受信していません";
   const specialUntil = priority === "SPECIAL" && Number(entry?.special_until || 0) > Date.now() / 1000
     ? `（<t:${Math.floor(Number(entry.special_until))}:R>まで）`
     : "";
-  const liveLines = live
-    ? `\nコールサイン: \`${String(live.flight || "不明").trim() || "不明"}\n` +
-      `現在状態: ${status}` +
+  const liveValue = live
+    ? `${status}\nコールサイン: \`${String(live.flight || "不明").trim() || "不明"}\`` +
       (num(live.alt_baro) ? `\n高度: ${fmt0(live.alt_baro)} ft` : "") +
       (num(live.gs) ? `\n速度: ${fmt0(live.gs * 1.852)} km/h` : "")
-    : `\n現在状態: ${status}`;
+    : status;
+  const yearValue = year
+    ? `${year}${yearNote}${age !== null ? `\n機齢 約${age}年` : ""}`
+    : "現在の公開機体データでは確認できません";
+  const watchValue = entry
+    ? `👁️ 登録済み\n通知: **${priority}**${specialUntil}\n全国通知: **${entry?.nationwide_alert === true ? "ON" : "OFF"}**`
+    : "未登録";
+  const mapUrl = `https://globe.adsbexchange.com/?icao=${icao24}`;
+  const refreshId = [
+    "inforefresh",
+    icao24,
+    encodeURIComponent(registration).slice(0, 30),
+    encodeURIComponent(typeHint || (type.length <= 12 ? type : "")).slice(0, 24),
+    encodeURIComponent(year || ""),
+  ].join("|").slice(0, 100);
+  const buttons = [
+    { type: 2, style: 1, custom_id: refreshId, emoji: { name: "🔄" }, label: "現在位置を更新" },
+    { type: 2, style: 5, url: mapUrl, emoji: { name: "🗺️" }, label: "地図を見る" },
+  ];
+  if (!entry && interaction && isAdministrator(interaction)) {
+    buttons.unshift({
+      type: 2,
+      style: 3,
+      custom_id: `watchadd|${icao24}|${registration}`.slice(0, 100),
+      emoji: { name: "🔔" },
+      label: "通知対象に登録",
+    });
+  }
   return {
-    content: `✈️ **機体情報**\n` +
-      `登録記号: \`${normalized.label}\`\n` +
-      `icao24: \`${icao24}\`\n` +
-      `機種: ${type}\n` +
-      `製造年: ${year}${yearNote}${age ? `（機齢 約${age}年）` : ""}\n` +
-      `運航会社: ${details.operator || "不明"}\n` +
-      `登録国: ${details.country || "不明"}\n` +
-      `通知レベル: **${priority}**${specialUntil}\n` +
-      `全国通知: **${entry?.nationwide_alert === true ? "ON" : "OFF"}**` +
-      (entry ? "\nwatchlist: 👁️ 登録済み" : "\nwatchlist: 未登録") +
-      liveLines +
-      `\n地図: https://globe.adsbexchange.com/?icao=${icao24}`,
+    content: "",
+    embeds: [{
+      title: `✈️ ${registration}`,
+      url: mapUrl,
+      color: live ? 0x2ecc71 : 0x5865f2,
+      description: entry ? "通知対象として登録されている機体です。" : "公開機体データをもとに表示しています。",
+      fields: [
+        { name: "機種", value: type, inline: false },
+        { name: "登録情報", value: `登録記号: \`${registration}\`\nICAO24: \`${icao24}\``, inline: true },
+        { name: "製造年・機齢", value: yearValue, inline: true },
+        { name: "運航会社・所有者", value: details.operator || "現在の公開データでは確認できません", inline: true },
+        { name: "登録国", value: details.country || "現在の公開データでは確認できません", inline: true },
+        { name: "現在の状態", value: liveValue, inline: false },
+        { name: "通知設定", value: watchValue, inline: false },
+      ],
+      footer: { text: "Data: HexDB / ADSBDB / AeroDataBox / ADS-B（取得できた情報を照合）" },
+      timestamp: new Date().toISOString(),
+    }],
+    components: [{ type: 1, components: buttons }],
   };
 }
 
@@ -1495,10 +1596,10 @@ function effectivePriority(value, now = Date.now() / 1000) {
 // ============ 機体情報の検索 ============
 
 // Discordの応答期限内に必ず返すため、外部APIの待機時間は短くする。
-async function fetchJson(url, timeoutMs = 4000) {
+async function fetchJson(url, timeoutMs = 4000, extraHeaders = {}) {
   try {
     const r = await fetch(url, {
-      headers: { "user-agent": UA },
+      headers: { "user-agent": UA, ...extraHeaders },
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!r.ok) {
@@ -1512,19 +1613,36 @@ async function fetchJson(url, timeoutMs = 4000) {
   }
 }
 
-async function lookupIcao24(registration) {
-  try {
-    const normalized = String(registration || "").trim().toUpperCase();
-    const r = await fetch(`https://hexdb.io/reg-hex?reg=${encodeURIComponent(normalized)}`, {
-      headers: { "user-agent": UA },
-      signal: AbortSignal.timeout(4000),
-    });
-    if (!r.ok) return null;
-    const text = (await r.text()).trim();
-    return HEX6.test(text) ? text.toLowerCase() : null;
-  } catch {
-    return null;
+function normalizeRegistration(value) {
+  return String(value || "").trim().toUpperCase().replace(/[\s-]/g, "");
+}
+
+function registrationLookupCandidates(registration) {
+  const raw = String(registration || "").trim().toUpperCase().replace(/\s/g, "");
+  const compact = normalizeRegistration(raw);
+  let inferred = "";
+  if (/^[DGFC][A-Z0-9]{4}$/.test(compact)) inferred = `${compact[0]}-${compact.slice(1)}`;
+  if (/^(?:4X|A6|A7|A9|AP|EC|EI|HB|HS|RA|TC|YU)[A-Z0-9]{3,5}$/.test(compact)) {
+    inferred = `${compact.slice(0, 2)}-${compact.slice(2)}`;
   }
+  return [...new Set([raw.includes("-") ? raw : inferred, raw, compact].filter(Boolean))];
+}
+
+async function lookupIcao24(registration) {
+  for (const candidate of registrationLookupCandidates(registration)) {
+    try {
+      const r = await fetch(`https://hexdb.io/reg-hex?reg=${encodeURIComponent(candidate)}`, {
+        headers: { "user-agent": UA },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!r.ok) continue;
+      const text = (await r.text()).trim();
+      if (HEX6.test(text)) return text.toLowerCase();
+    } catch {
+      // 次の表記候補を試す。
+    }
+  }
+  return null;
 }
 
 async function lookupAircraftType(icao24) {
@@ -1535,7 +1653,7 @@ async function lookupAircraftType(icao24) {
   return `${maker} ${type}`.trim() || null;
 }
 
-async function lookupAircraftDetails(icao24) {
+async function lookupAircraftDetails(icao24, env = {}) {
   // HexDBは機種と所有者には強いが、登録国を返さない機体が多い。
   // ADSBDBも並行して参照し、片方にしかない項目を補完する。
   const [hexData, adsbData] = await Promise.all([
@@ -1544,38 +1662,75 @@ async function lookupAircraftDetails(icao24) {
   ]);
   const data = hexData || {};
   const adsb = adsbData?.response?.aircraft || {};
-  const directYear = firstYear(
+  let manufactureYear = firstYear(
     data.Year,
     data.YearOfManufacture,
     data.ManufactureYear,
+    data.ManufactureDate,
     data.Manufactured,
     data.Built,
     data.BuildYear,
+    data.DateBuilt,
+    data.DeliveryDate,
+    adsb.year,
+    adsb.year_built,
+    adsb.year_of_manufacture,
+    adsb.manufacture_year,
+    adsb.built,
+  );
+  let firstFlightYear = firstYear(
     data.FirstFlight,
     data.FirstFlightDate,
     data.FirstRegistered,
     data.Registered,
-    adsb.year,
-    adsb.year_built,
-    adsb.built,
     adsb.first_flight_date,
+    adsb.first_registered,
+    adsb.registration_date,
   );
-  const registration = data.Registration || adsb.registration || null;
-  const wikidataYear = directYear ? null : await lookupWikidataAircraftYear(registration);
+  let registration = data.Registration || adsb.registration || null;
+  let aero = {};
+  // 既存のAeroDataBox無料枠は、他の公開DBで年が取れない場合だけ使う。
+  // 通常の監視では呼ばず、詳細カードを開いた時だけなので消費を最小限にする。
+  if (registration && env.AERODATABOX_RAPIDAPI_KEY && !manufactureYear && !firstFlightYear) {
+    aero = await fetchJson(
+      `https://aerodatabox.p.rapidapi.com/aircrafts/reg/${encodeURIComponent(registration)}`,
+      3000,
+      {
+        "x-rapidapi-key": env.AERODATABOX_RAPIDAPI_KEY,
+        "x-rapidapi-host": "aerodatabox.p.rapidapi.com",
+      },
+    ) || {};
+    manufactureYear = firstYear(
+      aero.year,
+      aero.yearBuilt,
+      aero.manufactureYear,
+      aero.manufactureDate,
+      aero.rollOutDate,
+      aero.rolloutDate,
+      aero.built,
+    );
+    firstFlightYear = firstYear(aero.firstFlightDate, aero.deliveryDate);
+    registration = registration || aero.reg || aero.registration || null;
+  }
+  const wikidataYear = manufactureYear || firstFlightYear ? null : await lookupWikidataAircraftYear(registration);
   return {
     type: (
       `${data.Manufacturer || ""} ${data.Type || data.ICAOTypeCode || ""}`.trim()
       || `${adsb.manufacturer || ""} ${adsb.type || adsb.icao_type || ""}`.trim()
+      || aero.model
+      || aero.modelCode
       || null
     ),
-    year: directYear || wikidataYear,
-    yearSource: directYear ? "database" : wikidataYear ? "first-flight" : null,
+    registration,
+    year: manufactureYear || firstFlightYear || wikidataYear,
+    yearSource: manufactureYear ? "manufacture" : (firstFlightYear || wikidataYear) ? "first-flight" : null,
     operator: (
       data.RegisteredOwners
       || data.RegisteredOwnerOperatorName
       || data.RegisteredOwnerOperator
       || data.RegisteredOwner
       || adsb.registered_owner
+      || aero.airlineName
       || null
     ),
     country: (
@@ -1583,6 +1738,7 @@ async function lookupAircraftDetails(icao24) {
       || data.RegisteredOwnerNationality
       || adsb.registered_owner_country_name
       || adsb.registered_owner_country_iso_name
+      || aero.countryName
       || null
     ),
   };

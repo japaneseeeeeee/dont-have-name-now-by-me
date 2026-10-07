@@ -9,6 +9,8 @@ os.environ.setdefault("DISCORD_BOT_TOKEN", "test")
 
 from lookup_action import (
     airline_matches,
+    format_info_search_results,
+    info_search_result_components,
     lookup_live_callsign,
     lookup_live_type,
     search_result_components,
@@ -17,14 +19,14 @@ from lookup_action import (
 
 
 SAMPLE_DATABASE = """\
-aa0001;N100AA;B77W;;BOEING 777-300ER;
-aa0002;N200AA;B77W;;BOEING 777-300ER;
-780001;B-1001;B77W;;BOEING 777-300ER;
-840001;JA731A;B77W;;BOEING 777-300ER;
-840002;JA732A;B77W;;BOEING 777-300ER;
-840003;JA733A;B77W;;BOEING 777-300ER;
-840004;JA734A;B77W;;BOEING 777-300ER;
-840005;JA735A;B77W;;BOEING 777-300ER;
+aa0001;N100AA;B77W;;BOEING 777-300ER;2012
+aa0002;N200AA;B77W;;BOEING 777-300ER;2013
+780001;B-1001;B77W;;BOEING 777-300ER;2014
+840001;JA731A;B77W;;BOEING 777-300ER;2015
+840002;JA732A;B77W;;BOEING 777-300ER;2016
+840003;JA733A;B77W;;BOEING 777-300ER;2017
+840004;JA734A;B77W;;BOEING 777-300ER;2018
+840005;JA735A;B77W;;BOEING 777-300ER;2019
 """
 
 
@@ -48,6 +50,11 @@ class SearchTar1090Tests(unittest.TestCase):
     def test_registration_prefix_still_has_priority(self):
         results = self.search("N100")
         self.assertEqual(results[0]["registration"], "N100AA")
+        self.assertEqual(results[0]["year"], "2012")
+
+    def test_partial_registration_is_case_and_hyphen_insensitive(self):
+        self.assertEqual(self.search("ja731")[0]["registration"], "JA731A")
+        self.assertEqual(self.search("b1001")[0]["registration"], "B-1001")
 
     def test_live_type_search_normalizes_alias_and_filters_airline(self):
         payload = gzip.compress(b"")
@@ -68,6 +75,14 @@ class SearchTar1090Tests(unittest.TestCase):
         rows = search_result_components(results, "B77W", "", 5)
         self.assertEqual(len(rows[0]["components"]), 5)
         self.assertTrue(rows[1]["components"][0]["custom_id"].startswith("searchpage|5|"))
+
+    def test_info_results_have_detail_buttons_year_and_next_page(self):
+        results = self.search("B77W")
+        rows = info_search_result_components(results, "B77W", 5)
+        self.assertEqual(len(rows[0]["components"]), 5)
+        self.assertTrue(rows[0]["components"][0]["custom_id"].startswith("inforesult|"))
+        self.assertTrue(rows[1]["components"][0]["custom_id"].startswith("infopage|5|"))
+        self.assertIn("2015年", format_info_search_results("B77W", results))
 
     def test_live_callsign_reports_api_availability(self):
         with patch("lookup_action.request", return_value=b'{"ac":[]}'):

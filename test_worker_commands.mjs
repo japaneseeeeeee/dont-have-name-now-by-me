@@ -16,7 +16,10 @@ let watchlist = {};
 let airportRequestUrl = "";
 let airportSchedule = { airport: { iata: "HND", icao: "RJTT", name: "Haneda" }, arrivals: [], departures: [] };
 let dispatchStatus = 204;
+let dispatchBody = null;
 let registrationLookupUrl = "";
+let registrationLookupStatus = 200;
+let aeroDataBoxAircraftLookup = false;
 
 globalThis.fetch = async (url, init = {}) => {
   const value = String(url);
@@ -32,7 +35,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (value.includes("hexdb.io/reg-hex?")) {
     registrationLookupUrl = value;
-    return new Response("4010EE", { status: 200 });
+    return new Response(registrationLookupStatus === 200 ? "4010EE" : "", { status: registrationLookupStatus });
   }
   if (value.includes("hexdb.io/api/v1/aircraft/4010ee")) {
     return new Response(JSON.stringify({
@@ -40,12 +43,34 @@ globalThis.fetch = async (url, init = {}) => {
       RegisteredOwners: "easyJet Airline", Year: "2008",
     }), { status: 200, headers: { "content-type": "application/json" } });
   }
+  if (value.includes("hexdb.io/api/v1/aircraft/8691aa")) {
+    return new Response(JSON.stringify({
+      Registration: "JA784A", Manufacturer: "Boeing", Type: "777 381ER",
+      RegisteredOwners: "All Nippon Airways",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }
   if (value.includes("api.adsbdb.com/v0/aircraft/4010ee")) {
     return new Response(JSON.stringify({ response: { aircraft: {} } }), {
       status: 200, headers: { "content-type": "application/json" },
     });
   }
+  if (value.includes("api.adsbdb.com/v0/aircraft/8691aa")) {
+    return new Response(JSON.stringify({ response: { aircraft: { registration: "JA784A", registered_owner_country_name: "Japan" } } }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.includes("aerodatabox.p.rapidapi.com/aircrafts/reg/JA784A")) {
+    aeroDataBoxAircraftLookup = true;
+    return new Response(JSON.stringify({ reg: "JA784A", firstFlightDate: "2010-08-25" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
   if (value.includes("api.adsb.lol/v2/hex/4010ee")) {
+    return new Response(JSON.stringify({ ac: [] }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.includes("api.adsb.lol/v2/hex/8691aa")) {
     return new Response(JSON.stringify({ ac: [] }), {
       status: 200, headers: { "content-type": "application/json" },
     });
@@ -61,7 +86,10 @@ globalThis.fetch = async (url, init = {}) => {
     watchlist = JSON.parse(Buffer.from(body.content, "base64").toString("utf8"));
     return new Response("{}", { status: 200 });
   }
-  if (value.endsWith("/dispatches")) return new Response(null, { status: dispatchStatus });
+  if (value.endsWith("/dispatches")) {
+    dispatchBody = JSON.parse(init.body);
+    return new Response(null, { status: dispatchStatus });
+  }
   throw new Error(`Unexpected fetch: ${value}`);
 };
 
@@ -120,12 +148,41 @@ assert.doesNotMatch(result.content, /JL20/);
 assert.match(result.content, /航空会社: ANA/);
 result = await worker.cmdInfo({ aircraft: "" }, env);
 assert.match(result.content, /使い方/);
-result = await worker.cmdInfo({ aircraft: "g-ezbz" }, env);
+result = await worker.cmdInfo({ aircraft: "gezbz" }, env, interaction);
 assert.match(registrationLookupUrl, /hexdb\.io\/reg-hex\?reg=G-EZBZ$/);
-assert.match(result.content, /icao24: `4010ee`/);
-assert.match(result.content, /watchlist: 未登録/);
-assert.match(result.content, /Airbus A319 111/);
+assert.equal(result.embeds[0].title, "✈️ G-EZBZ");
+assert.match(JSON.stringify(result.embeds), /ICAO24: `4010ee`/);
+assert.match(JSON.stringify(result.embeds), /未登録/);
+assert.match(JSON.stringify(result.embeds), /Airbus A319 111/);
+assert.match(JSON.stringify(result.embeds), /機齢 約18年/);
+assert.match(JSON.stringify(result.components), /現在位置を更新/);
+assert.match(JSON.stringify(result.components), /地図を見る/);
 assert.equal(Object.keys(watchlist).length, 1);
+
+result = await worker.cmdInfo(
+  { aircraft: "8691aa" },
+  { ...env, AERODATABOX_RAPIDAPI_KEY: "test" },
+  interaction,
+);
+assert.equal(aeroDataBoxAircraftLookup, true);
+assert.equal(result.embeds[0].title, "✈️ JA784A");
+assert.match(JSON.stringify(result.embeds), /2010（初飛行年）/);
+assert.match(JSON.stringify(result.embeds), /機齢 約16年/);
+
+watchlist["4010ee"] = { label: "G-EZBZ", type: "Airbus A319-111" };
+registrationLookupUrl = "";
+result = await worker.cmdInfo({ aircraft: "g-ezbz" }, env, interaction);
+assert.equal(result.embeds[0].title, "✈️ G-EZBZ");
+assert.equal(registrationLookupUrl, "");
+assert.match(JSON.stringify(result.embeds), /登録済み/);
+delete watchlist["4010ee"];
+
+registrationLookupStatus = 404;
+result = await worker.cmdInfo({ aircraft: "ezb" }, env, interaction);
+assert.match(result.content, /詳しく検索/);
+assert.equal(dispatchBody.client_payload.op, "info_search");
+assert.deepEqual(dispatchBody.client_payload.args, ["EZB", 0]);
+registrationLookupStatus = 200;
 
 const menu = worker.cmdMenu();
 assert.match(menu.content, /航空機通知Botメニュー/);
