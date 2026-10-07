@@ -215,7 +215,14 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(discord_bot.requests, "get", return_value=response) as get:
             watchlist = discord_bot.load_shared_watchlist_for_quality_check()
         self.assertEqual(watchlist["3c4a15"]["type"], "BOEING 787-9 Dreamliner (B789)")
-        get.assert_called_once_with(discord_bot.SHARED_WATCHLIST_URL, timeout=8)
+        get.assert_called_once_with(
+            discord_bot.SHARED_WATCHLIST_URL,
+            headers={
+                "Accept": "application/vnd.github.raw+json",
+                "User-Agent": "aircraft-alert-bot/1.0",
+            },
+            timeout=8,
+        )
 
     def test_data_quality_skips_when_shared_watchlist_is_unavailable(self):
         with patch.object(

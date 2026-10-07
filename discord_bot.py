@@ -53,7 +53,7 @@ from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule a
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
 SHARED_WATCHLIST_URL = os.environ.get(
     "SHARED_WATCHLIST_URL",
-    "https://raw.githubusercontent.com/japaneseeeeeee/dont-have-name-now-by-me/main/watchlist.json",
+    "https://api.github.com/repos/japaneseeeeeee/dont-have-name-now-by-me/contents/watchlist.json?ref=main",
 )
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
 AIRCRAFT_DB_PATH = os.path.expanduser(
@@ -236,7 +236,11 @@ def save_watchlist(data):
 def load_shared_watchlist_for_quality_check():
     """データ品質確認では、監視処理と同じGitHub上の共通watchlistを正とする。"""
     try:
-        response = requests.get(SHARED_WATCHLIST_URL, timeout=8)
+        response = requests.get(
+            SHARED_WATCHLIST_URL,
+            headers={"Accept": "application/vnd.github.raw+json", "User-Agent": "aircraft-alert-bot/1.0"},
+            timeout=8,
+        )
         response.raise_for_status()
         watchlist = response.json()
         if not isinstance(watchlist, dict):
