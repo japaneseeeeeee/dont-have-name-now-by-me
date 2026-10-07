@@ -530,13 +530,15 @@ def lookup_icao24(registration: str):
     """登録記号(例: JA08XJ)からicao24を hexdb.io で検索する"""
     try:
         r = requests.get(
-            f"https://hexdb.io/api/v1/aircraft/reg-icao/{registration}", timeout=5
+            "https://hexdb.io/reg-hex",
+            params={"reg": str(registration).strip().upper()},
+            timeout=5,
         )
         text = r.text.strip()
-        if r.status_code == 200 and text and "error" not in text.lower():
+        if r.status_code == 200 and HEX6.fullmatch(text):
             return text.lower()
     except requests.RequestException as e:
-        logger.warning(f"reg-icao lookup failed: {e}")
+        logger.warning(f"reg-hex lookup failed: {e}")
     return None
 
 

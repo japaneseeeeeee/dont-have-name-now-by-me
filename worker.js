@@ -1514,7 +1514,8 @@ async function fetchJson(url, timeoutMs = 4000) {
 
 async function lookupIcao24(registration) {
   try {
-    const r = await fetch(`https://hexdb.io/api/v1/aircraft/reg-icao/${encodeURIComponent(registration)}`, {
+    const normalized = String(registration || "").trim().toUpperCase();
+    const r = await fetch(`https://hexdb.io/reg-hex?reg=${encodeURIComponent(normalized)}`, {
       headers: { "user-agent": UA },
       signal: AbortSignal.timeout(4000),
     });

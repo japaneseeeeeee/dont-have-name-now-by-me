@@ -181,6 +181,14 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
             await discord_bot.flight_lookup.callback(self.ctx, query="JL123")
         self.assertIn("現在一時的に利用できません", self.ctx.messages[-1])
 
+    def test_registration_lookup_uses_current_hexdb_endpoint(self):
+        response = Mock(status_code=200, text="4010EE")
+        with patch.object(discord_bot.requests, "get", return_value=response) as get:
+            self.assertEqual(discord_bot.lookup_icao24("g-ezbz"), "4010ee")
+        get.assert_called_once_with(
+            "https://hexdb.io/reg-hex", params={"reg": "G-EZBZ"}, timeout=5
+        )
+
     async def test_airport_watch_add_list_and_remove(self):
         await discord_bot.my_airport_add.callback(self.ctx, "HND", 75)
         self.assertEqual(self.store["123"]["airports"]["HND"]["radius_km"], 75)

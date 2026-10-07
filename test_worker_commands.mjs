@@ -16,6 +16,7 @@ let watchlist = {};
 let airportRequestUrl = "";
 let airportSchedule = { airport: { iata: "HND", icao: "RJTT", name: "Haneda" }, arrivals: [], departures: [] };
 let dispatchStatus = 204;
+let registrationLookupUrl = "";
 
 globalThis.fetch = async (url, init = {}) => {
   const value = String(url);
@@ -24,6 +25,29 @@ globalThis.fetch = async (url, init = {}) => {
     return new Response(JSON.stringify(airportSchedule), {
       status: 200,
       headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.includes("raw.githubusercontent.com/") && value.endsWith("/watchlist.json")) {
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (value.includes("hexdb.io/reg-hex?")) {
+    registrationLookupUrl = value;
+    return new Response("4010EE", { status: 200 });
+  }
+  if (value.includes("hexdb.io/api/v1/aircraft/4010ee")) {
+    return new Response(JSON.stringify({
+      Registration: "G-EZBZ", Manufacturer: "Airbus", Type: "A319 111",
+      RegisteredOwners: "easyJet Airline", Year: "2008",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (value.includes("api.adsbdb.com/v0/aircraft/4010ee")) {
+    return new Response(JSON.stringify({ response: { aircraft: {} } }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.includes("api.adsb.lol/v2/hex/4010ee")) {
+    return new Response(JSON.stringify({ ac: [] }), {
+      status: 200, headers: { "content-type": "application/json" },
     });
   }
   if (value.includes("/contents/watchlist.json") && (init.method || "GET") === "GET") {
@@ -96,6 +120,12 @@ assert.doesNotMatch(result.content, /JL20/);
 assert.match(result.content, /航空会社: ANA/);
 result = await worker.cmdInfo({ aircraft: "" }, env);
 assert.match(result.content, /使い方/);
+result = await worker.cmdInfo({ aircraft: "g-ezbz" }, env);
+assert.match(registrationLookupUrl, /hexdb\.io\/reg-hex\?reg=G-EZBZ$/);
+assert.match(result.content, /icao24: `4010ee`/);
+assert.match(result.content, /watchlist: 未登録/);
+assert.match(result.content, /Airbus A319 111/);
+assert.equal(Object.keys(watchlist).length, 1);
 
 const menu = worker.cmdMenu();
 assert.match(menu.content, /航空機通知Botメニュー/);
