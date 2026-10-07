@@ -206,6 +206,25 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("機種不明" in item for item in anomalies))
         self.assertTrue(any("登録記号重複" in item for item in anomalies))
 
+    def test_data_quality_uses_shared_watchlist(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "3c4a15": {"label": "D-ABPU", "type": "BOEING 787-9 Dreamliner (B789)"}
+        }
+        with patch.object(discord_bot.requests, "get", return_value=response) as get:
+            watchlist = discord_bot.load_shared_watchlist_for_quality_check()
+        self.assertEqual(watchlist["3c4a15"]["type"], "BOEING 787-9 Dreamliner (B789)")
+        get.assert_called_once_with(discord_bot.SHARED_WATCHLIST_URL, timeout=8)
+
+    def test_data_quality_skips_when_shared_watchlist_is_unavailable(self):
+        with patch.object(
+            discord_bot.requests,
+            "get",
+            side_effect=discord_bot.requests.RequestException("offline"),
+        ):
+            self.assertIsNone(discord_bot.load_shared_watchlist_for_quality_check())
+
     async def test_personal_channel_uses_second_category_when_first_is_full(self):
         first = SimpleNamespace(name="🔒｜個人設定", channels=[object()] * 50)
         second = SimpleNamespace(name="🔒｜個人設定2", channels=[])

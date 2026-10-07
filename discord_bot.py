@@ -51,6 +51,10 @@ from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_
 from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, prune_notified as prune_destination_notified, route_matches_destination, should_notify as should_notify_destination)
 
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
+SHARED_WATCHLIST_URL = os.environ.get(
+    "SHARED_WATCHLIST_URL",
+    "https://raw.githubusercontent.com/japaneseeeeeee/dont-have-name-now-by-me/main/watchlist.json",
+)
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
 AIRCRAFT_DB_PATH = os.path.expanduser(
     os.environ.get("AIRCRAFT_DB_PATH", "~/aircraft-alert/aircraftDatabase.csv")
@@ -227,6 +231,22 @@ def save_watchlist(data):
             os.replace(tmp_path, WATCHLIST_PATH)
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def load_shared_watchlist_for_quality_check():
+    """データ品質確認では、監視処理と同じGitHub上の共通watchlistを正とする。"""
+    try:
+        response = requests.get(SHARED_WATCHLIST_URL, timeout=8)
+        response.raise_for_status()
+        watchlist = response.json()
+        if not isinstance(watchlist, dict):
+            raise ValueError("watchlist must be an object")
+        return watchlist
+    except (requests.RequestException, ValueError) as exc:
+        # ローカルコピーが古い場合に誤った「機種不明」を送らないよう、
+        # 共通watchlistを確認できない回は品質通知だけを見送る。
+        logger.warning("データ品質確認用watchlistを取得できません: %s", exc)
+        return None
 
 
 def load_locked_json(path, default):
@@ -2728,7 +2748,10 @@ async def data_quality_check():
     global _last_anomaly_fingerprint
     if not bot.is_ready() or bot.is_closed():
         return
-    anomalies = await asyncio.to_thread(find_watchlist_anomalies, load_locked_json(WATCHLIST_PATH, {}))
+    watchlist = await asyncio.to_thread(load_shared_watchlist_for_quality_check)
+    if watchlist is None:
+        return
+    anomalies = await asyncio.to_thread(find_watchlist_anomalies, watchlist)
     fingerprint = tuple(anomalies)
     if not anomalies or fingerprint == _last_anomaly_fingerprint:
         _last_anomaly_fingerprint = fingerprint
