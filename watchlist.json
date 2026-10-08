@@ -253,6 +253,10 @@
     "label": "D-AUSC",
     "type": "Airbus A340 313E"
   },
+  "3c0f22": {
+    "label": "D-AUSZ",
+    "type": "Airbus A340 642"
+  },
   "3c4a15": {
     "label": "D-ABPU",
     "type": "BOEING 787-9 Dreamliner (B789)"
