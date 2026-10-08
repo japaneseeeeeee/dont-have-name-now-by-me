@@ -249,6 +249,10 @@
     "label": "F-RARF",
     "type": "Airbus A400M-180"
   },
+  "3c0f0b": {
+    "label": "D-AUSC",
+    "type": "Airbus A340 313E"
+  },
   "3c4a15": {
     "label": "D-ABPU",
     "type": "BOEING 787-9 Dreamliner (B789)"
