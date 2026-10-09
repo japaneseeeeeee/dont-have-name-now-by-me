@@ -17,6 +17,25 @@ class PriorityTests(unittest.TestCase):
     def test_old_entries_default_to_normal(self):
         self.assertEqual(monitor.effective_priority({"label": "JA0001"}, now=100), "NORMAL")
 
+    def test_shared_watchlist_refreshes_local_fallback_copy(self):
+        remote = {"8691aa": {"label": "JA784A", "type": "B77W"}}
+        response = Mock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = remote
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "watchlist.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({"old": {"label": "OLD", "type": "不明"}}, stream)
+            with (
+                patch.object(monitor, "WATCHLIST_PATH", path),
+                patch.object(monitor.requests, "get", return_value=response),
+            ):
+                loaded = monitor.load_watchlist()
+            with open(path, encoding="utf-8") as stream:
+                cached = json.load(stream)
+        self.assertEqual(cached, remote)
+        self.assertEqual(loaded["8691aa"]["label"], "JA784A")
+
     def test_active_temporary_special(self):
         entry = {"priority": "SPECIAL", "special_until": 200, "priority_after_special": "WATCH"}
         self.assertEqual(monitor.effective_priority(entry, now=100), "SPECIAL")

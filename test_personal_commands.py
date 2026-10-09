@@ -206,6 +206,26 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("機種不明" in item for item in anomalies))
         self.assertTrue(any("登録記号重複" in item for item in anomalies))
 
+    def test_legacy_watchlist_read_uses_shared_copy_and_refreshes_local_cache(self):
+        remote = {"8691aa": {"label": "JA784A", "type": "B77W"}}
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = remote
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "watchlist.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({}, stream)
+            with (
+                patch.object(discord_bot, "WATCHLIST_PATH", path),
+                patch.object(discord_bot, "WATCHLIST_LOCK_PATH", path + ".lock"),
+                patch.object(discord_bot.requests, "get", return_value=response),
+            ):
+                loaded = discord_bot.load_watchlist()
+            with open(path, encoding="utf-8") as stream:
+                cached = json.load(stream)
+        self.assertEqual(loaded, remote)
+        self.assertEqual(cached, remote)
+
     def test_data_quality_uses_shared_watchlist(self):
         response = Mock()
         response.raise_for_status.return_value = None

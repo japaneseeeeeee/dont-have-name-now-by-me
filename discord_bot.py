@@ -50,7 +50,25 @@ from livery import lookup_livery
 from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_equipment
 from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, prune_notified as prune_destination_notified, route_matches_destination, should_notify as should_notify_destination)
 
+
+def load_env_file(path):
+    """権限を絞った.envから、未設定の環境変数だけを読み込む。"""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as stream:
+        for line in stream:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+ENV_PATH = os.path.expanduser(os.environ.get("AIRCRAFT_ENV_FILE", "~/aircraft-alert/.env"))
+load_env_file(ENV_PATH)
+
 WATCHLIST_PATH = os.path.expanduser("~/aircraft-alert/watchlist.json")
+WATCHLIST_LOCK_PATH = WATCHLIST_PATH + ".lock"
 SHARED_WATCHLIST_URL = os.environ.get(
     "SHARED_WATCHLIST_URL",
     "https://api.github.com/repos/japaneseeeeeee/dont-have-name-now-by-me/contents/watchlist.json?ref=main",
@@ -213,24 +231,42 @@ bot = AircraftBot(command_prefix=PREFIX, intents=intents)
 # ============ watchlist の読み書き ============
 
 def load_watchlist():
-    with open(WATCHLIST_PATH, "r+", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    """GitHub版を優先し、成功時はローカルの障害時用コピーも更新する。"""
+    try:
+        response = requests.get(
+            SHARED_WATCHLIST_URL,
+            headers={"Accept": "application/vnd.github.raw+json", "User-Agent": "aircraft-alert-bot/1.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("watchlist must be an object")
+        save_watchlist(data)
+        return data
+    except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
+
+    with open(WATCHLIST_LOCK_PATH, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_SH)
         try:
-            return json.load(f)
+            with open(WATCHLIST_PATH, "r", encoding="utf-8") as stream:
+                return json.load(stream)
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def save_watchlist(data):
     tmp_path = WATCHLIST_PATH + ".tmp"
-    with open(WATCHLIST_PATH, "r+", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with open(WATCHLIST_LOCK_PATH, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
             with open(tmp_path, "w", encoding="utf-8") as tmp:
-                json.dump(data, tmp, ensure_ascii=False, indent=4)
+                json.dump(data, tmp, ensure_ascii=False, indent=2, sort_keys=True)
+                tmp.write("\n")
             os.replace(tmp_path, WATCHLIST_PATH)
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def load_shared_watchlist_for_quality_check():

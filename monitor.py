@@ -257,18 +257,28 @@ def request_with_retry(method, url, **kwargs):
 
 def load_watchlist():
     """GitHubの共通watchlistを読み込む(障害時のみローカルへフォールバック)。"""
+    fetched_shared = False
     try:
         response = requests.get(SHARED_WATCHLIST_URL, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         raw = response.json()
         if not isinstance(raw, dict):
             raise ValueError("watchlist must be an object")
+        fetched_shared = True
     except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
         logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
         status = getattr(getattr(exc, "response", None), "status_code", None)
         queue_system_alert("GitHub", "共通watchlistの取得に失敗", str(exc), status)
-        with open(WATCHLIST_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        with open(WATCHLIST_PATH + ".lock", "a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_SH)
+            try:
+                with open(WATCHLIST_PATH, "r", encoding="utf-8") as stream:
+                    raw = json.load(stream)
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    if fetched_shared:
+        cache_shared_watchlist(raw)
 
     watchlist = {}
     for icao24, value in raw.items():
@@ -283,6 +293,31 @@ def load_watchlist():
         watchlist[icao24] = {"label": label, "type": aircraft_type, "priority": priority}
 
     return watchlist
+
+
+def cache_shared_watchlist(data):
+    """GitHub版を障害時用ローカルコピーへ、変更がある時だけ安全に反映する。"""
+    lock_path = WATCHLIST_PATH + ".lock"
+    tmp_path = WATCHLIST_PATH + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            current = None
+            try:
+                with open(WATCHLIST_PATH, "r", encoding="utf-8") as stream:
+                    current = json.load(stream)
+            except (OSError, ValueError):
+                pass
+            if current == data:
+                return False
+            with open(tmp_path, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2, sort_keys=True)
+                stream.write("\n")
+            os.replace(tmp_path, WATCHLIST_PATH)
+            logger.info("ローカルwatchlistをGitHub版へ同期: %d機", len(data))
+            return True
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def load_notified():
