@@ -872,22 +872,33 @@ def fetch_route_cached(callsign):
     return route
 
 
-def resolve_flight_context(icao24, callsign, lat, lon):
+def resolve_flight_context(
+    icao24, callsign, lat, lon, track=None, altitude=None, vertical_rate=None,
+):
     """コールサインを補完し、現在位置と矛盾しない区間だけを返す。"""
     resolved = str(callsign or "").strip().upper()
     route = fetch_route_cached(resolved) if resolved else None
+    verified_route = route if route_matches_position(
+        route, lat, lon, track=track, altitude=altitude,
+        vertical_rate=vertical_rate,
+    ) else None
 
-    # OpenSkyで空欄、またはその値でルートを引けない時だけ別のADS-B受信網を照会する。
-    if not resolved or route is None:
+    # OpenSkyで空欄、ルートなし、または位置・飛行状態と矛盾する時は、
+    # 別のADS-B受信網も照会する。誤入力されたコールサインをそのまま
+    # 経路DBへ渡して、もっともらしい別区間を表示するのを防ぐ。
+    if not resolved or verified_route is None:
         fallback = fetch_fallback_callsign(icao24)
         if fallback:
-            fallback_route = fetch_route_cached(fallback) if route is None else route
-            if not resolved or fallback_route is not None:
+            fallback_route = fetch_route_cached(fallback)
+            fallback_verified = fallback_route if route_matches_position(
+                fallback_route, lat, lon, track=track, altitude=altitude,
+                vertical_rate=vertical_rate,
+            ) else None
+            if not resolved or fallback_verified is not None:
                 resolved = fallback
-            if route is None:
-                route = fallback_route
+            if fallback_verified is not None:
+                verified_route = fallback_verified
 
-    verified_route = route if route_matches_position(route, lat, lon) else None
     return resolved, verified_route
 
 
@@ -899,6 +910,9 @@ def enrich_personal_event_flight_context(events):
             event.get("callsign"),
             event.get("latitude"),
             event.get("longitude"),
+            event.get("track"),
+            event.get("altitude"),
+            event.get("vertical_rate"),
         )
         if callsign:
             event["callsign"] = callsign
@@ -933,8 +947,26 @@ def _vector_latlon(vector):
     return math.degrees(math.atan2(z, math.hypot(x, y))), math.degrees(math.atan2(y, x))
 
 
-def route_matches_position(route, lat, lon, max_distance_km=600):
-    """現在位置が空港間の大圏経路から大きく外れていないか判定する。"""
+def _initial_bearing(lat1, lon1, lat2, lon2):
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_lon = math.radians(lon2 - lon1)
+    y = math.sin(delta_lon) * math.cos(phi2)
+    x = (
+        math.cos(phi1) * math.sin(phi2)
+        - math.sin(phi1) * math.cos(phi2) * math.cos(delta_lon)
+    )
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _heading_difference(first, second):
+    return abs((first - second + 180) % 360 - 180)
+
+
+def route_matches_position(
+    route, lat, lon, max_distance_km=600, track=None, altitude=None,
+    vertical_rate=None,
+):
+    """現在位置・進行方向・飛行段階が予定経路と矛盾しないか判定する。"""
     if not route or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         return False
     try:
@@ -962,7 +994,42 @@ def route_matches_position(route, lat, lon, max_distance_km=600):
             vector = tuple(left * a + right * b for a, b in zip(start, end))
         sample_lat, sample_lon = _vector_latlon(vector)
         nearest = min(nearest, haversine_km(lat, lon, sample_lat, sample_lon))
-    return nearest <= max_distance_km
+    if nearest > max_distance_km:
+        return False
+
+    distance_from_origin = haversine_km(lat, lon, lat1, lon1)
+    distance_to_destination = haversine_km(lat, lon, lat2, lon2)
+
+    # 低高度で上昇中なら出発空港、降下中なら到着空港の近くにいるはず。
+    # 経路線の延長付近にある別空港を、出発・到着地と誤認するのを防ぐ。
+    try:
+        altitude_value = float(altitude)
+        vertical_rate_value = float(vertical_rate)
+    except (TypeError, ValueError):
+        altitude_value = vertical_rate_value = None
+    terminal_radius_km = 250
+    if altitude_value is not None and altitude_value <= 5000:
+        if vertical_rate_value is not None and vertical_rate_value >= 1:
+            if distance_from_origin > terminal_radius_km:
+                return False
+        elif vertical_rate_value is not None and vertical_rate_value <= -1:
+            if distance_to_destination > terminal_radius_km:
+                return False
+
+    # 両端の空港から離れている時、目的地とほぼ逆方向へ飛んでいる経路は除外する。
+    try:
+        track_value = float(track) % 360
+    except (TypeError, ValueError):
+        track_value = None
+    if (
+        track_value is not None
+        and distance_from_origin > terminal_radius_km
+        and distance_to_destination > terminal_radius_km
+    ):
+        destination_bearing = _initial_bearing(lat, lon, lat2, lon2)
+        if _heading_difference(track_value, destination_bearing) > 120:
+            return False
+    return True
 
 
 def format_detection_reason(priority, region_name, repeat=False):
@@ -1077,7 +1144,8 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
 
     photo = fetch_photo(icao24)
     callsign, route_verified = resolve_flight_context(
-        icao24, aircraft[1], aircraft[6], aircraft[5]
+        icao24, aircraft[1], aircraft[6], aircraft[5],
+        aircraft[10], aircraft[7], aircraft[11],
     )
     enriched_aircraft = list(aircraft)
     enriched_aircraft[1] = callsign or aircraft[1]

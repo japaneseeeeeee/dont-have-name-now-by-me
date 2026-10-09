@@ -104,6 +104,69 @@ class PriorityTests(unittest.TestCase):
         names = [field["name"] for field in embed["fields"]]
         self.assertIn("区間(推定)", names)
 
+    def test_departing_aircraft_rejects_route_from_distant_origin(self):
+        route = {
+            "origin": {
+                "iata_code": "KIX", "latitude": 34.4273, "longitude": 135.244,
+            },
+            "destination": {
+                "iata_code": "GUM", "latitude": 13.4834, "longitude": 144.796,
+            },
+            "flight_iata": "DL294",
+        }
+        self.assertFalse(monitor.route_matches_position(
+            route,
+            35.739,
+            139.828,
+            track=324,
+            altitude=1935,
+            vertical_rate=13,
+        ))
+
+    def test_departing_aircraft_accepts_route_from_nearby_origin(self):
+        route = {
+            "origin": {
+                "iata_code": "HND", "latitude": 35.5494, "longitude": 139.7798,
+            },
+            "destination": {
+                "iata_code": "MSP", "latitude": 44.8848, "longitude": -93.2223,
+            },
+            "flight_iata": "DL120",
+        }
+        self.assertTrue(monitor.route_matches_position(
+            route,
+            35.739,
+            139.828,
+            track=324,
+            altitude=1935,
+            vertical_rate=13,
+        ))
+
+    def test_mismatched_primary_callsign_can_use_verified_fallback(self):
+        wrong_route = {
+            "origin": {"iata_code": "KIX", "latitude": 34.4273, "longitude": 135.244},
+            "destination": {"iata_code": "GUM", "latitude": 13.4834, "longitude": 144.796},
+        }
+        correct_route = {
+            "origin": {"iata_code": "HND", "latitude": 35.5494, "longitude": 139.7798},
+            "destination": {"iata_code": "MSP", "latitude": 44.8848, "longitude": -93.2223},
+            "flight_iata": "DL120",
+        }
+
+        def route_for(callsign):
+            return {"DAL294": wrong_route, "DAL120": correct_route}.get(callsign)
+
+        with (
+            patch("monitor.fetch_fallback_callsign", return_value="DAL120"),
+            patch("monitor.fetch_route_cached", side_effect=route_for),
+        ):
+            callsign, route = monitor.resolve_flight_context(
+                "a6b47c", "DAL294", 35.739, 139.828,
+                track=324, altitude=1935, vertical_rate=13,
+            )
+        self.assertEqual(callsign, "DAL120")
+        self.assertIs(route, correct_route)
+
     def test_missing_opensky_callsign_is_filled_from_secondary_adsb(self):
         response = Mock(status_code=200)
         response.json.return_value = {
