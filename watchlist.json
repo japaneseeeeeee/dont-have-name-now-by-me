@@ -261,6 +261,10 @@
     "label": "D-ABYN",
     "type": "Boeing 747-830"
   },
+  "3c6516": {
+    "label": "D-AIHV",
+    "type": "Airbus A340 642"
+  },
   "3c670c": {
     "label": "D-AIXL",
     "type": "Airbus A350-941"
