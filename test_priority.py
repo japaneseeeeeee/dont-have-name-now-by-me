@@ -165,7 +165,136 @@ class PriorityTests(unittest.TestCase):
                 track=324, altitude=1935, vertical_rate=13,
             )
         self.assertEqual(callsign, "DAL120")
-        self.assertIs(route, correct_route)
+        self.assertEqual(route["flight_iata"], "DL120")
+        self.assertEqual(route["_confidence"], "estimated")
+
+    @staticmethod
+    def observed_aircraft(
+        callsign="ANA1", lat=35.0, lon=139.0, altitude=1000,
+        on_ground=False, track=45, vertical_rate=5, last_contact=1000,
+    ):
+        return [
+            "abc123", callsign, "Japan", last_contact, last_contact,
+            lon, lat, altitude, on_ground, 200, track, vertical_rate,
+        ]
+
+    def test_callsign_becomes_stable_after_three_observations(self):
+        state = {}
+        for index, now in enumerate((1000, 1087, 1174), start=1):
+            observations, state = monitor.update_flight_context_state(
+                [self.observed_aircraft(last_contact=now)], {"abc123"}, state, now,
+            )
+            self.assertEqual(observations["abc123"]["consecutive"], index)
+        self.assertTrue(observations["abc123"]["callsign_stable"])
+
+    def test_airborne_callsign_change_requires_reconfirmation(self):
+        previous = {
+            "abc123": {
+                "callsign": "ANA1", "consecutive": 5, "callsign_abrupt": False,
+                "latitude": 35.0, "longitude": 139.0, "altitude": 1000,
+                "on_ground": False, "last_seen": 1000,
+            },
+        }
+        observations, _ = monitor.update_flight_context_state(
+            [self.observed_aircraft(callsign="ANA2", last_contact=1087)],
+            {"abc123"}, previous, 1087,
+        )
+        self.assertTrue(observations["abc123"]["callsign_abrupt"])
+        self.assertFalse(observations["abc123"]["callsign_stable"])
+        self.assertEqual(observations["abc123"]["previous_callsign"], "ANA1")
+
+    def test_ground_callsign_change_is_allowed(self):
+        previous = {
+            "abc123": {
+                "callsign": "ANA1", "consecutive": 5, "callsign_abrupt": False,
+                "latitude": 35.0, "longitude": 139.0, "altitude": 0,
+                "on_ground": True, "last_seen": 1000,
+            },
+        }
+        observations, _ = monitor.update_flight_context_state(
+            [self.observed_aircraft(
+                callsign="ANA2", altitude=0, on_ground=True,
+                vertical_rate=0, last_contact=1087,
+            )],
+            {"abc123"}, previous, 1087,
+        )
+        self.assertFalse(observations["abc123"]["callsign_abrupt"])
+        self.assertTrue(observations["abc123"]["callsign_stable"])
+
+    def test_impossible_position_jump_is_rejected(self):
+        previous = {
+            "abc123": {
+                "callsign": "ANA1", "consecutive": 5, "callsign_abrupt": False,
+                "latitude": 35.0, "longitude": 139.0, "altitude": 1000,
+                "on_ground": False, "last_seen": 1000,
+            },
+        }
+        observations, state = monitor.update_flight_context_state(
+            [self.observed_aircraft(
+                lat=45.0, lon=145.0, altitude=10000, last_contact=1087,
+            )],
+            {"abc123"}, previous, 1087,
+        )
+        self.assertFalse(observations["abc123"]["position_consistent"])
+        self.assertEqual(state["abc123"]["latitude"], 35.0)
+
+    def test_stale_aircraft_data_is_marked_unreliable(self):
+        observations, _ = monitor.update_flight_context_state(
+            [self.observed_aircraft(last_contact=700)], {"abc123"}, {}, 1000,
+        )
+        self.assertFalse(observations["abc123"]["data_fresh"])
+
+    def test_missing_callsign_does_not_erase_previous_callsign(self):
+        previous = {
+            "abc123": {
+                "callsign": "ANA1", "consecutive": 5, "callsign_abrupt": False,
+                "latitude": 35.0, "longitude": 139.0, "altitude": 1000,
+                "on_ground": False, "last_seen": 1000,
+            },
+        }
+        _, state = monitor.update_flight_context_state(
+            [self.observed_aircraft(callsign="", last_contact=1087)],
+            {"abc123"}, previous, 1087,
+        )
+        self.assertEqual(state["abc123"]["callsign"], "ANA1")
+
+    def test_unconfirmed_abrupt_callsign_hides_route(self):
+        route = {
+            "origin": {"iata_code": "HND", "latitude": 35.5494, "longitude": 139.7798},
+            "destination": {"iata_code": "MSP", "latitude": 44.8848, "longitude": -93.2223},
+            "flight_iata": "DL120",
+        }
+        observation = {
+            "callsign_abrupt": True, "previous_callsign": "DAL121",
+            "callsign_stable": False, "position_consistent": True, "data_fresh": True,
+        }
+        with (
+            patch("monitor.fetch_route_cached", return_value=route),
+            patch("monitor.fetch_fallback_callsign", return_value=""),
+        ):
+            callsign, verified = monitor.resolve_flight_context(
+                "a6b47c", "DAL294", 35.739, 139.828,
+                track=324, altitude=1935, vertical_rate=13,
+                observation=observation,
+            )
+        self.assertEqual(callsign, "DAL294")
+        self.assertIsNone(verified)
+
+    def test_agreeing_sources_mark_route_high_confidence(self):
+        route = {
+            "origin": {"iata_code": "HND", "latitude": 35.5494, "longitude": 139.7798},
+            "destination": {"iata_code": "MSP", "latitude": 44.8848, "longitude": -93.2223},
+            "flight_iata": "DL120",
+        }
+        with (
+            patch("monitor.fetch_route_cached", return_value=route),
+            patch("monitor.fetch_fallback_callsign", return_value="DAL120"),
+        ):
+            _, verified = monitor.resolve_flight_context(
+                "a6b47c", "DAL120", 35.739, 139.828,
+                track=324, altitude=1935, vertical_rate=13,
+            )
+        self.assertEqual(verified["_confidence"], "high")
 
     def test_missing_opensky_callsign_is_filled_from_secondary_adsb(self):
         response = Mock(status_code=200)
@@ -198,7 +327,7 @@ class PriorityTests(unittest.TestCase):
                 "8691aa", "", 35.946, 141.438,
             )
         self.assertEqual(callsign, "ANA111")
-        self.assertIs(verified, route)
+        self.assertEqual(verified["flight_iata"], "NH111")
 
         aircraft = ["8691aa", callsign, None, None, None, 141.438, 35.946, 5227, False, 187, 270, -5]
         embed = monitor.build_embed(

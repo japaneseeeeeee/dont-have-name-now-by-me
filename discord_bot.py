@@ -2117,8 +2117,9 @@ async def personal_special_dispatch():
             route = event.get("route") or {}
             if route.get("origin") and route.get("destination"):
                 flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
+                confidence = route.get("_confidence")
                 embed.add_field(
-                    name="区間(推定)",
+                    name="区間(高信頼)" if confidence == "high" else "区間(推定)",
                     value=(
                         f"{flight}{format_airport(route['origin'])} → "
                         f"{format_airport(route['destination'])}"

@@ -27,6 +27,8 @@ system_alert_events.json
 system_alert_events.json.lock
 system_alert_state.json
 system_alert_state.json.lock
+flight_context_state.json
+flight_context_state.json.lock
 destination_alerts.json
 destination_alerts.json.lock
 equipment_alerts.json

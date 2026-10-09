@@ -109,6 +109,7 @@ PERSONAL_SPECIAL_STATE_PATH = os.path.join(BASE_DIR, "personal_special_notified.
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 SYSTEM_ALERT_STATE_PATH = os.path.join(BASE_DIR, "system_alert_state.json")
+FLIGHT_CONTEXT_STATE_PATH = os.path.join(BASE_DIR, "flight_context_state.json")
 SYSTEM_ALERT_COOLDOWN = 6 * 60 * 60
 # launchd本体とself-hosted Actionsのcheckout先が異なっても同じロックを使う。
 MONITOR_LOCK_PATH = os.environ.get(
@@ -144,6 +145,12 @@ CALLSIGN_TIMEOUT = 5
 CALLSIGN_CACHE_SECONDS = 10 * 60
 CALLSIGN_NEGATIVE_CACHE_SECONDS = 90
 ROUTE_CACHE_SECONDS = 30 * 60
+FLIGHT_CONTEXT_MAX_GAP_SECONDS = 45 * 60
+FLIGHT_CONTEXT_RETENTION_SECONDS = 6 * 60 * 60
+FLIGHT_CONTEXT_STABLE_OBSERVATIONS = 3
+FLIGHT_CONTEXT_MAX_GROUND_SPEED_KMH = 1500
+FLIGHT_CONTEXT_MAX_VERTICAL_SPEED_MPS = 100
+FLIGHT_DATA_STALE_SECONDS = 180
 
 UNKNOWN_TYPE = "不明"
 
@@ -180,6 +187,7 @@ logger = logging.getLogger("aircraft-alert")
 # 同じ機体・便を地方通知、全国通知、個人通知で何度も問い合わせないようキャッシュする。
 _callsign_cache = {}
 _route_cache = {}
+_flight_observations = {}
 
 
 def normalize_priority(value):
@@ -874,6 +882,7 @@ def fetch_route_cached(callsign):
 
 def resolve_flight_context(
     icao24, callsign, lat, lon, track=None, altitude=None, vertical_rate=None,
+    observation=None,
 ):
     """コールサインを補完し、現在位置と矛盾しない区間だけを返す。"""
     resolved = str(callsign or "").strip().upper()
@@ -883,21 +892,42 @@ def resolve_flight_context(
         vertical_rate=vertical_rate,
     ) else None
 
-    # OpenSkyで空欄、ルートなし、または位置・飛行状態と矛盾する時は、
-    # 別のADS-B受信網も照会する。誤入力されたコールサインをそのまま
-    # 経路DBへ渡して、もっともらしい別区間を表示するのを防ぐ。
-    if not resolved or verified_route is None:
-        fallback = fetch_fallback_callsign(icao24)
-        if fallback:
-            fallback_route = fetch_route_cached(fallback)
-            fallback_verified = fallback_route if route_matches_position(
-                fallback_route, lat, lon, track=track, altitude=altitude,
-                vertical_rate=vertical_rate,
-            ) else None
-            if not resolved or fallback_verified is not None:
+    # 独立したADS-B受信網でもコールサインを照合する。便名が急変した直後は、
+    # 一致を確認できるか、位置と合う別候補が得られるまで経路を表示しない。
+    fallback = fetch_fallback_callsign(icao24)
+    source_agreement = bool(resolved and fallback and resolved == fallback)
+    fallback_verified = None
+    if fallback and fallback != resolved:
+        fallback_route = fetch_route_cached(fallback)
+        fallback_verified = fallback_route if route_matches_position(
+            fallback_route, lat, lon, track=track, altitude=altitude,
+            vertical_rate=vertical_rate,
+        ) else None
+        if fallback_verified is not None and verified_route is None:
+            resolved = fallback
+            verified_route = fallback_verified
+
+    observation = observation if isinstance(observation, dict) else None
+    if observation:
+        if not observation.get("position_consistent", True):
+            verified_route = None
+        if not observation.get("data_fresh", True):
+            verified_route = None
+        if observation.get("callsign_abrupt") and not source_agreement:
+            previous = str(observation.get("previous_callsign") or "").upper()
+            if fallback and fallback == previous and fallback_verified is not None:
                 resolved = fallback
-            if fallback_verified is not None:
                 verified_route = fallback_verified
+            else:
+                verified_route = None
+
+    if verified_route is not None:
+        confidence = "high" if (
+            source_agreement
+            or (observation and observation.get("callsign_stable"))
+        ) else "estimated"
+        verified_route = dict(verified_route)
+        verified_route["_confidence"] = confidence
 
     return resolved, verified_route
 
@@ -913,6 +943,7 @@ def enrich_personal_event_flight_context(events):
             event.get("track"),
             event.get("altitude"),
             event.get("vertical_rate"),
+            _flight_observations.get(str(event.get("icao24") or "").lower()),
         )
         if callsign:
             event["callsign"] = callsign
@@ -1032,6 +1063,126 @@ def route_matches_position(
     return True
 
 
+def _tracked_icaos(watchlist, personal_settings):
+    tracked = {str(value).strip().lower() for value in watchlist}
+    for config in (personal_settings or {}).values():
+        if not isinstance(config, dict):
+            continue
+        tracked.update(
+            str(value).strip().lower()
+            for value in (config.get("aircraft") or {})
+        )
+    return {value for value in tracked if re.fullmatch(r"[0-9a-f]{6}", value)}
+
+
+def update_flight_context_state(states, tracked_icaos, previous_state, now):
+    """直前観測との連続性を確認し、次回へ渡す小さな状態を作る。"""
+    previous_state = previous_state if isinstance(previous_state, dict) else {}
+    next_state = {}
+    for key, value in previous_state.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            age = now - float(value.get("last_seen") or 0)
+        except (TypeError, ValueError):
+            continue
+        if age <= FLIGHT_CONTEXT_RETENTION_SECONDS:
+            next_state[key] = value
+    observations = {}
+
+    for aircraft in states:
+        if not aircraft or len(aircraft) < 12:
+            continue
+        icao24 = str(aircraft[0] or "").strip().lower()
+        if icao24 not in tracked_icaos:
+            continue
+        lat, lon = aircraft[6], aircraft[5]
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            continue
+
+        callsign = str(aircraft[1] or "").strip().upper()
+        on_ground = bool(aircraft[8])
+        previous = previous_state.get(icao24)
+        previous = previous if isinstance(previous, dict) else None
+        elapsed = now - float((previous or {}).get("last_seen") or 0)
+        continuous = bool(
+            previous and 0 < elapsed <= FLIGHT_CONTEXT_MAX_GAP_SECONDS
+        )
+
+        position_consistent = True
+        if continuous:
+            try:
+                distance = haversine_km(
+                    float(previous["latitude"]), float(previous["longitude"]), lat, lon,
+                )
+                implied_speed = distance * 3600 / elapsed
+                altitude_change_rate = abs(
+                    float(aircraft[7]) - float(previous["altitude"])
+                ) / elapsed
+                position_consistent = (
+                    implied_speed <= FLIGHT_CONTEXT_MAX_GROUND_SPEED_KMH
+                    and altitude_change_rate <= FLIGHT_CONTEXT_MAX_VERTICAL_SPEED_MPS
+                )
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                position_consistent = True
+
+        last_contact = aircraft[4]
+        data_fresh = True
+        if isinstance(last_contact, (int, float)):
+            data_fresh = -30 <= now - last_contact <= FLIGHT_DATA_STALE_SECONDS
+
+        previous_callsign = str((previous or {}).get("callsign") or "").upper()
+        same_callsign = bool(callsign and callsign == previous_callsign)
+        reset_allowed = bool(
+            not continuous or on_ground or (previous and previous.get("on_ground"))
+        )
+        if not callsign:
+            consecutive = int((previous or {}).get("consecutive") or 0)
+            callsign_abrupt = bool((previous or {}).get("callsign_abrupt"))
+        elif same_callsign:
+            consecutive = int((previous or {}).get("consecutive") or 1) + 1
+            callsign_abrupt = bool(
+                (previous or {}).get("callsign_abrupt")
+                and consecutive < FLIGHT_CONTEXT_STABLE_OBSERVATIONS
+            )
+        else:
+            consecutive = 1
+            callsign_abrupt = bool(previous_callsign and not reset_allowed)
+
+        observation = {
+            "callsign_stable": bool(
+                callsign and (
+                    consecutive >= FLIGHT_CONTEXT_STABLE_OBSERVATIONS
+                    or reset_allowed and on_ground
+                )
+            ),
+            "callsign_abrupt": callsign_abrupt,
+            "previous_callsign": previous_callsign,
+            "position_consistent": position_consistent,
+            "data_fresh": data_fresh,
+            "consecutive": consecutive,
+        }
+        observations[icao24] = observation
+
+        # 明らかな位置飛びは保存せず、次回も最後の正常位置と比較する。
+        if not position_consistent:
+            continue
+        next_state[icao24] = {
+            "callsign": callsign or previous_callsign,
+            "consecutive": consecutive,
+            "callsign_abrupt": callsign_abrupt,
+            "latitude": lat,
+            "longitude": lon,
+            "altitude": aircraft[7],
+            "track": aircraft[10],
+            "on_ground": on_ground,
+            "last_contact": last_contact,
+            "last_seen": now,
+        }
+
+    return observations, next_state
+
+
 def format_detection_reason(priority, region_name, repeat=False):
     """通知レベルと検出状態を、自然な日本語の説明にする。"""
     aircraft_label = {
@@ -1072,10 +1223,14 @@ def build_embed(
         },
     ]
 
-    if route and route_matches_position(route, lat, lon):
+    if route and route_matches_position(
+        route, lat, lon, track=track, altitude=altitude, vertical_rate=vrate,
+    ):
         flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
+        confidence = route.get("_confidence")
+        field_name = "区間(高信頼)" if confidence == "high" else "区間(推定)"
         fields.append({
-            "name": "区間(推定)",
+            "name": field_name,
             "value": f"{flight}{format_airport(route['origin'])} → {format_airport(route['destination'])}",
             "inline": False,
         })
@@ -1146,6 +1301,7 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     callsign, route_verified = resolve_flight_context(
         icao24, aircraft[1], aircraft[6], aircraft[5],
         aircraft[10], aircraft[7], aircraft[11],
+        _flight_observations.get(str(icao24).lower()),
     )
     enriched_aircraft = list(aircraft)
     enriched_aircraft[1] = callsign or aircraft[1]
@@ -1180,6 +1336,7 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
 
 
 def run_monitor():
+    global _flight_observations
     logger.info("チェック開始")
 
     missing = [name for name, value in (
@@ -1243,6 +1400,15 @@ def run_monitor():
     # メンバーごとの個人SPECIALを通常通知とは独立して判定し、
     # Botが本人へDMするためのイベントキューへ渡す。
     personal_settings = load_shared_json(PERSONAL_SPECIALS_PATH, {})
+    previous_flight_state = load_shared_json(FLIGHT_CONTEXT_STATE_PATH, {})
+    _flight_observations, next_flight_state = update_flight_context_state(
+        states,
+        _tracked_icaos(watchlist, personal_settings),
+        previous_flight_state,
+        now,
+    )
+    if next_flight_state != previous_flight_state:
+        save_shared_json(FLIGHT_CONTEXT_STATE_PATH, next_flight_state)
     personal_notified = load_shared_json(PERSONAL_SPECIAL_STATE_PATH, {})
     original_personal_notified = personal_notified
     personal_events, personal_notified = find_personal_special_events(
