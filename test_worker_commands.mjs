@@ -162,7 +162,7 @@ airportSchedule = {
   airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
   arrivals: Array.from({ length: 14 }, (_, index) => ({
     number: `NH${100 + index}`,
-    status: ["Expected", "EnRoute", "Approaching", "Arrived", "CanceledUncertain"][index] || "Unknown",
+    status: ["Expected", "EnRoute", "Approaching", "Arrived", "CanceledUncertain", "Expected"][index] || "Unknown",
     airline: { name: "All Nippon Airways", iata: "NH", icao: "ANA" },
     arrival: index === 1
       ? { scheduledTimeLocal: "2026-10-10 09:10:00" }
@@ -170,20 +170,28 @@ airportSchedule = {
           scheduledTime: { local: `2026-10-10T09:${String(index * 2).padStart(2, "0")}` },
           ...(index === 0 ? { revisedTime: { local: "2026-10-10T09:15" } } : {}),
         },
-    departure: { airport: { iata: "CTS" } },
+    departure: {
+      airport: { iata: "CTS" },
+      ...(index === 0 ? { scheduledTime: { utc: new Date(Date.now() - 30 * 60 * 1000).toISOString() } } : {}),
+      ...(index === 5 ? { scheduledTime: { utc: new Date(Date.now() + 30 * 60 * 1000).toISOString() } } : {}),
+    },
   })),
   departures: [],
 };
+airportSchedule.arrivals[0].arrival.scheduledTime.utc = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+airportSchedule.arrivals[5].arrival.scheduledTime.utc = new Date(Date.now() + 90 * 60 * 1000).toISOString();
 result = await worker.cmdAirport(
   { airport: "HND", hours: 3 },
   { ...env, AERODATABOX_RAPIDAPI_KEY: "test" },
 );
 assert.match(result.content, /`09:00→09:15`/);
 assert.match(result.content, /`09:10`/);
+assert.match(result.content, /🟢 `09:00→09:15` \*\*NH100\*\*/);
 assert.match(result.content, /🟢 `09:10` \*\*NH101\*\*/);
 assert.match(result.content, /🟢 `09:04` \*\*NH102\*\*/);
 assert.match(result.content, /🔵 `09:06` \*\*NH103\*\*/);
 assert.match(result.content, /🔴 `09:08` \*\*NH104\*\*/);
+assert.match(result.content, /🟡 `09:10` \*\*NH105\*\*/);
 assert.match(result.content, /下のボタンで全便表示/);
 assert.match(JSON.stringify(result.components), /全便を表示（14便）/);
 assert.match(JSON.stringify(result.components), /airportall\|HND\|both\|3\|-\|-/);

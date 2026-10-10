@@ -2001,13 +2001,35 @@ function airportAircraftText(item, movement) {
     .toUpperCase();
 }
 
-function airportStatusIcon(value) {
-  const status = String(value || "").toLowerCase().replace(/[\s_-]/g, "");
+function movementUtcTime(movement) {
+  return movement?.runwayTime?.utc
+    || movement?.runwayTimeUtc
+    || movement?.revisedTime?.utc
+    || movement?.revisedTimeUtc
+    || movement?.predictedTime?.utc
+    || movement?.predictedTimeUtc
+    || movement?.scheduledTime?.utc
+    || movement?.scheduledTimeUtc
+    || "";
+}
+
+function isLikelyInFlight(item, now = Date.now()) {
+  const departure = Date.parse(movementUtcTime(item?.departure));
+  const arrival = Date.parse(movementUtcTime(item?.arrival));
+  if (!Number.isFinite(departure) || !Number.isFinite(arrival) || arrival <= departure) return false;
+  const departureGraceMs = 5 * 60 * 1000;
+  const arrivalGraceMs = 20 * 60 * 1000;
+  return now >= departure + departureGraceMs && now <= arrival + arrivalGraceMs;
+}
+
+function airportStatusIcon(item) {
+  const status = String(item?.status || "").toLowerCase().replace(/[\s_-]/g, "");
   if (status.includes("cancel")) return "🔴";
   if (status.includes("arriv") || status.includes("land")) return "🔵";
   if (["enroute", "departed", "approaching", "airborne"].some((name) => status.includes(name))) {
     return "🟢";
   }
+  if (["expected", "unknown", ""].includes(status) && isLikelyInFlight(item)) return "🟢";
   return "🟡";
 }
 
@@ -2027,7 +2049,7 @@ function airportFlightLine(item, kind, watchlist) {
   const airport = opposite?.iata || opposite?.icao || "---";
   const aircraft = airportAircraft(item, movement);
   const type = aircraft.model || aircraft.modeS || "";
-  const icon = airportStatusIcon(item.status);
+  const icon = airportStatusIcon(item);
   const gate = movement?.gate ? ` G${movement.gate}` : "";
   const badgeMovement = { ...movement, aircraft: Object.keys(aircraft).length ? aircraft : movement?.aircraft };
   return `${icon} \`${timeText}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;
