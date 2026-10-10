@@ -2026,10 +2026,12 @@ function airportStatusIcon(item) {
   const status = String(item?.status || "").toLowerCase().replace(/[\s_-]/g, "");
   if (status.includes("cancel")) return "🔴";
   if (status.includes("arriv") || status.includes("land")) return "🔵";
+  if (status.includes("divert")) return "🟣";
   if (["enroute", "departed", "approaching", "airborne"].some((name) => status.includes(name))) {
     return "🟢";
   }
-  if (["expected", "unknown", ""].includes(status) && isLikelyInFlight(item)) return "🟢";
+  if (["expected", "unknown", "delayed", ""].includes(status) && isLikelyInFlight(item)) return "🟢";
+  if (status.includes("delay")) return "🟠";
   return "🟡";
 }
 
@@ -2100,7 +2102,7 @@ function buildAirportMessage(code, hours, direction, schedule, watchlist, filter
   }
   const airport = schedule.airport || {};
   const title = airport.name ? `${airport.name}（${airport.iata || code} / ${airport.icao || code}）` : code;
-  const legend = "🟢運航中 · 🟡予定 · 🔵到着済み · 🔴欠航\n時刻は空港現地時刻（予定→変更後）";
+  const legend = "🟢運航中 · 🟡予定/搭乗中 · 🟠遅延 · 🔵到着済み · 🔴欠航 · 🟣目的地変更\n時刻は空港現地時刻（予定→変更後）";
   const filterLabels = [
     filters.airline ? `航空会社: ${filters.airline}` : "",
     filters.aircraft ? `機種: ${filters.aircraft}` : "",
