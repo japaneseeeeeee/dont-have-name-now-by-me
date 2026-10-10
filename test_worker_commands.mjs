@@ -6,7 +6,8 @@ source = source.replace("export default {", "const workerDefault = {");
 source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority, cmdSpecial,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModalToCommand,
-  handlePersonalAlertButton, handleLegacyPersonalAlertButton };`;
+  handlePersonalAlertButton, handleLegacyPersonalAlertButton,
+  processAirportAllButton };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -20,6 +21,8 @@ let dispatchBody = null;
 let registrationLookupUrl = "";
 let registrationLookupStatus = 200;
 let aeroDataBoxAircraftLookup = false;
+let editedOriginalPayload = null;
+let airportFollowupPayloads = [];
 
 globalThis.fetch = async (url, init = {}) => {
   const value = String(url);
@@ -90,6 +93,14 @@ globalThis.fetch = async (url, init = {}) => {
     dispatchBody = JSON.parse(init.body);
     return new Response(null, { status: dispatchStatus });
   }
+  if (value.includes("discord.com/api/v10/webhooks/") && value.endsWith("/messages/@original")) {
+    editedOriginalPayload = JSON.parse(init.body);
+    return new Response(null, { status: 200 });
+  }
+  if (value.includes("discord.com/api/v10/webhooks/")) {
+    airportFollowupPayloads.push(JSON.parse(init.body));
+    return new Response(null, { status: 200 });
+  }
   throw new Error(`Unexpected fetch: ${value}`);
 };
 
@@ -146,6 +157,53 @@ result = await worker.cmdAirport({ airport: "HND", airline: "ANA" }, { ...env, A
 assert.match(result.content, /NH10/);
 assert.doesNotMatch(result.content, /JL20/);
 assert.match(result.content, /航空会社: ANA/);
+
+airportSchedule = {
+  airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
+  arrivals: Array.from({ length: 14 }, (_, index) => ({
+    number: `NH${100 + index}`,
+    status: index === 0 ? "Expected" : "Unknown",
+    airline: { name: "All Nippon Airways", iata: "NH", icao: "ANA" },
+    arrival: index === 1
+      ? { scheduledTimeLocal: "2026-10-10 09:10:00" }
+      : {
+          scheduledTime: { local: `2026-10-10T09:${String(index * 2).padStart(2, "0")}` },
+          ...(index === 0 ? { revisedTime: { local: "2026-10-10T09:15" } } : {}),
+        },
+    departure: { airport: { iata: "CTS" } },
+  })),
+  departures: [],
+};
+result = await worker.cmdAirport(
+  { airport: "HND", hours: 3 },
+  { ...env, AERODATABOX_RAPIDAPI_KEY: "test" },
+);
+assert.match(result.content, /`09:00→09:15`/);
+assert.match(result.content, /`09:10`/);
+assert.match(result.content, /下のボタンで全便表示/);
+assert.match(JSON.stringify(result.components), /全便を表示（14便）/);
+assert.match(JSON.stringify(result.components), /airportall\|HND\|both\|3\|-\|-/);
+assert.ok(result.components[0].components[0].custom_id.length <= 100);
+
+result = await worker.cmdAirport(
+  { airport: "HND", hours: 3, show_all: true },
+  { ...env, AERODATABOX_RAPIDAPI_KEY: "test" },
+);
+assert.match(result.content, /NH113/);
+assert.deepEqual(result.components, []);
+
+editedOriginalPayload = null;
+airportFollowupPayloads = [];
+await worker.processAirportAllButton({
+  application_id: "app",
+  token: "token",
+  data: { custom_id: "airportall|HND|both|3|-|-" },
+  message: { content: "絞り込み: 航空会社: ANA" },
+}, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
+assert.match(editedOriginalPayload.content, /NH113/);
+assert.deepEqual(editedOriginalPayload.components, []);
+assert.ok(airportFollowupPayloads.every((payload) => payload.flags === 64));
+
 result = await worker.cmdInfo({ aircraft: "" }, env);
 assert.match(result.content, /使い方/);
 result = await worker.cmdInfo({ aircraft: "gezbz" }, env, interaction);

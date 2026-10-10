@@ -120,6 +120,12 @@ export default {
       return json({ type: 6 });
     }
 
+    // 空港発着予定の省略分を、同じ条件のまま全便表示する。
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("airportall|")) {
+      ctx.waitUntil(processAirportAllButton(interaction, env));
+      return json({ type: 6 });
+    }
+
     // 3: 管理画面内の操作ボタン
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("admin|")) {
       return handleAdminButton(interaction, env, ctx);
@@ -405,6 +411,41 @@ async function processListPageButton(interaction, env) {
     await editOriginal(interaction, message);
   } catch (err) {
     console.error("list page failed:", (err && err.stack) || err);
+    await editOriginal(interaction, {
+      content: TEMPORARILY_UNAVAILABLE,
+      components: [],
+    });
+  }
+}
+
+async function processAirportAllButton(interaction, env) {
+  try {
+    const [, code, direction, hoursText, dateText, startTimeText] =
+      String(interaction.data?.custom_id || "").split("|");
+    const filterLine = String(interaction.message?.content || "")
+      .split("\n")
+      .find((line) => line.startsWith("絞り込み:")) || "";
+    const filters = {};
+    for (const part of filterLine.replace(/^絞り込み:\s*/, "").split(" / ")) {
+      if (part.startsWith("航空会社: ")) filters.airline = part.slice(6).trim();
+      if (part.startsWith("機種: ")) filters.aircraft = part.slice(4).trim();
+    }
+    const message = await cmdAirport({
+      airport: code,
+      type: direction,
+      hours: Number(hoursText) || 3,
+      date: dateText === "-" ? "" : dateText,
+      start_time: startTimeText === "-" ? "" : startTimeText,
+      airline: filters.airline || "",
+      aircraft: filters.aircraft || "",
+      show_all: true,
+    }, env);
+    await editOriginal(interaction, message);
+    for (const followup of message.followups || []) {
+      await sendFollowup(interaction, { flags: 64, ...followup });
+    }
+  } catch (err) {
+    console.error("airport all button failed:", (err && err.stack) || err);
     await editOriginal(interaction, {
       content: TEMPORARILY_UNAVAILABLE,
       components: [],
@@ -1909,9 +1950,34 @@ function watchlistBadge(watchlist, movement) {
 
 function movementTime(movement) {
   return movement?.revisedTime?.local
+    || movement?.revisedTimeLocal
     || movement?.predictedTime?.local
+    || movement?.predictedTimeLocal
     || movement?.scheduledTime?.local
+    || movement?.scheduledTimeLocal
     || movement?.runwayTime?.local
+    || movement?.runwayTimeLocal
+    || "";
+}
+
+function scheduledMovementTime(movement) {
+  return movement?.scheduledTime?.local
+    || movement?.scheduledTimeLocal
+    || "";
+}
+
+function updatedMovementTime(movement) {
+  return movement?.revisedTime?.local
+    || movement?.revisedTimeLocal
+    || movement?.predictedTime?.local
+    || movement?.predictedTimeLocal
+    || "";
+}
+
+function hhmmOf(value) {
+  const text = String(value || "").trim();
+  return text.match(/(?:T|\s)([01]\d|2[0-3]):([0-5]\d)/)?.slice(1).join(":")
+    || text.match(/^([01]\d|2[0-3]):([0-5]\d)/)?.slice(1).join(":")
     || "";
 }
 
@@ -1938,8 +2004,15 @@ function airportAircraftText(item, movement) {
 function airportFlightLine(item, kind, watchlist) {
   const movement = kind === "arrival" ? item.arrival : item.departure;
   const opposite = kind === "arrival" ? item.departure?.airport : item.arrival?.airport;
-  const time = movementTime(movement);
-  const hhmm = time.match(/T(\d{2}:\d{2})/)?.[1] || "--:--";
+  const scheduled = hhmmOf(scheduledMovementTime(movement));
+  const updated = hhmmOf(updatedMovementTime(movement));
+  const fallback = hhmmOf(movementTime(movement));
+  const hhmm = scheduled || fallback || "--:--";
+  const timeText = scheduled && updated && scheduled !== updated
+    ? `${scheduled}→${updated}`
+    : !scheduled && updated
+      ? `${updated}見込`
+      : hhmm;
   const flight = item.number || item.callSign || "便名不明";
   const airport = opposite?.iata || opposite?.icao || "---";
   const aircraft = airportAircraft(item, movement);
@@ -1948,7 +2021,7 @@ function airportFlightLine(item, kind, watchlist) {
   const icon = status.includes("cancel") ? "🔴" : status.includes("arriv") || status.includes("land") ? "🔵" : status.includes("depart") || status.includes("airborne") ? "🟢" : "🟡";
   const gate = movement?.gate ? ` G${movement.gate}` : "";
   const badgeMovement = { ...movement, aircraft: Object.keys(aircraft).length ? aircraft : movement?.aircraft };
-  return `${icon} \`${hhmm}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;
+  return `${icon} \`${timeText}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;
 }
 
 function splitAirportMessages(header, sections, footer) {
@@ -1974,6 +2047,7 @@ function buildAirportMessage(code, hours, direction, schedule, watchlist, filter
   if (direction !== "arrival") groups.push(["出発", "departure", schedule.departures || []]);
   const sections = [];
   let matchedCount = 0;
+  let hasOmittedFlights = false;
   const airlineFilter = String(filters.airline || "").toUpperCase();
   const aircraftFilter = String(filters.aircraft || "").toUpperCase();
   for (const [label, kind, flights] of groups) {
@@ -1986,12 +2060,16 @@ function buildAirportMessage(code, hours, direction, schedule, watchlist, filter
     matchedCount += sorted.length;
     const visible = filters.showAll ? sorted : sorted.slice(0, 12);
     const lines = visible.map((item) => airportFlightLine(item, kind, watchlist));
-    const omitted = !filters.showAll && sorted.length > visible.length ? `\n…ほか ${sorted.length - visible.length}便（show_all:true で全便表示）` : "";
+    const isOmitted = !filters.showAll && sorted.length > visible.length;
+    hasOmittedFlights ||= isOmitted;
+    const omitted = isOmitted
+      ? `\n…ほか ${sorted.length - visible.length}便（下のボタンで全便表示）`
+      : "";
     sections.push(`**${kind === "arrival" ? "🛬" : "🛫"} ${label}（${sorted.length}便）**\n${lines.length ? lines.join("\n") : "該当便なし"}${omitted}`);
   }
   const airport = schedule.airport || {};
   const title = airport.name ? `${airport.name}（${airport.iata || code} / ${airport.icao || code}）` : code;
-  const legend = "🟢運航中 · 🟡予定 · 🔵到着済み · 🔴欠航";
+  const legend = "🟢運航中 · 🟡予定 · 🔵到着済み · 🔴欠航\n時刻は空港現地時刻（予定→変更後）";
   const filterLabels = [
     filters.airline ? `航空会社: ${filters.airline}` : "",
     filters.aircraft ? `機種: ${filters.aircraft}` : "",
@@ -2005,5 +2083,22 @@ function buildAirportMessage(code, hours, direction, schedule, watchlist, filter
   return {
     content: messages[0] || `${header}\n\n該当便なし`,
     followups: messages.slice(1).map((content) => ({ content })),
+    components: hasOmittedFlights ? [{
+      type: 1,
+      components: [{
+        type: 2,
+        style: 1,
+        custom_id: [
+          "airportall",
+          code,
+          direction,
+          String(hours),
+          filters.date || "-",
+          filters.date ? (filters.startTime || "00:00") : "-",
+        ].join("|"),
+        emoji: { name: "📋" },
+        label: `全便を表示（${matchedCount}便）`,
+      }],
+    }] : [],
   };
 }
