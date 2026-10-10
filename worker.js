@@ -2001,6 +2001,16 @@ function airportAircraftText(item, movement) {
     .toUpperCase();
 }
 
+function airportStatusIcon(value) {
+  const status = String(value || "").toLowerCase().replace(/[\s_-]/g, "");
+  if (status.includes("cancel")) return "🔴";
+  if (status.includes("arriv") || status.includes("land")) return "🔵";
+  if (["enroute", "departed", "approaching", "airborne"].some((name) => status.includes(name))) {
+    return "🟢";
+  }
+  return "🟡";
+}
+
 function airportFlightLine(item, kind, watchlist) {
   const movement = kind === "arrival" ? item.arrival : item.departure;
   const opposite = kind === "arrival" ? item.departure?.airport : item.arrival?.airport;
@@ -2017,8 +2027,7 @@ function airportFlightLine(item, kind, watchlist) {
   const airport = opposite?.iata || opposite?.icao || "---";
   const aircraft = airportAircraft(item, movement);
   const type = aircraft.model || aircraft.modeS || "";
-  const status = String(item.status || "").toLowerCase();
-  const icon = status.includes("cancel") ? "🔴" : status.includes("arriv") || status.includes("land") ? "🔵" : status.includes("depart") || status.includes("airborne") ? "🟢" : "🟡";
+  const icon = airportStatusIcon(item.status);
   const gate = movement?.gate ? ` G${movement.gate}` : "";
   const badgeMovement = { ...movement, aircraft: Object.keys(aircraft).length ? aircraft : movement?.aircraft };
   return `${icon} \`${timeText}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;

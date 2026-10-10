@@ -162,7 +162,7 @@ airportSchedule = {
   airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
   arrivals: Array.from({ length: 14 }, (_, index) => ({
     number: `NH${100 + index}`,
-    status: index === 0 ? "Expected" : "Unknown",
+    status: ["Expected", "EnRoute", "Approaching", "Arrived", "CanceledUncertain"][index] || "Unknown",
     airline: { name: "All Nippon Airways", iata: "NH", icao: "ANA" },
     arrival: index === 1
       ? { scheduledTimeLocal: "2026-10-10 09:10:00" }
@@ -180,6 +180,10 @@ result = await worker.cmdAirport(
 );
 assert.match(result.content, /`09:00→09:15`/);
 assert.match(result.content, /`09:10`/);
+assert.match(result.content, /🟢 `09:10` \*\*NH101\*\*/);
+assert.match(result.content, /🟢 `09:04` \*\*NH102\*\*/);
+assert.match(result.content, /🔵 `09:06` \*\*NH103\*\*/);
+assert.match(result.content, /🔴 `09:08` \*\*NH104\*\*/);
 assert.match(result.content, /下のボタンで全便表示/);
 assert.match(JSON.stringify(result.components), /全便を表示（14便）/);
 assert.match(JSON.stringify(result.components), /airportall\|HND\|both\|3\|-\|-/);
