@@ -7,7 +7,8 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModalToCommand,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
-  processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName };`;
+  processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
+  lookupLiveryName };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -23,6 +24,10 @@ let registrationLookupStatus = 200;
 let aeroDataBoxAircraftLookup = false;
 let editedOriginalPayload = null;
 let airportFollowupPayloads = [];
+const liveries = {
+  JA339J: { name: "JAL Jubilee Express", valid_until: "2027-04-30" },
+  JA784A: { name: "Test Special Livery", valid_until: "2027-12-31" },
+};
 
 globalThis.fetch = async (url, init = {}) => {
   const value = String(url);
@@ -35,6 +40,12 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (value.includes("raw.githubusercontent.com/") && value.endsWith("/watchlist.json")) {
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (value.includes("/contents/liveries.json") && (init.method || "GET") === "GET") {
+    return new Response(JSON.stringify({
+      content: Buffer.from(JSON.stringify(liveries)).toString("base64"),
+      sha: "livery-sha",
+    }), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (value.includes("hexdb.io/reg-hex?")) {
     registrationLookupUrl = value;
@@ -190,6 +201,9 @@ assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Airbus A321-200
 assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 737 MAX 8" } }, null, "738"), false);
 assert.equal(worker.airportAircraftMatches({ aircraft: { icaoTypeCode: "E190" } }, null, "E190"), true);
 assert.equal(worker.airportAircraftMatches({ aircraft: { iataTypeCode: "E90" } }, null, "E90"), true);
+assert.equal(worker.lookupLiveryName(liveries, "ja-339j", "2026-10-11"), "JAL Jubilee Express");
+assert.equal(worker.lookupLiveryName(liveries, "JA339J", "2027-05-01"), null);
+assert.equal(worker.lookupLiveryName(liveries, "JA000A", "2026-10-11"), null);
 assert.equal(
   worker.airportAircraftDisplayName({ aircraft: { model: "Boeing 777" } }),
   "Boeing 777（派生型不明）",
@@ -259,13 +273,14 @@ assert.doesNotMatch(result.content, /NH773|NH77W/);
 airportSchedule = {
   airport: { iata: "NRT", icao: "RJAA", name: "Narita" },
   arrivals: [
-    { number: "OS25", aircraft: { model: "Boeing 777" }, arrival: { scheduledTime: { local: "2026-10-11T08:50" } }, departure: { airport: { iata: "VIE" } } },
+    { number: "OS25", aircraft: { model: "Boeing 777", reg: "JA339J" }, arrival: { scheduledTime: { local: "2026-10-11T08:50" } }, departure: { airport: { iata: "VIE" } } },
     { number: "TK50", aircraft: { model: "Boeing 777", iataTypeCode: "77W" }, arrival: { scheduledTime: { local: "2026-10-11T08:55" } }, departure: { airport: { iata: "IST" } } },
   ],
   departures: [],
 };
 result = await worker.cmdAirport({ airport: "NRT", aircraft: "777" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
 assert.match(result.content, /OS25.*Boeing 777（派生型不明）/);
+assert.match(result.content, /OS25.*🎨 JAL Jubilee Express/);
 assert.match(result.content, /TK50.*Boeing 777-300ER/);
 result = await worker.cmdAirport({ airport: "NRT", aircraft: "77W" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
 assert.doesNotMatch(result.content, /OS25/);
@@ -359,6 +374,7 @@ assert.equal(aeroDataBoxAircraftLookup, true);
 assert.equal(result.embeds[0].title, "✈️ JA784A");
 assert.match(JSON.stringify(result.embeds), /2010（初飛行年）/);
 assert.match(JSON.stringify(result.embeds), /機齢 約16年/);
+assert.match(JSON.stringify(result.embeds), /Test Special Livery/);
 
 watchlist["4010ee"] = { label: "G-EZBZ", type: "Airbus A319-111" };
 registrationLookupUrl = "";

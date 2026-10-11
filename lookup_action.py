@@ -312,7 +312,9 @@ def format_search_results(query, results, airline="", offset=0):
         callsign = item.get("callsign")
         live = (f"🟢 飛行中{' · ' + callsign if callsign else ''}"
                 if item.get("live") else "⚪ 機体データベース")
-        lines.append(f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}\n{live}")
+        livery_name = lookup_livery(item["registration"])
+        livery = f"\n🎨 特別塗装: {livery_name}" if livery_name else ""
+        lines.append(f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}\n{live}{livery}")
     if offset:
         lines.append(f"\n{offset + 1}件目から表示")
     lines.append("\n※ watchlistへの登録は管理者のみ実行できます。")
@@ -365,7 +367,9 @@ def format_info_search_results(query, results, offset=0):
         if item.get("description") and item.get("typecode"):
             aircraft_type = f"{item['description']} ({item['typecode']})"
         year = f"｜{item['year']}年" if item.get("year") else ""
-        lines.append(f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}{year}")
+        livery_name = lookup_livery(item["registration"])
+        livery = f"｜🎨 {livery_name}" if livery_name else ""
+        lines.append(f"**{item['registration']}**｜`{item['icao24']}`｜{aircraft_type}{year}{livery}")
     if offset:
         lines.append(f"\n{offset + 1}件目から表示")
     return "\n".join(lines)
@@ -596,7 +600,7 @@ def format_live_aircraft(ac, watchlist=None):
 
     livery_name = lookup_livery(registration)
     if livery_name:
-        lines.append(f"🎨 塗装名: {livery_name}")
+        lines.append(f"🎨 特別塗装: {livery_name}")
 
     alt = ac.get("alt_baro")
     if alt == "ground":
@@ -698,6 +702,7 @@ def main():
             status = watchlist_status(load_watchlist(), icao24, canonical_reg)
             year = details.get("year") or "不明"
             age = datetime.now(timezone.utc).year - int(year) if str(year).isdigit() else None
+            livery_name = lookup_livery(canonical_reg)
             discord_send(
                 channel_id,
                 f"🔎 `{canonical_reg}` の機体情報を確認しました。\n"
@@ -707,6 +712,7 @@ def main():
                 f"運航会社/所有者: {details.get('operator') or '不明'}\n"
                 f"登録国: {details.get('country') or '不明'}\n"
                 f"監視情報: {status}\n"
+                + (f"🎨 特別塗装: {livery_name}\n" if livery_name else "")
                 + ("現在位置はADS-Bで確認できませんでした。" if adsb_available else
                    "⚠️ 現在位置サービスは現在一時的に利用できません。"),
             )

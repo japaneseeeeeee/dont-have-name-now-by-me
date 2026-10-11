@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from route_corrections import correct_route
+from livery import lookup_livery
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1222,6 +1223,9 @@ def build_embed(
             "inline": False,
         },
     ]
+    livery_name = lookup_livery(label)
+    if livery_name:
+        fields.insert(1, {"name": "🎨 特別塗装", "value": livery_name, "inline": False})
 
     if route and route_matches_position(
         route, lat, lon, track=track, altitude=altitude, vertical_rate=vrate,

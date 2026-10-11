@@ -6,6 +6,7 @@ from datetime import date
 
 
 DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "liveries.json")
+_CACHE = {}
 
 
 def normalize_registration(value):
@@ -14,11 +15,20 @@ def normalize_registration(value):
 
 def load_liveries(path=DEFAULT_PATH):
     try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return {}
+    cached = _CACHE.get(os.path.abspath(path))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    result = data if isinstance(data, dict) else {}
+    _CACHE[os.path.abspath(path)] = (mtime, result)
+    return result
 
 
 def lookup_livery(registration, *, today=None, data=None):

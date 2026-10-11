@@ -58,6 +58,17 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("SPECIAL", embed["title"])
         self.assertTrue(any(field["name"] == "検出理由" for field in embed["fields"]))
 
+    def test_known_special_livery_is_in_notification(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
+        with patch("monitor.lookup_livery", return_value="記念特別塗装"):
+            embed = monitor.build_embed(
+                "abc123",
+                {"label": "JA0001", "type": "TEST", "priority": "NORMAL"},
+                aircraft,
+            )
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+        self.assertEqual(fields["🎨 特別塗装"], "記念特別塗装")
+
     def test_detection_reason_uses_natural_japanese(self):
         self.assertEqual(
             monitor.format_detection_reason("NORMAL", "関東"),

@@ -855,7 +855,7 @@ def build_flight_embed(ac, route=None):
 
     livery_name = lookup_livery(reg)
     if livery_name:
-        embed.add_field(name="🎨 塗装名", value=livery_name, inline=False)
+        embed.add_field(name="🎨 特別塗装", value=livery_name, inline=False)
 
     if route:
         flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
@@ -1741,10 +1741,15 @@ async def handle_personal_panel_bridge(message):
         elif operation == "aircraft_list":
             config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
             registered = config.get("aircraft") or {}
-            result = ("✈️ **個人機体通知**\n" + "\n".join(
-                f"`{value.get('label') or icao24}` ({icao24})｜{str(value.get('priority') or 'NORMAL').upper()}"
-                for icao24, value in sorted(registered.items())
-            )) if registered else "個人機体通知は登録されていません。"
+            lines = []
+            for icao24, value in sorted(registered.items()):
+                label = value.get("label") or icao24
+                livery_name = lookup_livery(label)
+                lines.append(
+                    f"`{label}` ({icao24})｜{str(value.get('priority') or 'NORMAL').upper()}"
+                    + (f" · 🎨 {livery_name}" if livery_name else "")
+                )
+            result = ("✈️ **個人機体通知**\n" + "\n".join(lines)) if lines else "個人機体通知は登録されていません。"
         elif operation == "aircraft_remove" and args:
             target = args[0].strip().upper()
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
@@ -2108,6 +2113,9 @@ async def personal_special_dispatch():
                 url=f"https://globe.adsbexchange.com/?icao={event['icao24']}",
             )
             embed.add_field(name="機種", value=event.get("type") or "不明", inline=True)
+            livery_name = lookup_livery(event.get("label"))
+            if livery_name:
+                embed.add_field(name="🎨 特別塗装", value=livery_name, inline=False)
             embed.add_field(
                 name="コールサイン",
                 value=f"`{event.get('callsign') or '不明'}`",
@@ -2272,6 +2280,9 @@ def build_destination_alert_embed(rule, aircraft, route):
     embed = discord.Embed(title=f"✈️ 監視機体が{rule['destination']}へ向かっています", description=f"**{format_airport(route['origin'])} → {format_airport(route['destination'])}**", color=0x5865F2, timestamp=datetime.now(timezone.utc), url=f"https://globe.adsbexchange.com/?icao={hex_id}")
     embed.add_field(name="登録記号", value=f"`{aircraft.get('r') or rule['registration']}`", inline=True)
     embed.add_field(name="機種", value=aircraft.get("desc") or aircraft.get("t") or rule.get("type") or "不明", inline=True)
+    livery_name = lookup_livery(aircraft.get("r") or rule.get("registration"))
+    if livery_name:
+        embed.add_field(name="🎨 特別塗装", value=livery_name, inline=False)
     embed.add_field(name="便名", value=f"`{route.get('flight_iata') or callsign}`", inline=True)
     lat, lon = aircraft.get("lat"), aircraft.get("lon")
     if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
@@ -2747,6 +2758,9 @@ async def handle_photo_post(message):
     embed.add_field(name="📷 撮影場所", value=location[:1024], inline=True)
     embed.add_field(name="📅 撮影日", value=post["date"][:1024], inline=True)
     embed.add_field(name="🛩️ 機種", value=aircraft["type"][:1024], inline=False)
+    livery_name = lookup_livery(registration)
+    if livery_name:
+        embed.add_field(name="🎨 特別塗装", value=livery_name[:1024], inline=False)
     embed.add_field(name="🏢 所有者・運航会社", value=aircraft["operator"][:1024], inline=False)
     embed.add_field(name="🔎 ICAO24", value=f"`{aircraft['icao24']}`", inline=True)
     embed.set_author(
@@ -2987,8 +3001,10 @@ async def find_aircraft(ctx, keyword: str):
     for icao24, value in watchlist.items():
         label, type_name = normalize(value)
         if keyword_upper in label.upper() or keyword_upper in icao24.upper():
+            livery_name = lookup_livery(label)
             matches.append(
                 f"`{label}` ({icao24} / {type_name} / {effective_priority(value)})"
+                + (f" · 🎨 {livery_name}" if livery_name else "")
             )
 
     if not matches:
@@ -3017,10 +3033,13 @@ async def list_aircraft(ctx, page: int = 1):
     page = max(1, min(page, pages))
     chunk = items[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
 
-    lines = [
-        f"`{label}` ({icao24} / {type_name} / {effective_priority(watchlist[icao24])})"
-        for label, type_name, icao24 in chunk
-    ]
+    lines = []
+    for label, type_name, icao24 in chunk:
+        livery_name = lookup_livery(label)
+        lines.append(
+            f"`{label}` ({icao24} / {type_name} / {effective_priority(watchlist[icao24])})"
+            + (f" · 🎨 {livery_name}" if livery_name else "")
+        )
     header = f"📋 watchlist 全{total}機(ページ {page}/{pages})"
     footer = f"\n次のページ: `!list {page + 1}`" if page < pages else ""
     await ctx.send((header + "\n" + "\n".join(lines) + footer)[:1990])
@@ -3183,10 +3202,14 @@ async def my_special_list(ctx):
             "`!my-watch-add JA784A` または `!my-special-add JA784A` で追加できます。"
         )
         return
-    lines = [
-        f"`{entry.get('label', icao24)}` ({icao24} / {entry.get('type') or '不明'}) · **{entry.get('priority') or 'SPECIAL'}**"
-        for icao24, entry in sorted(registered.items(), key=lambda item: item[1].get("label", ""))
-    ]
+    lines = []
+    for icao24, entry in sorted(registered.items(), key=lambda item: item[1].get("label", "")):
+        label = entry.get("label", icao24)
+        livery_name = lookup_livery(label)
+        lines.append(
+            f"`{label}` ({icao24} / {entry.get('type') or '不明'}) · **{entry.get('priority') or 'SPECIAL'}**"
+            + (f" · 🎨 {livery_name}" if livery_name else "")
+        )
     filters = config.get("filters") or {}
     status_labels = {"airborne": "飛行中のみ", "ground": "地上のみ", "all": "すべて"}
     conditions = [f"状態: {status_labels.get(filters.get('status', 'all'), 'すべて')}"]
@@ -3790,7 +3813,11 @@ async def special_list_command(interaction: discord.Interaction):
         label, type_name = normalize(entry)
         until = entry.get("special_until")
         expiry = f" · <t:{int(float(until))}:R>まで" if until else " · 期限なし"
-        specials.append(f"`{label}` ({icao24} / {type_name}){expiry}")
+        livery_name = lookup_livery(label)
+        specials.append(
+            f"`{label}` ({icao24} / {type_name}){expiry}"
+            + (f" · 🎨 {livery_name}" if livery_name else "")
+        )
     if changed:
         save_watchlist(watchlist)
     if not specials:
