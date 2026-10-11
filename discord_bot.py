@@ -46,7 +46,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from route_corrections import correct_route
-from livery import lookup_livery
+from livery import load_liveries, lookup_livery
+from lifecycle_review import expired_liveries, registrations_in_tar1090, update_retirement_observations
 from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_equipment
 from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, prune_notified as prune_destination_notified, route_matches_destination, should_notify as should_notify_destination)
 
@@ -92,6 +93,7 @@ PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.j
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 PERSONAL_SPECIAL_NOTIFIED_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
 PERSONAL_ALERT_ACTIONS_PATH = os.path.join(BASE_DIR, "personal_alert_actions.json")
+LIFECYCLE_REVIEW_STATE_PATH = os.path.join(BASE_DIR, "lifecycle_review_state.json")
 EQUIPMENT_ALERTS_PATH = os.path.join(BASE_DIR, "equipment_alerts.json")
 DESTINATION_ALERTS_PATH = os.path.join(BASE_DIR, "destination_alerts.json")
 HEARTBEAT_INTERVAL = 30                                        # 秒
@@ -1426,6 +1428,8 @@ def delete_personal_notification_data(user_id):
 PERSONAL_PANEL_BRIDGE_PREFIX = "__PERSONAL_PANEL__|"
 PERSONAL_ALERT_BRIDGE_PREFIX = "__PERSONAL_ALERT__|"
 PERSONAL_ALERT_ACTION_HISTORY_LIMIT = 500
+LIFECYCLE_RETIREMENT_MISSING_DAYS = 30
+LIFECYCLE_KEEP_REMINDER_DAYS = 180
 _personal_limit_notified_at = {}
 
 
@@ -1558,6 +1562,98 @@ async def catch_up_personal_alert_bridges():
                         await handle_personal_alert_bridge(message)
             except discord.HTTPException as exc:
                 logger.warning("個人通知操作のcatch-up失敗: channel=%s error=%s", channel.id, exc)
+
+
+LIFECYCLE_BRIDGE_PREFIX = "__LIFECYCLE__|"
+
+
+def parse_lifecycle_bridge(content):
+    text = str(content or "")
+    marker_at = text.find(LIFECYCLE_BRIDGE_PREFIX)
+    if marker_at < 0:
+        return None
+    payload = text[marker_at:].split("||", 1)[0].strip()
+    parts = payload.split("|")
+    if len(parts) != 6 or not parts[1].isdigit():
+        return None
+    if parts[2] not in {"livery", "retirement"} or parts[3] not in {"remove", "keep"}:
+        return None
+    return {
+        "owner_id": int(parts[1]),
+        "kind": parts[2],
+        "action": parts[3],
+        "target": parts[4],
+        "action_id": parts[5],
+    }
+
+
+def apply_lifecycle_bridge_action(queued):
+    """Apply the Worker-confirmed action to the Mac-side cache and review state."""
+    state = load_locked_json(LIFECYCLE_REVIEW_STATE_PATH, {})
+    handled = [str(value) for value in state.get("handled", []) if value]
+    action_id = str(queued.get("action_id") or "")
+    if action_id and action_id in handled:
+        return "この操作は反映済みです。"
+
+    kind, action, target = queued["kind"], queued["action"], queued["target"]
+    if kind == "livery":
+        if action == "remove":
+            result = f"🎨 `{target}` の特別塗装情報をGitHubから削除しました。機体はwatchlistに残しています。"
+        else:
+            result = f"ℹ️ `{target}` の特別塗装情報を残しました。"
+        livery_state = state.setdefault("livery", {})
+        for key, record in livery_state.items():
+            if key.startswith(f"{str(target).replace('-', '').upper()}:"):
+                record["decision"] = action
+    else:
+        retirement = state.setdefault("retirement", {})
+        record = retirement.setdefault(str(target).lower(), {})
+        if action == "remove":
+            record["decision"] = "remove"
+            result = "🗑️ 退役候補をGitHub上のwatchlistから削除しました。"
+        else:
+            review_on = _japan_today() + timedelta(days=LIFECYCLE_KEEP_REMINDER_DAYS)
+            record["decision"] = "keep"
+            record["next_review_on"] = review_on.isoformat()
+            result = f"ℹ️ `{record.get('registration') or target}` を残しました。約6か月後に再確認します。"
+
+    if action_id:
+        handled.append(action_id)
+    state["handled"] = handled[-PERSONAL_ALERT_ACTION_HISTORY_LIMIT:]
+    save_locked_json(LIFECYCLE_REVIEW_STATE_PATH, state)
+    return result
+
+
+async def handle_lifecycle_bridge(message):
+    queued = parse_lifecycle_bridge(message.content)
+    if queued is None:
+        return False
+    recipient = getattr(message.channel, "recipient", None)
+    if (message.guild is not None or queued["owner_id"] != FEEDBACK_OWNER_ID
+            or (recipient is not None and recipient.id != FEEDBACK_OWNER_ID)):
+        logger.warning("機体ライフサイクル操作を拒否: owner=%s", queued.get("owner_id"))
+        return True
+    try:
+        await asyncio.to_thread(apply_lifecycle_bridge_action, queued)
+        await message.delete()
+    except Exception as exc:
+        logger.exception("機体ライフサイクル操作のローカル反映に失敗: %s", exc)
+    return True
+
+
+async def catch_up_lifecycle_bridges():
+    """Process lifecycle buttons clicked while the Mac bot was unavailable."""
+    try:
+        owner = bot.get_user(FEEDBACK_OWNER_ID) or await bot.fetch_user(FEEDBACK_OWNER_ID)
+        channel = owner.dm_channel or await owner.create_dm()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        async for message in channel.history(limit=100, oldest_first=True):
+            if not bot.user or message.author.id != bot.user.id or message.created_at < cutoff:
+                continue
+            if parse_lifecycle_bridge(message.content) is not None:
+                await handle_lifecycle_bridge(message)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+        logger.warning("機体ライフサイクル操作のcatch-up失敗: %s", exc)
 
 
 async def notify_personal_channel_limit(guild, member, current_count):
@@ -2809,6 +2905,138 @@ def find_watchlist_anomalies(watchlist):
 _last_anomaly_fingerprint = None
 
 
+class LifecycleReviewView(discord.ui.View):
+    """Buttons are handled by Cloudflare so they still work while the Mac is asleep."""
+
+    def __init__(self, kind, target):
+        super().__init__(timeout=None)
+        if kind == "livery":
+            remove_label = "塗装情報だけ削除"
+            remove_emoji = "🎨"
+        else:
+            remove_label = "watchlistから削除"
+            remove_emoji = "🗑️"
+        self.add_item(discord.ui.Button(
+            label=remove_label,
+            emoji=remove_emoji,
+            style=discord.ButtonStyle.danger,
+            custom_id=f"lifecycle|{kind}|remove|{FEEDBACK_OWNER_ID}|{target}",
+        ))
+        self.add_item(discord.ui.Button(
+            label="残す",
+            emoji="↩️",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"lifecycle|{kind}|keep|{FEEDBACK_OWNER_ID}|{target}",
+        ))
+
+
+def _japan_today():
+    return datetime.now(timezone(timedelta(hours=9))).date()
+
+
+def _refresh_lifecycle_aircraft_database():
+    """Return True only when a reasonably fresh reference database is available."""
+    try:
+        age = time.time() - os.path.getmtime(TAR1090_DB_PATH)
+    except OSError:
+        age = float("inf")
+    if age > 20 * 3600 and not _download_tar1090_db():
+        return False
+    try:
+        return time.time() - os.path.getmtime(TAR1090_DB_PATH) <= 48 * 3600
+    except OSError:
+        return False
+
+
+@tasks.loop(hours=24)
+async def lifecycle_review_check():
+    """Ask the owner before removing expired liveries or likely retired aircraft."""
+    if not bot.is_ready() or bot.is_closed():
+        return
+    owner = await bot.fetch_user(FEEDBACK_OWNER_ID)
+    today = _japan_today()
+    state = await asyncio.to_thread(load_locked_json, LIFECYCLE_REVIEW_STATE_PATH, {})
+
+    livery_state = state.setdefault("livery", {})
+    for item in expired_liveries(load_liveries(), today):
+        record = dict(livery_state.get(item["fingerprint"]) or {})
+        if record.get("notified_at"):
+            continue
+        embed = discord.Embed(
+            title="🎨 特別塗装の終了日を経過",
+            description=(
+                f"`{item['registration']}` の **{item['name']}** は、"
+                f"設定上 **{item['valid_until']}** に終了しています。\n"
+                "機体はwatchlistに残したまま、塗装情報だけ削除できます。"
+            ),
+            color=0xF1C40F,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="ボタンを押すまで自動削除しません")
+        try:
+            await owner.send(
+                embed=embed,
+                view=LifecycleReviewView("livery", item["registration"]),
+            )
+            record["notified_at"] = time.time()
+            record["registration"] = item["registration"]
+            record["name"] = item["name"]
+            livery_state[item["fingerprint"]] = record
+        except discord.HTTPException as exc:
+            logger.warning("特別塗装終了の管理者DMに失敗: %s", exc)
+    await asyncio.to_thread(save_locked_json, LIFECYCLE_REVIEW_STATE_PATH, state)
+
+    if not await asyncio.to_thread(_refresh_lifecycle_aircraft_database):
+        logger.warning("退役候補確認を見送り: 機体データベースを更新できませんでした")
+        return
+    watchlist = await asyncio.to_thread(load_shared_watchlist_for_quality_check)
+    if watchlist is None:
+        return
+    registrations = [normalize(value)[0] for value in watchlist.values()]
+    try:
+        found = await asyncio.to_thread(registrations_in_tar1090, TAR1090_DB_PATH, registrations)
+    except (OSError, EOFError) as exc:
+        logger.warning("退役候補確認を見送り: 機体データベースを読めません: %s", exc)
+        return
+
+    state = await asyncio.to_thread(load_locked_json, LIFECYCLE_REVIEW_STATE_PATH, {})
+    candidates, state = update_retirement_observations(
+        watchlist,
+        found,
+        state,
+        today=today,
+        threshold_days=LIFECYCLE_RETIREMENT_MISSING_DAYS,
+    )
+    await asyncio.to_thread(save_locked_json, LIFECYCLE_REVIEW_STATE_PATH, state)
+    for item in candidates:
+        embed = discord.Embed(
+            title="🛩️ 退役・登録変更の可能性を検出",
+            description=(
+                f"`{item['registration']}` が最新の無料機体データベースで"
+                f" **{item['missing_days']}日間**確認できません。\n"
+                "退役を断定する通知ではありません。登録変更やデータ欠落の可能性もあります。"
+            ),
+            color=0xE67E22,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="機種", value=item["type"], inline=True)
+        embed.add_field(name="ICAO24", value=f"`{item['icao24']}`", inline=True)
+        embed.add_field(name="確認できなくなった日", value=item["missing_since"], inline=False)
+        embed.set_footer(text="ボタンを押すまで自動削除しません｜残す場合は約6か月後に再確認")
+        try:
+            await owner.send(
+                embed=embed,
+                view=LifecycleReviewView("retirement", item["icao24"]),
+            )
+        except discord.HTTPException as exc:
+            logger.warning("退役候補の管理者DMに失敗: %s", exc)
+            latest = await asyncio.to_thread(load_locked_json, LIFECYCLE_REVIEW_STATE_PATH, {})
+            record = (latest.get("retirement") or {}).get(item["icao24"])
+            if record and record.get("notified_for") == item["missing_since"]:
+                record.pop("notified_for", None)
+                await asyncio.to_thread(save_locked_json, LIFECYCLE_REVIEW_STATE_PATH, latest)
+
+
 @tasks.loop(minutes=30)
 async def data_quality_check():
     global _last_anomaly_fingerprint
@@ -2847,6 +3075,8 @@ async def on_ready():
         destination_alert_dispatch.start()
     if not data_quality_check.is_running():
         data_quality_check.start()
+    if not lifecycle_review_check.is_running():
+        lifecycle_review_check.start()
     try:
         await ensure_feedback_panel()
     except discord.HTTPException as exc:
@@ -2863,12 +3093,14 @@ async def on_ready():
     await refresh_personal_control_panels()
     await refresh_general_menu_panel()
     await catch_up_personal_alert_bridges()
+    await catch_up_lifecycle_bridges()
     await catch_up_missed_commands()
 
 
 @bot.event
 async def on_resumed():
     await catch_up_personal_alert_bridges()
+    await catch_up_lifecycle_bridges()
     await catch_up_missed_commands()
 
 
@@ -2877,6 +3109,8 @@ async def on_message(message):
     if message.author.bot:
         if bot.user and message.author.id == bot.user.id:
             if await handle_personal_alert_bridge(message):
+                return
+            if await handle_lifecycle_bridge(message):
                 return
             if await handle_feedback_bridge(message):
                 return

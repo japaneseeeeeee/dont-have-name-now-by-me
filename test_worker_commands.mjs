@@ -8,7 +8,7 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   cmdMenu, adminPanel, adminModal, menuModalToCommand,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
-  lookupLiveryName };`;
+  lookupLiveryName, lifecycleButtonSpec, processLifecycleButton };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -46,6 +46,13 @@ globalThis.fetch = async (url, init = {}) => {
       content: Buffer.from(JSON.stringify(liveries)).toString("base64"),
       sha: "livery-sha",
     }), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (value.includes("/contents/liveries.json") && init.method === "PUT") {
+    const body = JSON.parse(init.body);
+    const updated = JSON.parse(Buffer.from(body.content, "base64").toString("utf8"));
+    for (const key of Object.keys(liveries)) delete liveries[key];
+    Object.assign(liveries, updated);
+    return new Response("{}", { status: 200 });
   }
   if (value.includes("hexdb.io/reg-hex?")) {
     registrationLookupUrl = value;
@@ -458,6 +465,32 @@ response = worker.handlePersonalAlertButton({
 });
 responseBody = await response.json();
 assert.match(responseBody.data.content, /登録者本人だけ/);
+
+let lifecycleSpec = worker.lifecycleButtonSpec({
+  user: { id: "999" }, guild_id: null,
+  data: { custom_id: "lifecycle|livery|remove|123|JA339J" },
+});
+assert.equal(lifecycleSpec.ok, false);
+lifecycleSpec = worker.lifecycleButtonSpec({
+  user: { id: "123" }, guild_id: null,
+  data: { custom_id: "lifecycle|livery|remove|123|JA-339J" },
+});
+assert.deepEqual(lifecycleSpec, {
+  ok: true, kind: "livery", action: "remove", ownerId: "123", target: "JA339J",
+});
+editedOriginalPayload = null;
+airportFollowupPayloads = [];
+await worker.processLifecycleButton({
+  id: "1420070400000000020",
+  application_id: "app",
+  token: "token",
+  user: { id: "123" },
+  data: { custom_id: "lifecycle|livery|remove|123|JA-339J" },
+  message: { components: [] },
+}, env, lifecycleSpec);
+assert.equal(liveries.JA339J, undefined);
+assert.match(editedOriginalPayload.content, /塗装情報だけを削除/);
+assert.match(airportFollowupPayloads[0].content, /__LIFECYCLE__\|123\|livery\|remove\|JA339J/);
 
 result = await worker.cmdRemove({ target: "JA0001" }, env);
 assert.match(result.content, /削除しました/);

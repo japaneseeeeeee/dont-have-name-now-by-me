@@ -179,6 +179,14 @@ export default {
       return handlePersonalAlertButton(interaction);
     }
 
+    // 管理者DMの「特別塗装終了」「退役候補」確認ボタン。
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("lifecycle|")) {
+      const spec = lifecycleButtonSpec(interaction);
+      if (!spec.ok) return personalAlertError(spec.error);
+      ctx.waitUntil(processLifecycleButton(interaction, env, spec));
+      return json({ type: 6 });
+    }
+
     // 修正前に送信済みの通知はdiscord.py生成のランダムcustom_idを持つため、
     // メッセージ内のボタン名と埋め込みから操作内容を復元する。
     if (interaction.type === 3) {
@@ -887,6 +895,75 @@ function handleLegacyPersonalAlertButton(interaction) {
     return personalAlertBridge(interaction, "alert_stop", [icao24, airport]);
   }
   return null;
+}
+
+function lifecycleButtonSpec(interaction) {
+  const parts = String(interaction.data?.custom_id || "").split("|");
+  const [, kind, action, ownerId, rawTarget] = parts;
+  const userId = personalUserId(interaction);
+  if (interaction.guild_id || !/^\d+$/.test(ownerId || "") || ownerId !== userId) {
+    return { ok: false, error: "この確認は管理者本人だけが操作できます。" };
+  }
+  if (!["livery", "retirement"].includes(kind) || !["remove", "keep"].includes(action)) {
+    return { ok: false, error: "⚠️ この確認操作には対応していません。" };
+  }
+  const target = kind === "livery"
+    ? normalizeRegistration(rawTarget)
+    : String(rawTarget || "").toLowerCase();
+  if ((kind === "livery" && !/^[A-Z0-9]{3,12}$/.test(target)) ||
+      (kind === "retirement" && !HEX6.test(target))) {
+    return { ok: false, error: "⚠️ 対象の機体を確認できませんでした。" };
+  }
+  return { ok: true, kind, action, ownerId, target };
+}
+
+async function processLifecycleButton(interaction, env, spec) {
+  let resultText;
+  try {
+    if (spec.kind === "livery" && spec.action === "remove") {
+      const outcome = await updateLiveries(env, (data) => {
+        const key = Object.keys(data).find((value) => normalizeRegistration(value) === spec.target);
+        if (!key) return { changed: false, missing: true };
+        const removed = data[key];
+        delete data[key];
+        return { changed: true, removed };
+      }, `livery: remove expired ${spec.target}`);
+      resultText = outcome.missing
+        ? `ℹ️ \`${spec.target}\` の特別塗装情報はすでに削除されています。`
+        : `🎨 \`${spec.target}\` の特別塗装情報だけを削除しました。機体はwatchlistに残しています。`;
+    } else if (spec.kind === "retirement" && spec.action === "remove") {
+      const outcome = await updateWatchlist(env, (data) => {
+        const key = Object.keys(data).find((value) => String(value).toLowerCase() === spec.target);
+        if (!key) return { changed: false, missing: true };
+        const removed = normalize(data[key]);
+        delete data[key];
+        return { changed: true, removed };
+      }, `watchlist: remove retirement candidate ${spec.target}`);
+      resultText = outcome.missing
+        ? "ℹ️ 対象機はすでにwatchlistから削除されています。"
+        : `🗑️ \`${outcome.removed.label}\` (${spec.target}) をwatchlistから削除しました。`;
+    } else if (spec.kind === "livery") {
+      resultText = `ℹ️ \`${spec.target}\` の特別塗装情報を残しました。`;
+    } else {
+      resultText = "ℹ️ 機体をwatchlistに残しました。約6か月後に再確認します。";
+    }
+
+    await editOriginal(interaction, { content: resultText, embeds: [], components: [] });
+    const actionId = String(interaction.id || "");
+    const payload = [
+      "__LIFECYCLE__", spec.ownerId, spec.kind, spec.action, spec.target, actionId,
+    ].join("|");
+    await sendFollowup(interaction, {
+      content: `⏳ Mac側の控えにも反映しています。\n||${payload}||`,
+      allowed_mentions: { parse: [] },
+    });
+  } catch (err) {
+    console.error("lifecycle button failed:", (err && err.stack) || err);
+    await editOriginal(interaction, {
+      content: "⚠️ 変更を反映できませんでした。しばらく待ってからもう一度押してください。",
+      components: interaction.message?.components || [],
+    });
+  }
 }
 
 function handlePersonalPanelButton(interaction) {
@@ -1616,6 +1693,37 @@ async function readLiveries(env) {
     console.error("livery data read failed:", err?.message || err);
     return liveryCache.key === key ? liveryCache.data : {};
   }
+}
+
+async function updateLiveries(env, mutate, message) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const path = `/contents/liveries.json?ref=${encodeURIComponent(branchOf(env))}`;
+    const current = await gh(env, path);
+    if (!current.ok) throw new Error(`GitHub livery read failed: ${current.status}`);
+    const file = await current.json();
+    const parsed = JSON.parse(b64ToUtf8(file.content) || "{}");
+    const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    const outcome = mutate(data);
+    if (!outcome.changed) return outcome;
+    const response = await gh(env, "/contents/liveries.json", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message,
+        content: utf8ToB64(JSON.stringify(sortDeep(data), null, 2) + "\n"),
+        branch: branchOf(env),
+        sha: file.sha,
+      }),
+    });
+    if (response.ok) {
+      const key = `${String(env.GITHUB_REPO || DEFAULT_GITHUB_REPO).trim()}@${branchOf(env)}`;
+      liveryCache = { key, expiresAt: Date.now() + 5 * 60 * 1000, data };
+      return outcome;
+    }
+    if (response.status === 409 || response.status === 422) continue;
+    throw new Error(`GitHub livery write failed: ${response.status} ${await response.text()}`);
+  }
+  throw new Error("GitHub livery write conflict (3回試して失敗)");
 }
 
 function lookupLiveryName(liveries, registration, today = new Date().toISOString().slice(0, 10)) {

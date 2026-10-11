@@ -344,5 +344,42 @@ class PersonalDataDeletionTests(unittest.TestCase):
             self.assertEqual(set(equipment["notified"]), {"2:today", "3:today"})
 
 
+class LifecycleBridgeTests(unittest.TestCase):
+    def test_parse_lifecycle_bridge(self):
+        parsed = discord_bot.parse_lifecycle_bridge(
+            "⏳ 反映中\n||__LIFECYCLE__|1083347827041771561|livery|remove|JA339J|12345||"
+        )
+        self.assertEqual(parsed["kind"], "livery")
+        self.assertEqual(parsed["target"], "JA339J")
+
+    def test_retirement_remove_records_completed_decision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = os.path.join(directory, "lifecycle.json")
+            with open(state_path, "w", encoding="utf-8") as stream:
+                json.dump({"retirement": {"abc123": {"registration": "JA0001"}}}, stream)
+            queued = {
+                "kind": "retirement", "action": "remove", "target": "abc123",
+                "action_id": "123", "owner_id": discord_bot.FEEDBACK_OWNER_ID,
+            }
+            with patch.object(discord_bot, "LIFECYCLE_REVIEW_STATE_PATH", state_path):
+                result = discord_bot.apply_lifecycle_bridge_action(queued)
+            self.assertIn("削除しました", result)
+            with open(state_path, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream)["retirement"]["abc123"]["decision"], "remove")
+
+    def test_livery_remove_keeps_aircraft_watchlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = os.path.join(directory, "lifecycle.json")
+            with open(state_path, "w", encoding="utf-8") as stream:
+                json.dump({"livery": {"JA339J:2027-04-30": {}}}, stream)
+            queued = {
+                "kind": "livery", "action": "remove", "target": "JA339J",
+                "action_id": "124", "owner_id": discord_bot.FEEDBACK_OWNER_ID,
+            }
+            with patch.object(discord_bot, "LIFECYCLE_REVIEW_STATE_PATH", state_path):
+                result = discord_bot.apply_lifecycle_bridge_action(queued)
+            self.assertIn("機体はwatchlistに残しています", result)
+
+
 if __name__ == "__main__":
     unittest.main()

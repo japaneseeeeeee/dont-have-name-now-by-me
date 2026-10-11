@@ -23,6 +23,8 @@ personal_special_notified.json.lock
 personal_special_events.json.lock
 personal_alert_actions.json
 personal_alert_actions.json.lock
+lifecycle_review_state.json
+lifecycle_review_state.json.lock
 system_alert_events.json
 system_alert_events.json.lock
 system_alert_state.json
