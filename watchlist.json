@@ -105,6 +105,10 @@
     "label": "A6-EUH",
     "type": "Airbus A380-861"
   },
+  "899020": {
+    "label": "B-18007",
+    "type": "Boeing 777 309ER"
+  },
   "06a001": {
     "label": "A7-HHK",
     "type": "AIRBUS A-340-200"
