@@ -1989,15 +1989,121 @@ function airportAircraft(item, movement) {
   const movementModel = String(movementAircraft.model || "").trim();
   if (!movementModel) {
     merged.model = flightModel;
-  } else if (flightModel && isGenericAircraftFamily(movementModel) && !isGenericAircraftFamily(flightModel)) {
+  } else if (flightModel && genericAircraftFamily(movementModel) && !genericAircraftFamily(flightModel)) {
     // 発着側が系列名だけでも、便全体により詳しい型式があればそちらを使う。
     merged.model = flightModel;
   }
   return merged;
 }
 
-function isGenericAircraftFamily(value) {
-  return ["BOEING777", "B777", "777"].includes(normalizeAircraftFilter(value));
+const GENERIC_AIRCRAFT_FAMILIES = [
+  ["A220", "Airbus A220", ["A220", "AIRBUSA220"]],
+  ["A300", "Airbus A300", ["A300", "AIRBUSA300"]],
+  ["A310", "Airbus A310", ["A310", "AIRBUSA310"]],
+  ["A319", "Airbus A319", ["A319", "AIRBUSA319"]],
+  ["A320", "Airbus A320", ["A320", "AIRBUSA320"]],
+  ["A321", "Airbus A321", ["A321", "AIRBUSA321"]],
+  ["A330", "Airbus A330", ["A330", "AIRBUSA330"]],
+  ["A340", "Airbus A340", ["A340", "AIRBUSA340"]],
+  ["A350", "Airbus A350", ["A350", "AIRBUSA350"]],
+  ["A380", "Airbus A380", ["A380", "AIRBUSA380"]],
+  ["B717", "Boeing 717", ["717", "B717", "BOEING717"]],
+  ["B727", "Boeing 727", ["727", "B727", "BOEING727"]],
+  ["B737", "Boeing 737", ["737", "B737", "BOEING737"]],
+  ["B747", "Boeing 747", ["747", "B747", "BOEING747"]],
+  ["B757", "Boeing 757", ["757", "B757", "BOEING757"]],
+  ["B767", "Boeing 767", ["767", "B767", "BOEING767"]],
+  ["B777", "Boeing 777", ["777", "B777", "BOEING777"]],
+  ["B787", "Boeing 787", ["787", "B787", "BOEING787"]],
+  ["CRJ", "Bombardier CRJ", ["CRJ", "BOMBARDIERCRJ", "CANADAIRREGIONALJET"]],
+  ["DHC8", "DHC-8", ["DHC8", "DASH8", "DEHAVILLANDCANADADHC8", "BOMBARDIERDASH8"]],
+  ["ATR42", "ATR 42", ["ATR42"]],
+  ["ATR72", "ATR 72", ["ATR72"]],
+  ["E170", "Embraer 170", ["E170", "EMBRAER170"]],
+  ["E175", "Embraer 175", ["E175", "EMBRAER175"]],
+  ["E190", "Embraer 190", ["EMBRAER190"]],
+  ["E195", "Embraer 195", ["EMBRAER195"]],
+];
+
+const AIRCRAFT_TYPE_DISPLAY_NAMES = new Map([
+  ["BCS1", ["A220", "Airbus A220-100"]], ["221", ["A220", "Airbus A220-100"]],
+  ["BCS3", ["A220", "Airbus A220-300"]], ["223", ["A220", "Airbus A220-300"]],
+  ["A306", ["A300", "Airbus A300-600"]], ["306", ["A300", "Airbus A300-600"]],
+  ["313", ["A310", "Airbus A310-300"]],
+  ["A19N", ["A319", "Airbus A319neo"]], ["31N", ["A319", "Airbus A319neo"]],
+  ["A319", ["A319", "Airbus A319ceo"]], ["319", ["A319", "Airbus A319ceo"]],
+  ["A20N", ["A320", "Airbus A320neo"]], ["32N", ["A320", "Airbus A320neo"]],
+  ["A320", ["A320", "Airbus A320ceo"]], ["320", ["A320", "Airbus A320ceo"]],
+  ["A21N", ["A321", "Airbus A321neo"]], ["32Q", ["A321", "Airbus A321neo"]],
+  ["A321", ["A321", "Airbus A321ceo"]], ["321", ["A321", "Airbus A321ceo"]],
+  ["A332", ["A330", "Airbus A330-200"]], ["332", ["A330", "Airbus A330-200"]],
+  ["A333", ["A330", "Airbus A330-300"]], ["333", ["A330", "Airbus A330-300"]],
+  ["A338", ["A330", "Airbus A330-800neo"]], ["338", ["A330", "Airbus A330-800neo"]],
+  ["A339", ["A330", "Airbus A330-900neo"]], ["339", ["A330", "Airbus A330-900neo"]],
+  ["A342", ["A340", "Airbus A340-200"]], ["342", ["A340", "Airbus A340-200"]],
+  ["A343", ["A340", "Airbus A340-300"]], ["343", ["A340", "Airbus A340-300"]],
+  ["A345", ["A340", "Airbus A340-500"]], ["345", ["A340", "Airbus A340-500"]],
+  ["A346", ["A340", "Airbus A340-600"]], ["346", ["A340", "Airbus A340-600"]],
+  ["A359", ["A350", "Airbus A350-900"]], ["359", ["A350", "Airbus A350-900"]],
+  ["A35K", ["A350", "Airbus A350-1000"]], ["351", ["A350", "Airbus A350-1000"]],
+  ["A388", ["A380", "Airbus A380-800"]], ["388", ["A380", "Airbus A380-800"]],
+  ["B712", ["B717", "Boeing 717-200"]], ["717", ["B717", "Boeing 717-200"]],
+  ["B721", ["B727", "Boeing 727-100"]], ["721", ["B727", "Boeing 727-100"]],
+  ["B722", ["B727", "Boeing 727-200"]], ["722", ["B727", "Boeing 727-200"]],
+  ["B37M", ["B737", "Boeing 737 MAX 7"]], ["7M7", ["B737", "Boeing 737 MAX 7"]],
+  ["B38M", ["B737", "Boeing 737 MAX 8"]], ["7M8", ["B737", "Boeing 737 MAX 8"]],
+  ["B39M", ["B737", "Boeing 737 MAX 9"]], ["7M9", ["B737", "Boeing 737 MAX 9"]],
+  ["B3XM", ["B737", "Boeing 737 MAX 10"]], ["7MJ", ["B737", "Boeing 737 MAX 10"]],
+  ["B736", ["B737", "Boeing 737-600"]], ["736", ["B737", "Boeing 737-600"]],
+  ["B737", ["B737", "Boeing 737-700"]], ["73G", ["B737", "Boeing 737-700"]],
+  ["B738", ["B737", "Boeing 737-800"]], ["738", ["B737", "Boeing 737-800"]],
+  ["B739", ["B737", "Boeing 737-900"]], ["739", ["B737", "Boeing 737-900"]],
+  ["B741", ["B747", "Boeing 747-100"]], ["741", ["B747", "Boeing 747-100"]],
+  ["B742", ["B747", "Boeing 747-200"]], ["742", ["B747", "Boeing 747-200"]],
+  ["B743", ["B747", "Boeing 747-300"]], ["743", ["B747", "Boeing 747-300"]],
+  ["B744", ["B747", "Boeing 747-400"]], ["744", ["B747", "Boeing 747-400"]],
+  ["B748", ["B747", "Boeing 747-8"]], ["748", ["B747", "Boeing 747-8"]],
+  ["B752", ["B757", "Boeing 757-200"]], ["752", ["B757", "Boeing 757-200"]],
+  ["B753", ["B757", "Boeing 757-300"]], ["753", ["B757", "Boeing 757-300"]],
+  ["B762", ["B767", "Boeing 767-200"]], ["762", ["B767", "Boeing 767-200"]],
+  ["B763", ["B767", "Boeing 767-300"]], ["763", ["B767", "Boeing 767-300"]],
+  ["B764", ["B767", "Boeing 767-400"]], ["764", ["B767", "Boeing 767-400"]],
+  ["B772", ["B777", "Boeing 777-200"]], ["772", ["B777", "Boeing 777-200"]],
+  ["B773", ["B777", "Boeing 777-300"]], ["773", ["B777", "Boeing 777-300"]],
+  ["B77W", ["B777", "Boeing 777-300ER"]], ["77W", ["B777", "Boeing 777-300ER"]],
+  ["B77L", ["B777", "Boeing 777-200LR/F"]], ["77L", ["B777", "Boeing 777-200LR"]],
+  ["77F", ["B777", "Boeing 777F"]],
+  ["B788", ["B787", "Boeing 787-8"]], ["788", ["B787", "Boeing 787-8"]],
+  ["B789", ["B787", "Boeing 787-9"]], ["789", ["B787", "Boeing 787-9"]],
+  ["B78X", ["B787", "Boeing 787-10"]], ["78X", ["B787", "Boeing 787-10"]],
+  ["CRJ1", ["CRJ", "Bombardier CRJ100"]], ["CR1", ["CRJ", "Bombardier CRJ100"]],
+  ["CRJ2", ["CRJ", "Bombardier CRJ200"]], ["CR2", ["CRJ", "Bombardier CRJ200"]],
+  ["CRJ7", ["CRJ", "Bombardier CRJ700"]], ["CR7", ["CRJ", "Bombardier CRJ700"]],
+  ["CRJ9", ["CRJ", "Bombardier CRJ900"]], ["CR9", ["CRJ", "Bombardier CRJ900"]],
+  ["CRJX", ["CRJ", "Bombardier CRJ1000"]], ["CRK", ["CRJ", "Bombardier CRJ1000"]],
+  ["DH8A", ["DHC8", "DHC-8-100"]], ["DH1", ["DHC8", "DHC-8-100"]],
+  ["DH8B", ["DHC8", "DHC-8-200"]], ["DH2", ["DHC8", "DHC-8-200"]],
+  ["DH8C", ["DHC8", "DHC-8-300"]], ["DH3", ["DHC8", "DHC-8-300"]],
+  ["DH8D", ["DHC8", "DHC-8-400 / Q400"]], ["DH4", ["DHC8", "DHC-8-400 / Q400"]],
+  ["AT43", ["ATR42", "ATR 42-300/320"]], ["AT4", ["ATR42", "ATR 42-300/320"]],
+  ["AT44", ["ATR42", "ATR 42-400"]],
+  ["AT45", ["ATR42", "ATR 42-500"]], ["AT5", ["ATR42", "ATR 42-400/500"]],
+  ["AT46", ["ATR42", "ATR 42-600"]], ["AT6", ["ATR42", "ATR 42-600"]],
+  ["AT72", ["ATR72", "ATR 72-200/210"]],
+  ["AT75", ["ATR72", "ATR 72-500"]],
+  ["AT76", ["ATR72", "ATR 72-600"]], ["AT7", ["ATR72", "ATR 72（派生型不明）"]],
+  ["E170", ["E170", "Embraer 170"]], ["E70", ["E170", "Embraer 170"]],
+  ["E75L", ["E175", "Embraer 175"]], ["E75S", ["E175", "Embraer 175"]], ["E75", ["E175", "Embraer 175"]],
+  ["E190", ["E190", "Embraer 190"]], ["E90", ["E190", "Embraer 190"]],
+  ["E195", ["E195", "Embraer 195"]], ["E95", ["E195", "Embraer 195"]],
+  ["E290", ["E190", "Embraer E190-E2"]], ["290", ["E190", "Embraer E190-E2"]],
+  ["E295", ["E195", "Embraer E195-E2"]], ["295", ["E195", "Embraer E195-E2"]],
+]);
+
+function genericAircraftFamily(value) {
+  const normalized = normalizeAircraftFilter(value).replace(/FAMILY$/, "");
+  const match = GENERIC_AIRCRAFT_FAMILIES.find(([, , aliases]) => aliases.includes(normalized));
+  return match ? { family: match[0], name: match[1] } : null;
 }
 
 function directAircraftTypeCodes(aircraft) {
@@ -2016,17 +2122,25 @@ function directAircraftTypeCodes(aircraft) {
 function airportAircraftDisplayName(item, movement) {
   const aircraft = airportAircraft(item, movement);
   const model = String(aircraft.model || aircraft.typeName || aircraft.type || "").trim();
-  if (!isGenericAircraftFamily(model)) return model;
+  const generic = genericAircraftFamily(model);
+  const codes = directAircraftTypeCodes(aircraft);
+
+  if (!generic) {
+    if (model) return model;
+    for (const code of codes) {
+      const known = AIRCRAFT_TYPE_DISPLAY_NAMES.get(code);
+      if (known) return known[1];
+    }
+    return "";
+  }
 
   // AeroDataBoxが系列名だけを返しても、同じレスポンス内に正式な型式コードが
   // ある場合だけ安全に補完する。便名や航空会社からの推測はしない。
-  const codes = directAircraftTypeCodes(aircraft);
-  if (codes.has("B77W") || codes.has("77W")) return "Boeing 777-300ER";
-  if (codes.has("B773") || codes.has("773")) return "Boeing 777-300";
-  if (codes.has("B772") || codes.has("772")) return "Boeing 777-200";
-  if (codes.has("77F")) return "Boeing 777F";
-  if (codes.has("B77L") || codes.has("77L")) return "Boeing 777-200LR/F";
-  return "Boeing 777（派生型不明）";
+  for (const code of codes) {
+    const known = AIRCRAFT_TYPE_DISPLAY_NAMES.get(code);
+    if (known?.[0] === generic.family) return known[1];
+  }
+  return `${generic.name}（派生型不明）`;
 }
 
 function airportAirlineText(item) {

@@ -205,6 +205,35 @@ assert.equal(
   }, { aircraft: { model: "Boeing 777" } }),
   "Boeing 777-200",
 );
+const genericDisplayCases = [
+  [{ model: "Airbus A350" }, "Airbus A350（派生型不明）"],
+  [{ model: "Airbus A350", icaoTypeCode: "A359" }, "Airbus A350-900"],
+  [{ model: "Boeing 787", iataTypeCode: "789" }, "Boeing 787-9"],
+  [{ model: "Boeing 737", icaoTypeCode: "B38M" }, "Boeing 737 MAX 8"],
+  [{ model: "Airbus A320", iataTypeCode: "32N" }, "Airbus A320neo"],
+  [{ model: "Airbus A330", icaoTypeCode: "A339" }, "Airbus A330-900neo"],
+  [{ model: "ATR 72", icaoTypeCode: "AT76" }, "ATR 72-600"],
+  [{ model: "DHC-8", iataTypeCode: "DH4" }, "DHC-8-400 / Q400"],
+  [{ model: "Bombardier CRJ", icaoTypeCode: "CRJ9" }, "Bombardier CRJ900"],
+];
+for (const [aircraft, expected] of genericDisplayCases) {
+  assert.equal(worker.airportAircraftDisplayName({ aircraft }), expected);
+}
+assert.equal(
+  worker.airportAircraftDisplayName({ aircraft: { icaoTypeCode: "A35K" } }),
+  "Airbus A350-1000",
+);
+assert.equal(
+  worker.airportAircraftDisplayName({ aircraft: { model: "Boeing 777", icaoTypeCode: "A359" } }),
+  "Boeing 777（派生型不明）",
+);
+assert.equal(
+  worker.airportAircraftDisplayName(
+    { aircraft: { model: "Airbus A350-941" } },
+    { aircraft: { model: "Airbus A350" } },
+  ),
+  "Airbus A350-941",
+);
 
 airportSchedule = {
   airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
