@@ -1022,7 +1022,7 @@ function menuModal(action) {
         textInput("type", "表示する便（省略可）", "both / arrival / departure", false, 9),
         textInput("hours", "時間範囲（省略可・1〜12時間）", "例: 3", false, 2),
         textInput("airline", "航空会社（省略可）", "例: ANA / NH / JAL", false, 40),
-        textInput("aircraft", "機種（省略可）", "例: B789 / 787 / A350", false, 40),
+        textInput("aircraft", "機種・ICAO/IATAコード", "例: B773 / 77W / A359 / 32Q", false, 40),
       ],
     },
     "airport-date": {
@@ -1993,12 +1993,247 @@ function airportAirlineText(item) {
     .toUpperCase();
 }
 
-function airportAircraftText(item, movement) {
+const AIRCRAFT_ALIAS_RULES = [
+  [["A220100"], ["BCS1"]],
+  [["A220300"], ["BCS3"]],
+  [["A300600"], ["A306"]],
+  [["A310300", "A310"], ["A310"]],
+  [["A318"], ["A318"]],
+  [["A319NEO"], ["A19N"]],
+  [["A319"], ["A319"], ["NEO"]],
+  [["A320NEO"], ["A20N"]],
+  [["A320"], ["A320"], ["NEO"]],
+  [["A321NEO"], ["A21N"]],
+  [["A321"], ["A321"], ["NEO"]],
+  [["A3302"], ["A332"]],
+  [["A3303"], ["A333"]],
+  [["A330800"], ["A338"]],
+  [["A330900"], ["A339"]],
+  [["A3402"], ["A342"]],
+  [["A3403"], ["A343"]],
+  [["A3405"], ["A345"]],
+  [["A3406"], ["A346"]],
+  [["A3509"], ["A359"]],
+  [["A35010"], ["A35K"]],
+  [["A3808"], ["A388"]],
+  [["BOEING717200", "B717200"], ["B712"]],
+  [["BOEING727100", "B727100"], ["B721"]],
+  [["BOEING727200", "B727200"], ["B722"]],
+  [["737MAX7"], ["B37M"]],
+  [["737MAX8"], ["B38M"]],
+  [["737MAX9"], ["B39M"]],
+  [["737MAX10"], ["B3XM"]],
+  [["7376"], ["B736"]],
+  [["7377"], ["B737"]],
+  [["7378"], ["B738"]],
+  [["7379"], ["B739"]],
+  [["7471"], ["B741"]],
+  [["7472"], ["B742"]],
+  [["7473"], ["B743"]],
+  [["7474"], ["B744"]],
+  [["7478"], ["B748"]],
+  [["7572"], ["B752"]],
+  [["7573"], ["B753"]],
+  [["7672"], ["B762"]],
+  [["7673"], ["B763"]],
+  [["7674"], ["B764"]],
+  [["777200LR", "777F", "777FREIGHTER"], ["B77L"]],
+  [["7772"], ["B772"], ["777200LR", "777F", "777FREIGHTER"]],
+  [["7878"], ["B788"]],
+  [["7879"], ["B789"]],
+  [["78710"], ["B78X"]],
+  [["E170", "EMBRAER170"], ["E170"]],
+  [["E175", "EMBRAER175"], ["E75L", "E75S"]],
+  [["E190E2", "EMBRAER190E2"], ["E290"]],
+  [["E195E2", "EMBRAER195E2"], ["E295"]],
+  [["E190", "EMBRAER190"], ["E190"], ["E2"]],
+  [["E195", "EMBRAER195"], ["E195"], ["E2"]],
+  [["CRJ100"], ["CRJ1"]],
+  [["CRJ200"], ["CRJ2"]],
+  [["CRJ700"], ["CRJ7"]],
+  [["CRJ900"], ["CRJ9"]],
+  [["CRJ1000"], ["CRJX"]],
+  [["DHC8100", "DASH8100"], ["DH8A"]],
+  [["DHC8200", "DASH8200"], ["DH8B"]],
+  [["DHC8300", "DASH8300"], ["DH8C"]],
+  [["DHC8400", "DASH8400", "Q400"], ["DH8D"]],
+  [["ATR42300", "ATR42320"], ["AT43"]],
+  [["ATR42400"], ["AT44"]],
+  [["ATR42500"], ["AT45"]],
+  [["ATR42600"], ["AT46"]],
+  [["ATR72200", "ATR72210"], ["AT72"]],
+  [["ATR72500"], ["AT75"]],
+  [["ATR72600"], ["AT76"]],
+  [["SAAB340"], ["SF34"]],
+  [["SAAB2000"], ["SB20"]],
+  [["FOKKER50"], ["F50"]],
+  [["FOKKER70"], ["F70"]],
+  [["FOKKER100"], ["F100"]],
+  [["SUPERJET100", "SSJ100"], ["SU95"]],
+  [["C919"], ["C919"]],
+];
+
+const IATA_AIRCRAFT_ALIAS_RULES = [
+  [["A220100"], ["221"]],
+  [["A220300"], ["223"]],
+  [["A300600"], ["306"]],
+  [["A310300", "A310"], ["313"]],
+  [["A318"], ["318"]],
+  [["A319NEO"], ["31N"]],
+  [["A319"], ["319"], ["NEO"]],
+  [["A320NEO"], ["32N"]],
+  [["A320"], ["320"], ["NEO"]],
+  [["A321NEO"], ["32Q"]],
+  [["A321"], ["321"], ["NEO"]],
+  [["A3302"], ["332"]],
+  [["A3303"], ["333"]],
+  [["A330800"], ["338"]],
+  [["A330900"], ["339"]],
+  [["A3402"], ["342"]],
+  [["A3403"], ["343"]],
+  [["A3405"], ["345"]],
+  [["A3406"], ["346"]],
+  [["A3509"], ["359"]],
+  [["A35010"], ["351"]],
+  [["A3808"], ["388"]],
+  [["BOEING717200", "B717200"], ["717"]],
+  [["BOEING727100", "B727100"], ["721"]],
+  [["BOEING727200", "B727200"], ["722"]],
+  [["737MAX7"], ["7M7"]],
+  [["737MAX8"], ["7M8"]],
+  [["737MAX9"], ["7M9"]],
+  [["737MAX10"], ["7MJ"]],
+  [["7376"], ["736"]],
+  [["7377"], ["73G"]],
+  [["7378"], ["738"]],
+  [["7379"], ["739"]],
+  [["7471"], ["741"]],
+  [["7472"], ["742"]],
+  [["7473"], ["743"]],
+  [["7474"], ["744"]],
+  [["7478"], ["748"]],
+  [["7572"], ["752"]],
+  [["7573"], ["753"]],
+  [["7672"], ["762"]],
+  [["7673"], ["763"]],
+  [["7674"], ["764"]],
+  [["777200LR"], ["77L"]],
+  [["777F", "777FREIGHTER"], ["77F"]],
+  [["7772"], ["772"], ["777200LR", "777F", "777FREIGHTER"]],
+  [["7878"], ["788"]],
+  [["7879"], ["789"]],
+  [["78710"], ["78X"]],
+  [["E170", "EMBRAER170"], ["E70"]],
+  [["E175", "EMBRAER175"], ["E75"]],
+  [["E190E2", "EMBRAER190E2"], ["290"]],
+  [["E195E2", "EMBRAER195E2"], ["295"]],
+  [["E190", "EMBRAER190"], ["E90"], ["E2"]],
+  [["E195", "EMBRAER195"], ["E95"], ["E2"]],
+  [["CRJ100"], ["CR1"]],
+  [["CRJ200"], ["CR2"]],
+  [["CRJ700"], ["CR7"]],
+  [["CRJ900"], ["CR9"]],
+  [["CRJ1000"], ["CRK"]],
+  [["DHC8100", "DASH8100"], ["DH1"]],
+  [["DHC8200", "DASH8200"], ["DH2"]],
+  [["DHC8300", "DASH8300"], ["DH3"]],
+  [["DHC8400", "DASH8400", "Q400"], ["DH4"]],
+  [["ATR42300", "ATR42320"], ["AT4"]],
+  [["ATR42400", "ATR42500"], ["AT5"]],
+  [["ATR42600"], ["AT6"]],
+  [["ATR72"], ["AT7"]],
+  [["SAAB340"], ["SF3"]],
+  [["SAAB2000"], ["S20"]],
+  [["SUPERJET100", "SSJ100"], ["SU9"]],
+  [["C919"], ["919"]],
+];
+
+const KNOWN_AIRCRAFT_TYPE_CODES = new Set(["B773", "773", "B77W", "77W"]);
+for (const [, codes] of AIRCRAFT_ALIAS_RULES) {
+  for (const code of codes) {
+    KNOWN_AIRCRAFT_TYPE_CODES.add(code);
+    if (/^[AB][A-Z0-9]{3}$/.test(code)) KNOWN_AIRCRAFT_TYPE_CODES.add(code.slice(1));
+  }
+}
+for (const [, codes] of IATA_AIRCRAFT_ALIAS_RULES) {
+  for (const code of codes) KNOWN_AIRCRAFT_TYPE_CODES.add(code);
+}
+
+function normalizeAircraftFilter(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function airportAircraftTokens(item, movement) {
   const aircraft = airportAircraft(item, movement);
-  return [aircraft.model, aircraft.reg, aircraft.registration, aircraft.modeS, aircraft.icao24]
-    .filter(Boolean)
-    .join(" ")
-    .toUpperCase();
+  const values = [
+    aircraft.model,
+    aircraft.type,
+    aircraft.typeName,
+    aircraft.typeCode,
+    aircraft.modelCode,
+    aircraft.iata,
+    aircraft.iataCode,
+    aircraft.iataTypeCode,
+    aircraft.icao,
+    aircraft.icaoCode,
+    aircraft.icaoTypeCode,
+    aircraft.reg,
+    aircraft.registration,
+    aircraft.modeS,
+    aircraft.icao24,
+  ].map(normalizeAircraftFilter).filter(Boolean);
+  const tokens = new Set(values);
+  for (const value of values) {
+    if (value.startsWith("BOEING")) {
+      tokens.add(value.slice(6));
+      tokens.add(`B${value.slice(6)}`);
+    }
+    if (value.startsWith("AIRBUS")) {
+      tokens.add(value.slice(6));
+      tokens.add(value.slice(6).startsWith("A") ? value.slice(6) : `A${value.slice(6)}`);
+    }
+  }
+  const is777300Er = [...tokens].some((value) =>
+    value.includes("77W") || /7773[A-Z0-9]*ER/.test(value),
+  );
+  const is777300 = [...tokens].some((value) => value.includes("7773"));
+  if (is777300Er) {
+    tokens.add("B77W");
+  } else if (is777300) {
+    tokens.add("B773");
+  }
+  for (const [patterns, aliases, exclusions = []] of AIRCRAFT_ALIAS_RULES) {
+    const valuesNow = [...tokens];
+    const matched = patterns.some((pattern) => valuesNow.some((value) => value.includes(pattern)));
+    const excluded = exclusions.some((pattern) => valuesNow.some((value) => value.includes(pattern)));
+    if (matched && !excluded) {
+      for (const alias of aliases) tokens.add(alias);
+    }
+  }
+  for (const [patterns, aliases, exclusions = []] of IATA_AIRCRAFT_ALIAS_RULES) {
+    const valuesNow = [...tokens];
+    const matched = patterns.some((pattern) => valuesNow.some((value) => value.includes(pattern)));
+    const excluded = exclusions.some((pattern) => valuesNow.some((value) => value.includes(pattern)));
+    if (matched && !excluded) {
+      for (const alias of aliases) tokens.add(alias);
+    }
+  }
+  for (const value of [...tokens]) {
+    if (/^[AB][A-Z0-9]{3}$/.test(value)) tokens.add(value.slice(1));
+  }
+  return tokens;
+}
+
+function airportAircraftMatches(item, movement, filter) {
+  const needle = normalizeAircraftFilter(filter);
+  if (!needle) return true;
+  const tokens = airportAircraftTokens(item, movement);
+  const is777300Er = [...tokens].some((value) =>
+    value.includes("77W") || /7773[A-Z0-9]*ER/.test(value),
+  );
+  if (["773", "B773"].includes(needle) && is777300Er) return false;
+  if (KNOWN_AIRCRAFT_TYPE_CODES.has(needle)) return tokens.has(needle);
+  return [...tokens].some((value) => value.includes(needle));
 }
 
 function movementUtcTime(movement) {
@@ -2082,12 +2317,12 @@ function buildAirportMessage(code, hours, direction, schedule, watchlist, filter
   let matchedCount = 0;
   let hasOmittedFlights = false;
   const airlineFilter = String(filters.airline || "").toUpperCase();
-  const aircraftFilter = String(filters.aircraft || "").toUpperCase();
+  const aircraftFilter = String(filters.aircraft || "").trim();
   for (const [label, kind, flights] of groups) {
     const filtered = flights.filter((item) => {
       const movement = kind === "arrival" ? item.arrival : item.departure;
       return (!airlineFilter || airportAirlineText(item).includes(airlineFilter))
-        && (!aircraftFilter || airportAircraftText(item, movement).includes(aircraftFilter));
+        && airportAircraftMatches(item, movement, aircraftFilter);
     });
     const sorted = [...filtered].sort((a, b) => movementTime(kind === "arrival" ? a.arrival : a.departure).localeCompare(movementTime(kind === "arrival" ? b.arrival : b.departure)));
     matchedCount += sorted.length;

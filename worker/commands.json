@@ -175,7 +175,7 @@
       },
       {
         "name": "aircraft",
-        "description": "機種名またはコード（例: B789 / 787 / A350）",
+        "description": "機種名・ICAO/IATAコード（例: B773 / 77W / A359 / 32Q）",
         "type": 3,
         "required": false
       }

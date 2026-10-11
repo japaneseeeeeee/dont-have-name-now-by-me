@@ -7,7 +7,7 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModalToCommand,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
-  processAirportAllButton };`;
+  processAirportAllButton, airportAircraftMatches };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -157,6 +157,60 @@ result = await worker.cmdAirport({ airport: "HND", airline: "ANA" }, { ...env, A
 assert.match(result.content, /NH10/);
 assert.doesNotMatch(result.content, /JL20/);
 assert.match(result.content, /航空会社: ANA/);
+
+const aircraftAliasCases = [
+  ["Boeing 777-300", ["773", "B773"]],
+  ["Boeing 777-300ER", ["77W", "B77W"]],
+  ["Boeing 777 381", ["773"]],
+  ["Airbus A350-941", ["359", "A359", "A350"]],
+  ["Airbus A350-1000", ["35K", "A35K", "351"]],
+  ["Boeing 787-9", ["789", "B789"]],
+  ["Boeing 737-846", ["738", "B738"]],
+  ["Boeing 737 MAX 8", ["B38M", "38M", "7M8"]],
+  ["Airbus A321neo", ["21N", "A21N", "32Q"]],
+  ["Airbus A330-343", ["333", "A333"]],
+  ["Bombardier Dash 8 Q400 / DHC-8-400", ["DH8D", "DH4", "Q400"]],
+  ["Embraer 190", ["E190", "E90"]],
+  ["ATR 72-600", ["AT76", "AT7"]],
+  ["Airbus A220-300", ["BCS3", "223"]],
+];
+for (const [model, aliases] of aircraftAliasCases) {
+  for (const alias of aliases) {
+    assert.equal(worker.airportAircraftMatches({ aircraft: { model } }, null, alias), true, `${alias} should match ${model}`);
+    assert.equal(worker.airportAircraftMatches({ aircraft: { model } }, null, alias.toLowerCase()), true, `${alias} should be case-insensitive`);
+  }
+}
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 777-300" } }, null, "77W"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 777-300ER" } }, null, "773"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 777-300ER" } }, null, "B773"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 777-381ER" } }, null, "773"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 777-381ER" } }, null, "77W"), true);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Airbus A321neo" } }, null, "321"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Airbus A321-200" } }, null, "32Q"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 737 MAX 8" } }, null, "738"), false);
+assert.equal(worker.airportAircraftMatches({ aircraft: { icaoTypeCode: "E190" } }, null, "E190"), true);
+assert.equal(worker.airportAircraftMatches({ aircraft: { iataTypeCode: "E90" } }, null, "E90"), true);
+
+airportSchedule = {
+  airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
+  arrivals: [
+    { number: "NH773", aircraft: { model: "Boeing 777-300" }, arrival: { scheduledTime: { local: "2026-10-11T10:00" } }, departure: { airport: { iata: "CTS" } } },
+    { number: "NH77W", aircraft: { model: "Boeing 777-300ER" }, arrival: { scheduledTime: { local: "2026-10-11T10:10" } }, departure: { airport: { iata: "ITM" } } },
+    { number: "JL359", aircraft: { model: "Airbus A350-941" }, arrival: { scheduledTime: { local: "2026-10-11T10:20" } }, departure: { airport: { iata: "FUK" } } },
+  ],
+  departures: [],
+};
+result = await worker.cmdAirport({ airport: "HND", aircraft: "77W" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
+assert.match(result.content, /NH77W/);
+assert.doesNotMatch(result.content, /NH773/);
+assert.doesNotMatch(result.content, /JL359/);
+result = await worker.cmdAirport({ airport: "HND", aircraft: "773" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
+assert.match(result.content, /NH773/);
+assert.doesNotMatch(result.content, /NH77W/);
+assert.doesNotMatch(result.content, /JL359/);
+result = await worker.cmdAirport({ airport: "HND", aircraft: "359" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
+assert.match(result.content, /JL359/);
+assert.doesNotMatch(result.content, /NH773|NH77W/);
 
 airportSchedule = {
   airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
