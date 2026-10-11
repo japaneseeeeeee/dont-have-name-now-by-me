@@ -409,6 +409,10 @@
     "label": "JA784A",
     "type": "BOEING 777-300ER (B77W)"
   },
+  "872fa0": {
+    "label": "JA923A",
+    "type": "Boeing 787 9"
+  },
   "87c002": {
     "label": "80-1111",
     "priority": "NORMAL",
