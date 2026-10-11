@@ -1982,7 +1982,51 @@ function hhmmOf(value) {
 }
 
 function airportAircraft(item, movement) {
-  return movement?.aircraft || item.aircraft || {};
+  const flightAircraft = item?.aircraft || {};
+  const movementAircraft = movement?.aircraft || {};
+  const merged = { ...flightAircraft, ...movementAircraft };
+  const flightModel = String(flightAircraft.model || "").trim();
+  const movementModel = String(movementAircraft.model || "").trim();
+  if (!movementModel) {
+    merged.model = flightModel;
+  } else if (flightModel && isGenericAircraftFamily(movementModel) && !isGenericAircraftFamily(flightModel)) {
+    // 発着側が系列名だけでも、便全体により詳しい型式があればそちらを使う。
+    merged.model = flightModel;
+  }
+  return merged;
+}
+
+function isGenericAircraftFamily(value) {
+  return ["BOEING777", "B777", "777"].includes(normalizeAircraftFilter(value));
+}
+
+function directAircraftTypeCodes(aircraft) {
+  return new Set([
+    aircraft.icao,
+    aircraft.icaoCode,
+    aircraft.icaoTypeCode,
+    aircraft.iata,
+    aircraft.iataCode,
+    aircraft.iataTypeCode,
+    aircraft.typeCode,
+    aircraft.modelCode,
+  ].map(normalizeAircraftFilter).filter(Boolean));
+}
+
+function airportAircraftDisplayName(item, movement) {
+  const aircraft = airportAircraft(item, movement);
+  const model = String(aircraft.model || aircraft.typeName || aircraft.type || "").trim();
+  if (!isGenericAircraftFamily(model)) return model;
+
+  // AeroDataBoxが系列名だけを返しても、同じレスポンス内に正式な型式コードが
+  // ある場合だけ安全に補完する。便名や航空会社からの推測はしない。
+  const codes = directAircraftTypeCodes(aircraft);
+  if (codes.has("B77W") || codes.has("77W")) return "Boeing 777-300ER";
+  if (codes.has("B773") || codes.has("773")) return "Boeing 777-300";
+  if (codes.has("B772") || codes.has("772")) return "Boeing 777-200";
+  if (codes.has("77F")) return "Boeing 777F";
+  if (codes.has("B77L") || codes.has("77L")) return "Boeing 777-200LR/F";
+  return "Boeing 777（派生型不明）";
 }
 
 function airportAirlineText(item) {
@@ -2285,7 +2329,7 @@ function airportFlightLine(item, kind, watchlist) {
   const flight = item.number || item.callSign || "便名不明";
   const airport = opposite?.iata || opposite?.icao || "---";
   const aircraft = airportAircraft(item, movement);
-  const type = aircraft.model || aircraft.modeS || "";
+  const type = airportAircraftDisplayName(item, movement);
   const icon = airportStatusIcon(item);
   const gate = movement?.gate ? ` G${movement.gate}` : "";
   const badgeMovement = { ...movement, aircraft: Object.keys(aircraft).length ? aircraft : movement?.aircraft };

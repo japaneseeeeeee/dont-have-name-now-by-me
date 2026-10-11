@@ -7,7 +7,7 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModalToCommand,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
-  processAirportAllButton, airportAircraftMatches };`;
+  processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -190,6 +190,21 @@ assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Airbus A321-200
 assert.equal(worker.airportAircraftMatches({ aircraft: { model: "Boeing 737 MAX 8" } }, null, "738"), false);
 assert.equal(worker.airportAircraftMatches({ aircraft: { icaoTypeCode: "E190" } }, null, "E190"), true);
 assert.equal(worker.airportAircraftMatches({ aircraft: { iataTypeCode: "E90" } }, null, "E90"), true);
+assert.equal(
+  worker.airportAircraftDisplayName({ aircraft: { model: "Boeing 777" } }),
+  "Boeing 777（派生型不明）",
+);
+assert.equal(
+  worker.airportAircraftDisplayName({ aircraft: { model: "Boeing 777", iataTypeCode: "77W" } }),
+  "Boeing 777-300ER",
+);
+assert.equal(
+  worker.airportAircraftDisplayName({
+    aircraft: { model: "Boeing 777-200" },
+    arrival: { aircraft: { model: "Boeing 777" } },
+  }, { aircraft: { model: "Boeing 777" } }),
+  "Boeing 777-200",
+);
 
 airportSchedule = {
   airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
@@ -211,6 +226,21 @@ assert.doesNotMatch(result.content, /JL359/);
 result = await worker.cmdAirport({ airport: "HND", aircraft: "359" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
 assert.match(result.content, /JL359/);
 assert.doesNotMatch(result.content, /NH773|NH77W/);
+
+airportSchedule = {
+  airport: { iata: "NRT", icao: "RJAA", name: "Narita" },
+  arrivals: [
+    { number: "OS25", aircraft: { model: "Boeing 777" }, arrival: { scheduledTime: { local: "2026-10-11T08:50" } }, departure: { airport: { iata: "VIE" } } },
+    { number: "TK50", aircraft: { model: "Boeing 777", iataTypeCode: "77W" }, arrival: { scheduledTime: { local: "2026-10-11T08:55" } }, departure: { airport: { iata: "IST" } } },
+  ],
+  departures: [],
+};
+result = await worker.cmdAirport({ airport: "NRT", aircraft: "777" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
+assert.match(result.content, /OS25.*Boeing 777（派生型不明）/);
+assert.match(result.content, /TK50.*Boeing 777-300ER/);
+result = await worker.cmdAirport({ airport: "NRT", aircraft: "77W" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
+assert.doesNotMatch(result.content, /OS25/);
+assert.match(result.content, /TK50/);
 
 airportSchedule = {
   airport: { iata: "HND", icao: "RJTT", name: "Haneda" },
