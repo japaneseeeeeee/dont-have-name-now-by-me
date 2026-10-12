@@ -7,6 +7,7 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModalToCommand,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
+  handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
   lookupLiveryName, lifecycleButtonSpec, processLifecycleButton };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
@@ -415,6 +416,52 @@ let response = worker.handlePersonalAlertButton({
 let responseBody = await response.json();
 assert.match(responseBody.data.content, /変更を受け付けました/);
 assert.match(responseBody.data.content, /__PERSONAL_ALERT__\|123\|alert_stop\|1420070400000000000\|87c003/);
+
+response = worker.handlePersonalAlertButton({
+  id: "1420070400000000004",
+  user: { id: "123" },
+  data: { custom_id: "personal_alert|stop|123|87c003||kyushu" },
+  message: { embeds: [], components: [] },
+});
+responseBody = await response.json();
+assert.match(
+  responseBody.data.content,
+  /__PERSONAL_ALERT__\|123\|alert_stop\|1420070400000000004\|87c003\|\|kyushu/,
+);
+
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:region" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /機体＋地方通知/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_add/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_list/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_remove/);
+
+response = worker.handlePersonalPanelAction({
+  user: { id: "123" },
+  data: { custom_id: "personal_action|region_add" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.equal(responseBody.type, 9);
+assert.equal(responseBody.data.custom_id, "personal_modal|region_add");
+
+response = worker.personalModalSubmit({
+  user: { id: "123" },
+  data: {
+    custom_id: "personal_modal|region_add",
+    components: [
+      { components: [{ custom_id: "aircraft", value: "JA738B" }] },
+      { components: [{ custom_id: "region", value: "九州" }] },
+    ],
+  },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|region_add\|JA738B\|九州/);
 
 response = worker.handleLegacyPersonalAlertButton({
   id: "1420070400000000001",

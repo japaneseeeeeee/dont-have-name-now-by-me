@@ -663,11 +663,31 @@ def build_personal_subscriptions(settings):
     return subscriptions, active_configs
 
 
+def build_personal_region_subscriptions(active_configs):
+    """機体＋地方の個人通知を機体から逆引きできる形にする。"""
+    subscriptions = {}
+    for user_id, config in active_configs.items():
+        for icao24, raw in (config.get("region_alerts") or {}).items():
+            entry = raw if isinstance(raw, dict) else {}
+            regions = [
+                str(value).lower()
+                for value in (entry.get("regions") or [])
+                if str(value).lower() in REGIONS
+            ]
+            if not regions:
+                continue
+            subscriptions.setdefault(str(icao24).lower(), []).append(
+                (str(user_id), entry, set(regions))
+            )
+    return subscriptions
+
+
 def find_personal_special_events(states, settings, notified, now, watchlist=None):
     """個人登録機を条件に従って検出し、ユーザー別DMイベントを作る。"""
     notified = dict(notified)
     aircraft_by_icao, region_by_icao = build_aircraft_index(states)
     subscriptions, active_configs = build_personal_subscriptions(settings)
+    region_subscriptions = build_personal_region_subscriptions(active_configs)
     active_keys = set()
     events = []
     watchlist = watchlist or {}
@@ -710,6 +730,62 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
                 "priority": priority,
                 "region": REGIONS[region_key]["name"],
                 "repeat": repeat,
+                "callsign": (aircraft[1] or "").strip(),
+                "longitude": aircraft[5],
+                "latitude": aircraft[6],
+                "altitude": aircraft[7],
+                "on_ground": on_ground,
+                "velocity": aircraft[9],
+                "track": aircraft[10],
+                "vertical_rate": aircraft[11],
+                "detected_at": now,
+            })
+
+    # 「特定の機体が特定の地方へ入った時」だけ通知する個人ルール。
+    # 同じ機体の通常個人通知も現在地を対象にしている場合は、DMを二重送信しない。
+    for icao24, subscribers in region_subscriptions.items():
+        aircraft = aircraft_by_icao.get(icao24)
+        if aircraft is None:
+            continue
+        region_key = region_by_icao.get(icao24)
+        if region_key is None:
+            continue
+        for user_id, entry, selected_regions in subscribers:
+            if region_key not in selected_regions:
+                continue
+            config = active_configs[user_id]
+            if float(config.get("muted_until") or 0) > now:
+                continue
+            regular_entry = (config.get("aircraft") or {}).get(icao24)
+            regular_regions = config.get("regions") or []
+            if regular_entry is not None and (
+                not regular_regions or region_key in regular_regions
+            ):
+                continue
+            if _in_quiet_hours(config, now):
+                continue
+            if not _personal_filters_match(config, entry, aircraft):
+                continue
+            state_key = f"region:{user_id}:{icao24}:{region_key}"
+            active_keys.add(state_key)
+            last = notified.get(state_key)
+            on_ground = bool(aircraft[8])
+            # 地方通知は「進入」を知らせるため、同じ地方に滞在中は再通知しない。
+            # 監視範囲から離れると状態が整理され、再進入時に再び通知できる。
+            if last is not None:
+                continue
+            notified[state_key] = now
+            events.append({
+                "event_key": state_key,
+                "alert_kind": "region",
+                "target_region": region_key,
+                "user_id": user_id,
+                "icao24": icao24,
+                "label": entry.get("label") or icao24,
+                "type": entry.get("type") or "不明",
+                "priority": "NORMAL",
+                "region": REGIONS[region_key]["name"],
+                "repeat": False,
                 "callsign": (aircraft[1] or "").strip(),
                 "longitude": aircraft[5],
                 "latitude": aircraft[6],
@@ -1142,6 +1218,10 @@ def _tracked_icaos(watchlist, personal_settings):
         tracked.update(
             str(value).strip().lower()
             for value in (config.get("aircraft") or {})
+        )
+        tracked.update(
+            str(value).strip().lower()
+            for value in (config.get("region_alerts") or {})
         )
     return {value for value in tracked if re.fullmatch(r"[0-9a-f]{6}", value)}
 

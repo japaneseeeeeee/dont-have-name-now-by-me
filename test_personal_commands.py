@@ -116,6 +116,41 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(custom_ids["24時間休止"], "personal_alert|mute|123|24h")
 
+        region_view = discord_bot.PersonalAlertView(123, "87C003", region="kyushu")
+        region_ids = {item.label: item.custom_id for item in region_view.children if item.custom_id}
+        self.assertEqual(
+            region_ids["九州の地方通知を停止"],
+            "personal_alert|stop|123|87c003||kyushu",
+        )
+
+    def test_personal_control_panel_has_aircraft_region_button(self):
+        view = discord_bot.PersonalControlPanelView()
+        buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
+        self.assertEqual(buttons["機体＋地方通知"], "personal_panel:region")
+
+    def test_personal_region_aliases_and_rule_count(self):
+        self.assertEqual(discord_bot.normalize_personal_region("九州"), "kyushu")
+        self.assertEqual(discord_bot.normalize_personal_region("Kansai"), "kinki")
+        config = {"region_alerts": {
+            "abc123": {"regions": ["kyushu", "kanto"]},
+            "def456": {"regions": ["hokkaido"]},
+        }}
+        self.assertEqual(discord_bot.personal_region_rule_count(config), 3)
+
+    def test_personal_alert_stop_removes_only_selected_region_rule(self):
+        self.store = {"123": {
+            "aircraft": {"87c003": {"label": "80-1112"}},
+            "region_alerts": {
+                "87c003": {"label": "80-1112", "regions": ["kyushu", "kanto"]},
+            },
+        }}
+        result = discord_bot.apply_personal_alert_action(
+            123, "alert_stop", "87c003", region="kyushu",
+        )
+        self.assertIn("九州の地方通知を停止", result)
+        self.assertEqual(self.store["123"]["region_alerts"]["87c003"]["regions"], ["kanto"])
+        self.assertIn("87c003", self.store["123"]["aircraft"])
+
     def test_personal_alert_bridge_actions_update_settings(self):
         self.store = {
             "123": {

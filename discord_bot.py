@@ -108,9 +108,26 @@ FEEDBACK_MARKER = "📮"
 PHOTO_CHANNEL_ID = int(os.environ.get("PHOTO_CHANNEL_ID", "1552676837581389956"))
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
 PERSONAL_SPECIAL_LIMIT = 20
+PERSONAL_REGION_LIMIT = 20
 PERSONAL_DESTINATION_LIMIT = 20
 PERSONAL_AIRPORT_LIMIT = 10
 PERSONAL_AIRPORTS = ("HND", "NRT", "CTS", "ITM", "KIX", "NGO", "FUK", "OKA")
+PERSONAL_REGION_ALIASES = {
+    "北海道": "hokkaido", "hokkaido": "hokkaido",
+    "東北": "tohoku", "tohoku": "tohoku",
+    "関東": "kanto", "kanto": "kanto",
+    "中部": "chubu", "chubu": "chubu",
+    "近畿": "kinki", "関西": "kinki", "kinki": "kinki", "kansai": "kinki",
+    "中国・四国": "chugoku_shikoku", "中国四国": "chugoku_shikoku",
+    "中国": "chugoku_shikoku", "四国": "chugoku_shikoku",
+    "chugoku_shikoku": "chugoku_shikoku",
+    "九州": "kyushu", "kyushu": "kyushu",
+    "沖縄": "okinawa", "okinawa": "okinawa",
+}
+PERSONAL_REGION_LABELS = {
+    "hokkaido": "北海道", "tohoku": "東北", "kanto": "関東", "chubu": "中部",
+    "kinki": "近畿", "chugoku_shikoku": "中国・四国", "kyushu": "九州", "okinawa": "沖縄",
+}
 PERSONAL_LAUNCHER_CHANNEL_NAME = "🔒｜個人設定を作る"
 PERSONAL_LAUNCHER_TOPIC = "aircraft-personal-launcher"
 PERSONAL_CATEGORY_NAMES = ("🔒｜個人設定", "🔒｜個人設定2", "🔒｜個人設定3")
@@ -986,22 +1003,26 @@ async def heartbeat():
 class PersonalAlertView(discord.ui.View):
     """個人DM通知だけに付ける操作ボタン。"""
 
-    def __init__(self, user_id, icao24, airport=None):
+    def __init__(self, user_id, icao24, airport=None, region=None):
         super().__init__(timeout=7 * 24 * 3600)
         self.user_id = int(user_id)
         self.icao24 = str(icao24).lower()
         self.airport = str(airport or "").upper()
+        self.region = str(region or "").lower()
         # DiscordのInteraction EndpointがCloudflareを向いているため、
         # Worker側でも判別できる固定custom_idを必ず付ける。
-        self.stop_aircraft.custom_id = (
-            f"personal_alert|stop|{self.user_id}|{self.icao24}|{self.airport}"
-        )
+        self.stop_aircraft.custom_id = f"personal_alert|stop|{self.user_id}|{self.icao24}|{self.airport}"
+        if self.region:
+            self.stop_aircraft.custom_id += f"|{self.region}"
         self.mute_one_hour.custom_id = f"personal_alert|mute|{self.user_id}|1h"
         self.mute_six_hours.custom_id = f"personal_alert|mute|{self.user_id}|6h"
         self.mute_until_morning.custom_id = f"personal_alert|mute|{self.user_id}|morning"
         self.mute_day.custom_id = f"personal_alert|mute|{self.user_id}|24h"
         if self.airport:
             self.stop_aircraft.label = f"{self.airport}の空港通知を停止"
+        elif self.region:
+            region_label = PERSONAL_REGION_LABELS.get(self.region, self.region)
+            self.stop_aircraft.label = f"{region_label}の地方通知を停止"
         self.add_item(discord.ui.Button(
             label="地図を見る", emoji="🗺️",
             url=f"https://globe.adsbexchange.com/?icao={self.icao24}",
@@ -1026,6 +1047,8 @@ class PersonalAlertView(discord.ui.View):
             airports = config.get("airports") or {}
             removed = airports.pop(self.airport, None)
             config["airports"] = airports
+        elif self.region:
+            removed = remove_personal_region_rule(config, self.icao24, self.region)
         else:
             removed = registered.pop(self.icao24, None)
         config["aircraft"] = registered
@@ -1035,6 +1058,7 @@ class PersonalAlertView(discord.ui.View):
         await interaction.response.edit_message(view=self)
         await interaction.followup.send(
             (f"🔕 {self.airport}の空港通知を停止しました。" if self.airport
+             else f"🔕 {PERSONAL_REGION_LABELS.get(self.region, self.region)}の地方通知を停止しました。" if self.region
              else "🔕 この機体の個人通知を停止しました。")
             if removed else "対象はすでに解除されています。",
             ephemeral=True,
@@ -1096,7 +1120,7 @@ def personal_mute_deadline(duration, clicked_at=None):
     return clicked_at + 24 * 3600, "24時間"
 
 
-def apply_personal_alert_action(user_id, operation, icao24="", airport="", action_id=""):
+def apply_personal_alert_action(user_id, operation, icao24="", airport="", region="", action_id=""):
     """通知DMの操作を反映し、利用者向けの結果文を返す。"""
     settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
     config = settings.get(str(user_id)) or {"aircraft": {}}
@@ -1111,7 +1135,13 @@ def apply_personal_alert_action(user_id, operation, icao24="", airport="", actio
         result = f"🌙 個人通知を{label}休止しました。"
     elif operation == "alert_stop":
         airport = str(airport or "").upper()
-        if airport:
+        region = str(region or "").lower()
+        if region:
+            removed = remove_personal_region_rule(config, str(icao24 or "").lower(), region)
+            label = PERSONAL_REGION_LABELS.get(region, region)
+            result = (f"🔕 {label}の地方通知を停止しました。"
+                      if removed else "対象はすでに解除されています。")
+        elif airport:
             airports = config.get("airports") or {}
             removed = airports.pop(airport, None)
             config["airports"] = airports
@@ -1176,6 +1206,7 @@ class PersonalSettingsView(discord.ui.View):
         filters = config.get("filters") or {}
         airports = config.get("airports") or {}
         lines = [f"DM通知: {'ON' if config.get('enabled', True) else 'OFF'}", f"登録機: {len(aircraft)}機"]
+        lines.append(f"機体＋地方通知: {personal_region_rule_count(config)}件")
         lines.append("空港: " + (", ".join(f"{code}({value.get('radius_km', 50)}km)" for code, value in airports.items()) or "未登録"))
         lines.append("状態: " + filters.get("status", "all"))
         lines.append("航空会社: " + (", ".join(filters.get("airlines") or []) or "すべて"))
@@ -1325,7 +1356,8 @@ class PersonalAircraftAddModal(discord.ui.Modal, title="個人機体通知を追
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(interaction.user.id)) or {"enabled": True, "aircraft": {}}
         registered = config.get("aircraft") or {}
-        if icao24 not in registered and len(registered) >= PERSONAL_SPECIAL_LIMIT:
+        unique_aircraft = set(registered) | set(config.get("region_alerts") or {})
+        if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
             await interaction.followup.send(f"個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。", ephemeral=True)
             return
         registered[icao24] = {"label": label, "type": type_name, "priority": priority}
@@ -1355,6 +1387,37 @@ class PersonalEquipmentAddModal(discord.ui.Modal, title="個人機材通知を�
         await interaction.response.send_message(message, ephemeral=True)
 
 
+def normalize_personal_region(value):
+    text = str(value or "").strip()
+    return PERSONAL_REGION_ALIASES.get(text) or PERSONAL_REGION_ALIASES.get(text.lower())
+
+
+def personal_region_rule_count(config):
+    return sum(
+        len(set(value.get("regions") or []))
+        for value in (config.get("region_alerts") or {}).values()
+        if isinstance(value, dict)
+    )
+
+
+def remove_personal_region_rule(config, icao24, region):
+    alerts = config.get("region_alerts") or {}
+    key = str(icao24 or "").lower()
+    entry = alerts.get(key)
+    if not isinstance(entry, dict):
+        return False
+    regions = [value for value in entry.get("regions") or [] if value != region]
+    if len(regions) == len(entry.get("regions") or []):
+        return False
+    if regions:
+        entry["regions"] = regions
+        alerts[key] = entry
+    else:
+        alerts.pop(key, None)
+    config["region_alerts"] = alerts
+    return True
+
+
 def personal_panel_summary(user_id):
     config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
     _, destinations = personal_destination_rules(user_id)
@@ -1362,6 +1425,7 @@ def personal_panel_summary(user_id):
     return (
         f"DM通知: **{'ON' if config.get('enabled', True) else 'OFF'}**\n"
         f"✈️ 登録機体: **{len(config.get('aircraft') or {})}機**\n"
+        f"📍 機体＋地方通知: **{personal_region_rule_count(config)}件**\n"
         f"🌍 目的地早期通知: **{len(destinations)}件**\n"
         f"🏢 空港ウォッチ: **{len(config.get('airports') or {})}件**\n"
         f"🔔 機材投入通知: **{len(equipment)}件**"
@@ -1510,6 +1574,7 @@ async def handle_personal_alert_bridge(message):
             operation,
             args[0] if args else "",
             args[1] if len(args) > 1 else "",
+            args[2] if len(args) > 2 else "",
             action_id=action_id,
         )
         mark_personal_alert_action_handled(action_id)
@@ -1826,7 +1891,8 @@ async def handle_personal_panel_bridge(message):
                     settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
                     config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
                     registered = config.get("aircraft") or {}
-                    if icao24 not in registered and len(registered) >= PERSONAL_SPECIAL_LIMIT:
+                    unique_aircraft = set(registered) | set(config.get("region_alerts") or {})
+                    if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
                         result = f"⚠️ 個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。"
                     else:
                         registered[icao24] = {"label": label, "type": type_name, "priority": priority}
@@ -1862,6 +1928,69 @@ async def handle_personal_panel_bridge(message):
                 settings[str(user_id)] = config
                 save_locked_json(PERSONAL_SPECIALS_PATH, settings)
                 result = f"🗑️ `{label}` ({found}) の個人機体通知を解除しました。"
+        elif operation == "region_add" and len(args) >= 2:
+            aircraft, raw_region = args[0], args[1]
+            region_key = normalize_personal_region(raw_region)
+            if region_key is None:
+                result = "⚠️ 地方名は 北海道・東北・関東・中部・近畿・中国・四国・九州・沖縄 から指定してください。"
+            else:
+                resolved = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
+                if resolved is None:
+                    result = f"⚠️ `{aircraft}` の機体を確認できませんでした。"
+                else:
+                    icao24, label, type_name = resolved
+                    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+                    config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
+                    alerts = config.get("region_alerts") or {}
+                    unique_aircraft = set(config.get("aircraft") or {}) | set(alerts)
+                    entry = dict(alerts.get(icao24) or {})
+                    regions = list(dict.fromkeys(entry.get("regions") or []))
+                    if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
+                        result = f"⚠️ 個人通知に登録できる機体は合計{PERSONAL_SPECIAL_LIMIT}機までです。"
+                    elif region_key not in regions and personal_region_rule_count(config) >= PERSONAL_REGION_LIMIT:
+                        result = f"⚠️ 機体＋地方通知は{PERSONAL_REGION_LIMIT}件までです。"
+                    elif region_key in regions:
+                        result = f"ℹ️ `{label}` × **{PERSONAL_REGION_LABELS[region_key]}** は登録済みです。"
+                    else:
+                        regions.append(region_key)
+                        alerts[icao24] = {
+                            "label": label, "type": type_name, "regions": regions,
+                        }
+                        config["region_alerts"] = alerts
+                        settings[str(user_id)] = config
+                        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                        result = (
+                            f"✅ `{label}`を **{PERSONAL_REGION_LABELS[region_key]}** で検知した時の"
+                            "個人DM通知を登録しました。"
+                        )
+        elif operation == "region_list":
+            config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
+            alerts = config.get("region_alerts") or {}
+            lines = []
+            for icao24, entry in sorted(alerts.items(), key=lambda item: str(item[1].get("label") or item[0])):
+                for region_key in entry.get("regions") or []:
+                    lines.append(
+                        f"`{entry.get('label') or icao24}` ({icao24})｜**{PERSONAL_REGION_LABELS.get(region_key, region_key)}**"
+                    )
+            result = ("📍 **機体＋地方通知**\n" + "\n".join(lines)) if lines else "機体＋地方通知は登録されていません。"
+        elif operation == "region_remove" and len(args) >= 2:
+            target = args[0].strip().upper()
+            region_key = normalize_personal_region(args[1])
+            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+            config = settings.get(str(user_id)) or {}
+            alerts = config.get("region_alerts") or {}
+            found = next((
+                icao24 for icao24, value in alerts.items()
+                if icao24.upper() == target or _normalize_reg(value.get("label", "")) == _normalize_reg(target)
+            ), None)
+            if region_key is None:
+                result = "⚠️ 地方名を確認してください。"
+            elif found is None or not remove_personal_region_rule(config, found, region_key):
+                result = f"⚠️ `{target}` × **{PERSONAL_REGION_LABELS[region_key]}** は見つかりませんでした。"
+            else:
+                settings[str(user_id)] = config
+                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                result = f"🗑️ `{target}` × **{PERSONAL_REGION_LABELS[region_key]}** の地方通知を解除しました。"
         elif operation == "destination_add" and len(args) >= 2:
             result = await create_personal_destination_rule(user_id, args[0], args[1])
         elif operation == "destination_list":
@@ -2026,51 +2155,34 @@ class PersonalControlPanelView(discord.ui.View):
         await interaction.response.send_message("このパネルはチャンネルの所有者本人だけが操作できます。", ephemeral=True)
         return False
 
-    # Discordの上限（5行×5個）に収まるため、各機能を1行ずつ配置する。
+    # 1行目から各通知の専用メニューを開く。似た操作を直接並べず、押し間違いを防ぐ。
     # Interaction EndpointはWorkerのため、ここのcallbackは永続View登録用。
-    @discord.ui.button(label="機体を通知登録", emoji="✈️", style=discord.ButtonStyle.success, custom_id="personal_action|aircraft_add", row=0)
-    async def aircraft_add(self, interaction, button): pass
-    @discord.ui.button(label="機体の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|aircraft_list", row=0)
-    async def aircraft_list(self, interaction, button): pass
-    @discord.ui.button(label="機体の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|aircraft_remove", row=0)
-    async def aircraft_remove(self, interaction, button): pass
+    @discord.ui.button(label="機体通知", emoji="✈️", style=discord.ButtonStyle.primary, custom_id="personal_panel:aircraft", row=0)
+    async def aircraft(self, interaction, button): pass
+    @discord.ui.button(label="機体＋地方通知", emoji="📍", style=discord.ButtonStyle.success, custom_id="personal_panel:region", row=0)
+    async def region(self, interaction, button): pass
+    @discord.ui.button(label="目的地早期通知", emoji="🌍", style=discord.ButtonStyle.primary, custom_id="personal_panel:destination", row=0)
+    async def destination(self, interaction, button): pass
+    @discord.ui.button(label="空港ウォッチ", emoji="🏢", style=discord.ButtonStyle.primary, custom_id="personal_panel:airport", row=0)
+    async def airport(self, interaction, button): pass
+    @discord.ui.button(label="機材投入通知", emoji="🔔", style=discord.ButtonStyle.primary, custom_id="personal_panel:equipment", row=0)
+    async def equipment(self, interaction, button): pass
 
-    @discord.ui.button(label="目的地を通知登録", emoji="🌍", style=discord.ButtonStyle.success, custom_id="personal_action|destination_add", row=1)
-    async def destination_add(self, interaction, button): pass
-    @discord.ui.button(label="目的地の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|destination_list", row=1)
-    async def destination_list(self, interaction, button): pass
-    @discord.ui.button(label="目的地の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|destination_remove", row=1)
-    async def destination_remove(self, interaction, button): pass
-
-    @discord.ui.button(label="空港周辺を通知登録", emoji="🏢", style=discord.ButtonStyle.success, custom_id="personal_action|airport_add", row=2)
-    async def airport_add(self, interaction, button): pass
-    @discord.ui.button(label="空港の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|airport_list", row=2)
-    async def airport_list(self, interaction, button): pass
-    @discord.ui.button(label="空港の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|airport_remove", row=2)
-    async def airport_remove(self, interaction, button): pass
-
-    @discord.ui.button(label="便・機材を通知登録", emoji="🔔", style=discord.ButtonStyle.success, custom_id="personal_action|equipment_add", row=3)
-    async def equipment_add(self, interaction, button): pass
-    @discord.ui.button(label="便・機材の登録一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_action|equipment_list", row=3)
-    async def equipment_list(self, interaction, button): pass
-    @discord.ui.button(label="便・機材の登録解除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_action|equipment_remove", row=3)
-    async def equipment_remove(self, interaction, button): pass
-
-    @discord.ui.button(label="通知ON・条件設定", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings", row=4)
+    @discord.ui.button(label="通知ON・条件設定", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings", row=1)
     async def settings(self, interaction, button):
         await interaction.response.send_message("個人通知の設定です。", view=PersonalSettingsView(interaction.user.id), ephemeral=True)
 
-    @discord.ui.button(label="全登録・設定を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary", row=4)
+    @discord.ui.button(label="全登録・設定を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary", row=1)
     async def summary(self, interaction, button):
         await interaction.response.send_message("👤 **現在の個人設定**\n" + personal_panel_summary(interaction.user.id), ephemeral=True)
 
-    @discord.ui.button(label="パネルを一番下へ", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:refresh", row=4)
+    @discord.ui.button(label="パネルを一番下へ", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:refresh", row=1)
     async def refresh(self, interaction, button): pass
 
-    @discord.ui.button(label="個人設定を全削除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_panel:delete", row=4)
+    @discord.ui.button(label="個人設定を全削除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_panel:delete", row=1)
     async def delete_channel(self, interaction, button): pass
 
-    @discord.ui.button(label="この画面の使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=4)
+    @discord.ui.button(label="この画面の使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=1)
     async def help(self, interaction, button): pass
 
 
@@ -2197,7 +2309,10 @@ async def personal_special_dispatch():
             recipient = await bot.fetch_user(user_id)
             state = "引き続き検出しています" if event.get("repeat") else "新たに検出しました"
             priority = str(event.get("priority") or "SPECIAL").upper()
-            title_prefix = "🚨 個人SPECIAL" if priority == "SPECIAL" else "🔔 個人watchlist"
+            if event.get("alert_kind") == "region":
+                title_prefix = "📍 個人・機体＋地方通知"
+            else:
+                title_prefix = "🚨 個人SPECIAL" if priority == "SPECIAL" else "🔔 個人watchlist"
             color = 0xED4245 if priority == "SPECIAL" else 0x3498DB
             embed = discord.Embed(
                 title=f"{title_prefix}｜{event['label']}を検出",
@@ -2247,7 +2362,12 @@ async def personal_special_dispatch():
             embed.set_footer(text="タイトルをタップするとADS-B Exchangeを開きます")
             await recipient.send(
                 embed=embed,
-                view=PersonalAlertView(user_id, event["icao24"], event.get("airport")),
+                view=PersonalAlertView(
+                    user_id,
+                    event["icao24"],
+                    event.get("airport"),
+                    event.get("target_region"),
+                ),
             )
         except discord.Forbidden:
             logger.warning("個人SPECIALのDMを送信できません: user=%s", event.get("user_id"))
@@ -3353,9 +3473,6 @@ async def add_personal_aircraft(ctx, aircraft, priority):
     settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
     config = settings.get(user_id) or {"enabled": True, "aircraft": {}}
     registered = config.get("aircraft") or {}
-    if len(registered) >= PERSONAL_SPECIAL_LIMIT:
-        await ctx.send(f"⚠️ 個人watchlistは1人{PERSONAL_SPECIAL_LIMIT}機まで登録できます。")
-        return
 
     async with ctx.typing():
         result = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
@@ -3366,6 +3483,10 @@ async def add_personal_aircraft(ctx, aircraft, priority):
         )
         return
     icao24, label, type_name = result
+    unique_aircraft = set(registered) | set(config.get("region_alerts") or {})
+    if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
+        await ctx.send(f"⚠️ 個人watchlistは1人{PERSONAL_SPECIAL_LIMIT}機まで登録できます。")
+        return
     if icao24 in registered:
         await ctx.send(f"ℹ️ `{label}` ({icao24}) はすでに個人watchlistへ登録されています。")
         return
@@ -3460,13 +3581,6 @@ async def my_special_list(ctx):
 @bot.command(name="my-watch-list")
 async def my_watch_list(ctx):
     await my_special_list.callback(ctx)
-
-
-PERSONAL_REGION_ALIASES = {
-    "北海道": "hokkaido", "東北": "tohoku", "関東": "kanto", "中部": "chubu",
-    "近畿": "kinki", "関西": "kinki", "中国・四国": "chugoku_shikoku",
-    "中国四国": "chugoku_shikoku", "九州": "kyushu", "沖縄": "okinawa",
-}
 
 
 @bot.command(name="my-watch-regions")

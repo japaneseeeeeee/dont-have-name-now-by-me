@@ -775,6 +775,14 @@ function personalModal(action) {
     aircraft_remove: { title: "個人機体通知を解除", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
     ] },
+    region_add: { title: "機体＋地方通知を追加", rows: [
+      textInput("aircraft", "登録記号またはICAO24", "例: JA738B", true, 20),
+      textInput("region", "通知する地方", "例: 九州 / 関東 / 北海道", true, 20),
+    ] },
+    region_remove: { title: "機体＋地方通知を解除", rows: [
+      textInput("aircraft", "登録記号またはICAO24", "例: JA738B", true, 20),
+      textInput("region", "解除する地方", "例: 九州", true, 20),
+    ] },
     destination_add: { title: "個人早期通知を追加", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: A7-BBA", true, 20),
       textInput("destination", "目的空港", "例: NRT / RJAA", true, 4),
@@ -873,8 +881,9 @@ function handlePersonalAlertButton(interaction) {
   if (action === "stop") {
     const icao24 = HEX6.test(parts[3] || "") ? parts[3].toLowerCase() : personalAlertIcao24(interaction);
     const airport = String(parts[4] || "").toUpperCase();
-    if (!icao24 && !airport) return personalAlertError("⚠️ 対象の機体を確認できませんでした。");
-    return personalAlertBridge(interaction, "alert_stop", [icao24, airport]);
+    const region = String(parts[5] || "").toLowerCase();
+    if (!icao24 && !airport && !region) return personalAlertError("⚠️ 対象の機体を確認できませんでした。");
+    return personalAlertBridge(interaction, "alert_stop", [icao24, airport, region]);
   }
   return personalAlertError("⚠️ この通知操作には対応していません。");
 }
@@ -981,6 +990,7 @@ function handlePersonalPanelButton(interaction) {
       "📖 **個人設定のボタン説明**\n" +
       "各通知の **追加** は新しく登録、**見る** は登録内容の確認、**解除** は登録の削除に使います。\n" +
       "✈️ **機体通知**：指定した機体を日本国内で検出したときに通知します。\n" +
+      "📍 **機体＋地方通知**：指定した機体を選んだ地方で検出したときだけ通知します。例：JA738B＋九州。\n" +
       "🌍 **目的地早期通知**：指定機体が指定空港へ向かうと判明したときに通知します。\n" +
       "🏢 **空港ウォッチ**：指定空港の周辺で対象機を検出したときに通知します。\n" +
       "🔔 **機材通知**：指定便に指定機材が投入されたときに通知します。\n" +
@@ -1002,16 +1012,17 @@ function handlePersonalPanelButton(interaction) {
   if (action === "summary") return personalBridge(interaction, "summary");
   if (action === "refresh") return personalBridge(interaction, "refresh");
   if (action === "delete") {
-    return json({ type: 4, data: { flags: 64, content: "⚠️ **個人チャンネルを削除しますか？**\n個人機体通知・目的地早期通知・空港ウォッチ・機材投入通知・通知条件もすべて削除され、個人通知は停止します。この操作は元に戻せません。", components: [
+    return json({ type: 4, data: { flags: 64, content: "⚠️ **個人チャンネルを削除しますか？**\n個人機体通知・機体＋地方通知・目的地早期通知・空港ウォッチ・機材投入通知・通知条件もすべて削除され、個人通知は停止します。この操作は元に戻せません。", components: [
       { type: 1, components: [
         { type: 2, style: 4, custom_id: "personal_action|channel_delete_confirm", emoji: { name: "🗑️" }, label: "チャンネルと個人データを削除" },
       ] },
     ] } });
   }
-  if (["aircraft", "airport", "equipment"].includes(action)) {
-    const labels = { aircraft: "✈️ **機体通知**", airport: "🏢 **空港ウォッチ**", equipment: "🔔 **機材投入通知**" };
+  if (["aircraft", "region", "airport", "equipment"].includes(action)) {
+    const labels = { aircraft: "✈️ **機体通知**", region: "📍 **機体＋地方通知**", airport: "🏢 **空港ウォッチ**", equipment: "🔔 **機材投入通知**" };
     const buttonLabels = {
       aircraft: ["機体を通知登録", "機体の登録一覧", "機体の登録解除"],
+      region: ["機体・地方を通知登録", "機体・地方の登録一覧", "機体・地方の登録解除"],
       airport: ["空港周辺を通知登録", "空港の登録一覧", "空港の登録解除"],
       equipment: ["便・機材を通知登録", "便・機材の登録一覧", "便・機材の登録解除"],
     }[action];
@@ -1046,10 +1057,10 @@ function handlePersonalPanelButton(interaction) {
 
 function handlePersonalPanelAction(interaction) {
   const action = String(interaction.data.custom_id || "").split("|")[1] || "";
-  if (["aircraft_add", "aircraft_remove", "destination_add", "destination_remove", "airport_add", "airport_remove", "equipment_add", "equipment_remove"].includes(action)) {
+  if (["aircraft_add", "aircraft_remove", "region_add", "region_remove", "destination_add", "destination_remove", "airport_add", "airport_remove", "equipment_add", "equipment_remove"].includes(action)) {
     return json({ type: 9, data: personalModal(action) });
   }
-  if (["aircraft_list", "destination_list", "airport_list", "equipment_list", "summary", "settings_toggle", "filters_reset"].includes(action)) {
+  if (["aircraft_list", "region_list", "destination_list", "airport_list", "equipment_list", "summary", "settings_toggle", "filters_reset"].includes(action)) {
     return personalBridge(interaction, action);
   }
   if (action === "channel_delete_confirm") return personalBridge(interaction, "channel_delete");
@@ -1065,6 +1076,8 @@ function personalModalSubmit(interaction) {
   const args = {
     aircraft_add: [values.aircraft, values.level || "NORMAL"],
     aircraft_remove: [values.aircraft],
+    region_add: [values.aircraft, values.region],
+    region_remove: [values.aircraft, values.region],
     destination_add: [values.aircraft, values.destination],
     destination_remove: [values.rule_id],
     airport_add: [values.airport, values.radius || "50"],

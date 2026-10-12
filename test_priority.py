@@ -551,6 +551,48 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual({event["user_id"] for event in events}, {"100", "200"})
         self.assertEqual({event["event_key"] for event in events}, {"100:abc123", "200:abc123"})
 
+    def test_personal_aircraft_region_rule_only_matches_selected_region(self):
+        kyushu = ["abc123", "ANA101", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
+        kanto = ["abc123", "ANA101", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        settings = {"123": {
+            "enabled": True,
+            "aircraft": {},
+            "region_alerts": {
+                "abc123": {"label": "JA738B", "type": "B738", "regions": ["kyushu"]},
+            },
+        }}
+        events, notified = monitor.find_personal_special_events([kyushu], settings, {}, 100)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["alert_kind"], "region")
+        self.assertEqual(events[0]["target_region"], "kyushu")
+        self.assertEqual(events[0]["region"], "九州")
+        self.assertIn("region:123:abc123:kyushu", notified)
+        events, _ = monitor.find_personal_special_events(
+            [kyushu], settings, notified, 100 + monitor.RENOTIFY_SECONDS + 1
+        )
+        self.assertEqual(events, [])
+        events, _ = monitor.find_personal_special_events([kanto], settings, {}, 100)
+        self.assertEqual(events, [])
+
+    def test_personal_region_rule_does_not_duplicate_regular_aircraft_alert(self):
+        kyushu = ["abc123", "ANA101", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
+        settings = {"123": {
+            "enabled": True,
+            "aircraft": {"abc123": {"label": "JA738B", "type": "B738"}},
+            "region_alerts": {
+                "abc123": {"label": "JA738B", "type": "B738", "regions": ["kyushu"]},
+            },
+        }}
+        events, _ = monitor.find_personal_special_events([kyushu], settings, {}, 100)
+        self.assertEqual(len(events), 1)
+        self.assertNotEqual(events[0].get("alert_kind"), "region")
+
+    def test_tracked_icaos_include_region_only_aircraft(self):
+        tracked = monitor._tracked_icaos({}, {
+            "123": {"aircraft": {}, "region_alerts": {"abc123": {"regions": ["kyushu"]}}},
+        })
+        self.assertEqual(tracked, {"abc123"})
+
     def test_personal_event_queue_deduplicates_event_key(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "events.json")
