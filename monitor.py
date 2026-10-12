@@ -111,6 +111,7 @@ PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.j
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 SYSTEM_ALERT_STATE_PATH = os.path.join(BASE_DIR, "system_alert_state.json")
 FLIGHT_CONTEXT_STATE_PATH = os.path.join(BASE_DIR, "flight_context_state.json")
+PHOTO_CACHE_PATH = os.path.join(BASE_DIR, "photo_cache.json")
 SYSTEM_ALERT_COOLDOWN = 6 * 60 * 60
 # launchd本体とself-hosted Actionsのcheckout先が異なっても同じロックを使う。
 MONITOR_LOCK_PATH = os.environ.get(
@@ -139,8 +140,14 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 5
 REQUEST_TIMEOUT = 15  # 秒
 
-# 写真取得は通知を遅らせないよう短めのタイムアウトでリトライなし
-PHOTO_TIMEOUT = 5
+# 写真取得は通知を遅らせないよう短めにし、失敗時は保存済み写真へ戻す。
+PHOTO_TIMEOUT = 3
+PHOTO_MAX_ATTEMPTS = 2
+PHOTO_CACHE_SECONDS = 7 * 24 * 60 * 60
+PLANESPOTTERS_USER_AGENT = os.environ.get(
+    "PLANESPOTTERS_USER_AGENT",
+    "aircraft-alert/1.1 (+https://github.com/japaneseeeeeee/dont-have-name-now-by-me)",
+)
 ROUTE_TIMEOUT = 5
 CALLSIGN_TIMEOUT = 5
 CALLSIGN_CACHE_SECONDS = 10 * 60
@@ -189,6 +196,7 @@ logger = logging.getLogger("aircraft-alert")
 _callsign_cache = {}
 _route_cache = {}
 _flight_observations = {}
+_photo_cache = None
 
 
 def normalize_priority(value):
@@ -772,30 +780,92 @@ def compass(deg):
     return _COMPASS[int((deg + 22.5) // 45) % 8]
 
 
-def fetch_photo(icao24):
-    """Planespotters の公開APIから機体写真を1枚取得する。なければNone。"""
+def _load_photo_cache():
+    """写真キャッシュを初回だけ読み込み、壊れていても空の状態で継続する。"""
+    global _photo_cache
+    if _photo_cache is None:
+        raw = load_shared_json(PHOTO_CACHE_PATH, {})
+        _photo_cache = raw if isinstance(raw, dict) else {}
+    return _photo_cache
+
+
+def _cached_photo(icao24):
+    entry = _load_photo_cache().get(icao24)
+    if not isinstance(entry, dict):
+        return None, 0
+    photo = entry.get("photo")
+    if not isinstance(photo, dict) or not photo.get("src"):
+        return None, 0
     try:
-        r = requests.get(
-            f"https://api.planespotters.net/pub/photos/hex/{icao24}",
-            timeout=PHOTO_TIMEOUT,
-            headers={"User-Agent": "aircraft-alert/1.0"},
-        )
-        if r.status_code != 200:
-            return None
-        photos = r.json().get("photos") or []
-        if not photos:
-            return None
-        p = photos[0]
-        thumb = (p.get("thumbnail_large") or p.get("thumbnail") or {}).get("src")
-        if not thumb:
-            return None
-        return {
-            "src": thumb,
-            "link": p.get("link"),
-            "photographer": p.get("photographer"),
-        }
-    except (requests.RequestException, ValueError):
+        cached_at = float(entry.get("cached_at") or 0)
+    except (TypeError, ValueError):
+        cached_at = 0
+    return photo, cached_at
+
+
+def _store_photo_cache(icao24, photo, now):
+    cache = _load_photo_cache()
+    cache[icao24] = {"photo": photo, "cached_at": now}
+    save_shared_json(PHOTO_CACHE_PATH, cache)
+
+
+def fetch_photo(icao24, now=None):
+    """Planespottersから写真を取得し、一時障害時は保存済み写真を返す。"""
+    key = str(icao24 or "").strip().lower()
+    if not key:
         return None
+    current_time = time.time() if now is None else float(now)
+    cached, cached_at = _cached_photo(key)
+    if cached and current_time - cached_at < PHOTO_CACHE_SECONDS:
+        return cached
+
+    url = f"https://api.planespotters.net/pub/photos/hex/{key}"
+    for attempt in range(PHOTO_MAX_ATTEMPTS):
+        try:
+            response = requests.get(
+                url,
+                timeout=PHOTO_TIMEOUT,
+                headers={"User-Agent": PLANESPOTTERS_USER_AGENT},
+            )
+            if response.status_code == 200:
+                photos = response.json().get("photos") or []
+                if not photos:
+                    return cached
+                item = photos[0]
+                thumbnail = (
+                    item.get("thumbnail_large") or item.get("thumbnail") or {}
+                ).get("src")
+                if not thumbnail:
+                    return cached
+                photo = {
+                    "src": thumbnail,
+                    "link": item.get("link"),
+                    "photographer": item.get("photographer"),
+                }
+                _store_photo_cache(key, photo, current_time)
+                return photo
+
+            retryable = response.status_code == 429 or response.status_code >= 500
+            logger.warning(
+                "写真API応答エラー: %s / HTTP %s%s",
+                key,
+                response.status_code,
+                "（保存済み写真を使用）" if cached else "",
+            )
+            if not retryable:
+                break
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning(
+                "写真取得に失敗: %s (%d/%d)%s: %s",
+                key,
+                attempt + 1,
+                PHOTO_MAX_ATTEMPTS,
+                "（保存済み写真を使用）" if cached else "",
+                exc,
+            )
+        if attempt + 1 < PHOTO_MAX_ATTEMPTS:
+            time.sleep(0.2)
+    return cached
 
 
 def fetch_route(callsign):

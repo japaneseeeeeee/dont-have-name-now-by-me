@@ -13,6 +13,52 @@ class PriorityTests(unittest.TestCase):
     def setUp(self):
         monitor._callsign_cache.clear()
         monitor._route_cache.clear()
+        monitor._photo_cache = None
+
+    def test_photo_request_has_required_contact_and_is_cached(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "photos": [{
+                "thumbnail_large": {"src": "https://example.com/ja755a.jpg"},
+                "link": "https://example.com/photo",
+                "photographer": "Test Photographer",
+            }]
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = os.path.join(temp_dir, "photo_cache.json")
+            with (
+                patch.object(monitor, "PHOTO_CACHE_PATH", cache_path),
+                patch.object(monitor.requests, "get", return_value=response) as request,
+            ):
+                first = monitor.fetch_photo("868710", now=100)
+                second = monitor.fetch_photo("868710", now=101)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["src"], "https://example.com/ja755a.jpg")
+        self.assertEqual(request.call_count, 1)
+        user_agent = request.call_args.kwargs["headers"]["User-Agent"]
+        self.assertIn("https://", user_agent)
+
+    def test_photo_uses_stale_cache_when_api_is_temporarily_unavailable(self):
+        cached_photo = {
+            "src": "https://example.com/cached.jpg",
+            "link": None,
+            "photographer": "Cached Photographer",
+        }
+        monitor._photo_cache = {
+            "868710": {"photo": cached_photo, "cached_at": 1},
+        }
+        response = Mock(status_code=503)
+        with (
+            patch.object(monitor.requests, "get", return_value=response) as request,
+            patch.object(monitor.time, "sleep"),
+        ):
+            result = monitor.fetch_photo(
+                "868710", now=monitor.PHOTO_CACHE_SECONDS + 10,
+            )
+
+        self.assertEqual(result, cached_photo)
+        self.assertEqual(request.call_count, monitor.PHOTO_MAX_ATTEMPTS)
 
     def test_old_entries_default_to_normal(self):
         self.assertEqual(monitor.effective_priority({"label": "JA0001"}, now=100), "NORMAL")
