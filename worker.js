@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-13-watchlist-filter-v6";
+const WORKER_BUILD = "2026-10-13-watchlist-filter-v7";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -205,7 +205,12 @@ export default {
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("menu_modal|")) {
       const command = String(interaction.data.custom_id).split("|")[1] || "";
       const synthetic = menuModalToCommand(interaction, command);
-      if (command === "list-filter") return directListResponse(synthetic, env, ctx);
+      if (command === "list-filter") {
+        return directListResponse(synthetic, env, ctx, {
+          includeComponents: false,
+          includeLiveries: false,
+        });
+      }
       ctx.waitUntil(processCommand(synthetic, env));
       return json({ type: 5, data: { flags: 64 } });
     }
@@ -437,11 +442,13 @@ function visibleMessageData(message, extra = {}) {
   return payload;
 }
 
-async function directListResponse(interaction, env, ctx) {
+async function directListResponse(interaction, env, ctx, responseOptions = {}) {
+  const includeComponents = responseOptions.includeComponents !== false;
+  const includeLiveries = responseOptions.includeLiveries !== false;
   let message;
   try {
     message = await withTimeout(
-      cmdList(optionsOf(interaction), env, { immediate: true, ctx }),
+      cmdList(optionsOf(interaction), env, { immediate: true, ctx, includeLiveries }),
       INTERACTION_RESPONSE_TIMEOUT_MS,
       "list response timed out",
     );
@@ -449,7 +456,9 @@ async function directListResponse(interaction, env, ctx) {
     console.error("direct list failed:", (err && err.stack) || err);
     message = { content: TEMPORARILY_UNAVAILABLE, components: [] };
   }
-  return json({ type: 4, data: visibleMessageData(message, { flags: 64 }) });
+  const visible = visibleMessageData(message, { flags: 64 });
+  if (!includeComponents) delete visible.components;
+  return json({ type: 4, data: visible });
 }
 
 async function handleListPageInteraction(interaction, env, ctx) {
@@ -1539,9 +1548,12 @@ async function cmdInfo(o, env, interaction = null) {
 }
 
 async function cmdList(o, env, displayContext = {}) {
+  const includeLiveries = displayContext.includeLiveries !== false;
   const [data, liveries] = await Promise.all([
     readWatchlistForDisplay(env, displayContext),
-    withTimeout(readLiveries(env), 600, "livery display timed out").catch(() => ({})),
+    includeLiveries
+      ? withTimeout(readLiveries(env), 600, "livery display timed out").catch(() => ({}))
+      : Promise.resolve({}),
   ]);
   const aircraftFilter = String(o.aircraft || "").trim();
   const allItems = Object.entries(data)
