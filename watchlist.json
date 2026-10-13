@@ -1,4 +1,8 @@
 {
+  "424267": {
+    "label": "VP-BMS",
+    "type": "Airbus A340 541"
+  },
   "600801": {
     "label": "4K-8888",
     "type": "AIRBUS A-319"
@@ -835,10 +839,6 @@
     "label": "79-0434",
     "type": "McDonnell Douglas KC-10A"
   },
-  "ae6a6d": {
-    "label": "79-1711",
-    "type": "McDonnell Douglas KC-10A"
-  },
   "ae020b": {
     "label": "79-1713",
     "type": "McDonnell Douglas KC-10A"
@@ -1070,6 +1070,10 @@
   "ae503d": {
     "label": "09-0540",
     "type": "Boeing C-40C"
+  },
+  "ae6a6d": {
+    "label": "79-1711",
+    "type": "McDonnell Douglas KC-10A"
   },
   "ae6bd7": {
     "label": "85-0073",
