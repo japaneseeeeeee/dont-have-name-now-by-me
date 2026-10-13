@@ -11,7 +11,7 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
   watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton,
-  withTimeout };`;
+  withTimeout, directListResponse, handleListPageInteraction };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -20,7 +20,7 @@ await assert.rejects(
   /test timeout/,
 );
 
-const filterButtonResponse = worker.handleMenuButton({
+const filterButtonResponse = await worker.handleMenuButton({
   data: { custom_id: "menu|list-filter" },
 }, {}, {});
 const filterButtonPayload = await filterButtonResponse.json();
@@ -152,6 +152,8 @@ Object.assign(watchlist, {
   b77w01: { label: "ER-TEST", type: "Boeing 777-300ER" },
   b77301: { label: "NONER-TEST", type: "Boeing 777-300" },
   a35901: { label: "A350-TEST", type: "Airbus A350-941" },
+  a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
+  a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
 });
 result = await worker.cmdList({ page: 1, aircraft: "77W" }, env);
 assert.match(result.content, /機種絞り込み：`77W`/);
@@ -167,11 +169,17 @@ result = await worker.cmdList({ page: 1, aircraft: "359" }, env);
 assert.match(result.content, /A350-TEST/);
 result = await worker.cmdList({ page: 1, aircraft: "Boeing 777-300ER" }, env);
 assert.match(result.content, /ER-TEST/);
+result = await worker.cmdList({ page: 1, aircraft: "a340" }, env);
+assert.match(result.content, /A340-300-TEST/);
+assert.match(result.content, /A340-600-TEST/);
+assert.doesNotMatch(result.content, /A350-TEST/);
 result = await worker.cmdList({ page: 1, aircraft: "ZZZZ" }, env);
 assert.match(result.content, /一致する登録機はありません/);
 delete watchlist.b77w01;
 delete watchlist.b77301;
 delete watchlist.a35901;
+delete watchlist.a34001;
+delete watchlist.a34002;
 
 result = await worker.cmdPriority({ aircraft: "JA0001", level: "WATCH" }, env);
 assert.match(result.content, /WATCH/);
@@ -454,6 +462,20 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
+Object.assign(watchlist, {
+  a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
+  a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
+});
+const directListPayload = await (await worker.directListResponse({
+  data: { options: [{ name: "aircraft", value: "A340" }] },
+}, env)).json();
+assert.equal(directListPayload.type, 4);
+assert.equal(directListPayload.data.flags, 64);
+assert.match(directListPayload.data.content, /機種絞り込み：`A340`/);
+assert.match(directListPayload.data.content, /A340-300-TEST/);
+assert.match(directListPayload.data.content, /A340-600-TEST/);
+delete watchlist.a34001;
+delete watchlist.a34002;
 
 const registeredCommands = JSON.parse(await fs.readFile(new URL("./worker/commands.json", import.meta.url), "utf8"));
 const listCommand = registeredCommands.find((command) => command.name === "list");

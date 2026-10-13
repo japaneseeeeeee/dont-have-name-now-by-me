@@ -15,7 +15,7 @@
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-13-watchlist-filter-v3";
+const WORKER_BUILD = "2026-10-13-watchlist-filter-v4";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -38,6 +38,7 @@ let liveryCache = { key: "", expiresAt: 0, data: {} };
 let watchlistCache = { key: "", expiresAt: 0, data: {}, sha: null };
 const COMMAND_TIMEOUT_MS = 12000;
 const GITHUB_READ_TIMEOUT_MS = 4000;
+const INTERACTION_RESPONSE_TIMEOUT_MS = 2400;
 
 // IATA航空会社コード → ICAOコード(コールサインの先頭3文字)。足りない会社は追記してよい。
 // (GitHub側の lib.py の IATA_TO_ICAO と同じ内容)
@@ -122,8 +123,7 @@ export default {
       interaction.data?.custom_id === "listselect" ||
       interaction.data?.custom_id?.startsWith("listselect|")
     )) {
-      ctx.waitUntil(processListPageButton(interaction, env));
-      return json({ type: 6 });
+      return handleListPageInteraction(interaction, env);
     }
 
     // 空港発着予定の省略分を、同じ条件のまま全便表示する。
@@ -203,6 +203,7 @@ export default {
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("menu_modal|")) {
       const command = String(interaction.data.custom_id).split("|")[1] || "";
       const synthetic = menuModalToCommand(interaction, command);
+      if (command === "list-filter") return directListResponse(synthetic, env);
       ctx.waitUntil(processCommand(synthetic, env));
       return json({ type: 5, data: { flags: 64 } });
     }
@@ -427,6 +428,53 @@ function withTimeout(promise, timeoutMs, message = "operation timed out") {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function visibleMessageData(message, extra = {}) {
+  const { followups: _followups, ...visible } = message || {};
+  const payload = { allowed_mentions: { parse: [] }, ...extra, ...visible };
+  if (payload.content) payload.content = payload.content.slice(0, 2000);
+  return payload;
+}
+
+async function directListResponse(interaction, env) {
+  let message;
+  try {
+    message = await withTimeout(
+      cmdList(optionsOf(interaction), env),
+      INTERACTION_RESPONSE_TIMEOUT_MS,
+      "list response timed out",
+    );
+  } catch (err) {
+    console.error("direct list failed:", (err && err.stack) || err);
+    message = { content: TEMPORARILY_UNAVAILABLE, components: [] };
+  }
+  return json({ type: 4, data: visibleMessageData(message, { flags: 64 }) });
+}
+
+async function handleListPageInteraction(interaction, env) {
+  let message;
+  try {
+    const customId = String(interaction.data?.custom_id || "");
+    const parts = customId.split("|");
+    const isSelect = parts[0] === "listselect";
+    const selected = isSelect ? interaction.data?.values?.[0] : parts[1];
+    let aircraft = "";
+    try {
+      aircraft = decodeURIComponent(parts[isSelect ? 1 : 2] || "");
+    } catch {
+      aircraft = "";
+    }
+    message = await withTimeout(
+      cmdList({ page: Number(selected) || 1, aircraft }, env),
+      INTERACTION_RESPONSE_TIMEOUT_MS,
+      "list page response timed out",
+    );
+  } catch (err) {
+    console.error("direct list page failed:", (err && err.stack) || err);
+    message = { content: TEMPORARILY_UNAVAILABLE, components: [] };
+  }
+  return json({ type: 7, data: visibleMessageData(message) });
+}
+
 async function processListPageButton(interaction, env) {
   try {
     const customId = String(interaction.data?.custom_id || "");
@@ -571,9 +619,7 @@ async function processInfoButton(interaction, env) {
 }
 
 async function editOriginal(interaction, message) {
-  const { followups: _followups, ...visibleMessage } = message;
-  const payload = { allowed_mentions: { parse: [] }, ...visibleMessage };
-  if (payload.content) payload.content = payload.content.slice(0, 2000);
+  const payload = visibleMessageData(message);
   const url = `${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -657,7 +703,7 @@ function cmdMenu() {
   };
 }
 
-function handleMenuButton(interaction, env, ctx) {
+async function handleMenuButton(interaction, env, ctx) {
   const action = String(interaction.data.custom_id || "").split("|")[1] || "";
   if (action === "admin") {
     return isAdministrator(interaction)
@@ -679,8 +725,7 @@ function handleMenuButton(interaction, env, ctx) {
   }
   if (action === "list") {
     const synthetic = { ...interaction, data: { name: "list", options: [] } };
-    ctx.waitUntil(processCommand(synthetic, env));
-    return json({ type: 5, data: { flags: 64 } });
+    return directListResponse(synthetic, env);
   }
   const modal = menuModal(action);
   return modal
@@ -1492,7 +1537,10 @@ async function cmdInfo(o, env, interaction = null) {
 }
 
 async function cmdList(o, env) {
-  const [{ data }, liveries] = await Promise.all([readWatchlist(env), readLiveries(env)]);
+  const [data, liveries] = await Promise.all([
+    readWatchlistForDisplay(env),
+    withTimeout(readLiveries(env), 600, "livery display timed out").catch(() => ({})),
+  ]);
   const aircraftFilter = String(o.aircraft || "").trim();
   const allItems = Object.entries(data)
     .map(([icao24, value]) => ({ icao24, ...normalize(value) }))
@@ -1847,6 +1895,44 @@ async function readCanonicalWatchlist() {
   const url = `https://raw.githubusercontent.com/${DEFAULT_GITHUB_REPO}/main/watchlist.json`;
   const data = await fetchJson(url, 5000);
   return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+}
+
+async function readWatchlistForDisplay(env) {
+  const repo = String(env.GITHUB_REPO || DEFAULT_GITHUB_REPO).trim();
+  const branch = branchOf(env);
+  const key = `${repo}@${branch}`;
+  const hasCache = (
+    watchlistCache.key === key &&
+    watchlistCache.expiresAt > Date.now() &&
+    Object.keys(watchlistCache.data).length > 0
+  );
+
+  // Discordの初回応答は3秒以内。Contents APIとraw配信を並行して読み、
+  // 先に取得できた正しいJSONを使うことで「考え中」のまま残るのを防ぐ。
+  const apiRead = readWatchlist(env).then(({ data }) => data);
+  const rawRead = (async () => {
+    const url = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(branch)}/watchlist.json`;
+    const data = await fetchJson(url, 1800);
+    if (!data || typeof data !== "object" || Array.isArray(data) || Object.keys(data).length === 0) {
+      throw new Error("raw watchlist unavailable");
+    }
+    return data;
+  })();
+  const candidates = [apiRead, rawRead];
+  if (hasCache) {
+    candidates.push(new Promise((resolve) => setTimeout(
+      () => resolve(JSON.parse(JSON.stringify(watchlistCache.data))),
+      250,
+    )));
+  }
+  const data = await Promise.any(candidates);
+  watchlistCache = {
+    key,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    data: JSON.parse(JSON.stringify(data)),
+    sha: watchlistCache.key === key ? watchlistCache.sha : null,
+  };
+  return data;
 }
 
 // mutate(data) が { changed: true } を返したときだけ書き込む。他と衝突したら読み直して再試行する
