@@ -245,6 +245,10 @@
     "label": "A7-MSD",
     "type": "Boeing 777-2KQ(LR)"
   },
+  "0a402d": {
+    "label": "7T-VPP",
+    "type": "Airbus A340 541"
+  },
   "0d09d0": {
     "label": "XA-ADL",
     "type": "Boeing 787 9"
