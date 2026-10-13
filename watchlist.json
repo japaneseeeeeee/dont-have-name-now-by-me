@@ -321,6 +321,10 @@
     "label": "PH-BVA",
     "type": "Boeing 777-306ER"
   },
+  "4b8c2e": {
+    "label": "TC-CAN",
+    "type": "Airbus A340 542"
+  },
   "4bb0e8": {
     "label": "TC-LGH",
     "type": "Boeing 777-300ER"
