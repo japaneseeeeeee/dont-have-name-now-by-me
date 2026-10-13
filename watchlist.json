@@ -353,6 +353,10 @@
     "label": "EI-IFD",
     "type": "Airbus A350-941"
   },
+  "4d214a": {
+    "label": "9H-BIG",
+    "type": "Airbus A340 312X"
+  },
   "600bc0": {
     "label": "4K-AI08",
     "type": "AIRBUS A-340-600"
