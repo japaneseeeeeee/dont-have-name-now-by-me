@@ -15,6 +15,7 @@
  */
 
 const UA = "aircraft-alert-worker/1.0";
+const WORKER_BUILD = "2026-10-13-watchlist-filter-v3";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -60,7 +61,7 @@ const IATA_TO_ICAO = {
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== "POST") {
-      return new Response("aircraft-alert worker is running.", { status: 200 });
+      return new Response(`aircraft-alert worker is running. build=${WORKER_BUILD}`, { status: 200 });
     }
 
     const body = await request.text();

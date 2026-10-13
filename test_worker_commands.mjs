@@ -6,6 +6,7 @@ source = source.replace("export default {", "const workerDefault = {");
 source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority, cmdSpecial,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModal, menuModalToCommand,
+  handleMenuButton,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
@@ -18,6 +19,13 @@ await assert.rejects(
   worker.withTimeout(new Promise(() => {}), 5, "test timeout"),
   /test timeout/,
 );
+
+const filterButtonResponse = worker.handleMenuButton({
+  data: { custom_id: "menu|list-filter" },
+}, {}, {});
+const filterButtonPayload = await filterButtonResponse.json();
+assert.equal(filterButtonPayload.type, 9);
+assert.equal(filterButtonPayload.data.custom_id, "menu_modal|list-filter");
 
 const env = { GITHUB_REPO: "example/repo", GITHUB_TOKEN: "test", GITHUB_BRANCH: "main" };
 const interaction = { channel_id: "123" };
