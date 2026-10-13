@@ -2272,6 +2272,8 @@ class GeneralMenuView(discord.ui.View):
 
     @discord.ui.button(label="サーバー登録機を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="menu|list", row=1)
     async def list_aircraft(self, interaction, button): pass
+    @discord.ui.button(label="登録機を機種で絞る", emoji="🔎", style=discord.ButtonStyle.primary, custom_id="menu|list-filter", row=1)
+    async def filter_aircraft(self, interaction, button): pass
     @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|help", row=1)
     async def help(self, interaction, button): pass
     @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="menu|refresh", row=1)

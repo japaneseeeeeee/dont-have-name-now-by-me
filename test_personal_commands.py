@@ -128,6 +128,11 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
         self.assertEqual(buttons["機体＋地方通知"], "personal_panel:region")
 
+    def test_general_menu_has_watchlist_aircraft_filter_button(self):
+        view = discord_bot.GeneralMenuView()
+        buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
+        self.assertEqual(buttons["登録機を機種で絞る"], "menu|list-filter")
+
     def test_personal_region_aliases_and_rule_count(self):
         self.assertEqual(discord_bot.normalize_personal_region("九州"), "kyushu")
         self.assertEqual(discord_bot.normalize_personal_region("Kansai"), "kinki")
