@@ -210,7 +210,7 @@ class PriorityTests(unittest.TestCase):
             "flight_iata": "DL120",
         }
 
-        def route_for(callsign):
+        def route_for(callsign, _icao24=None):
             return {"DAL294": wrong_route, "DAL120": correct_route}.get(callsign)
 
         with (
@@ -352,6 +352,74 @@ class PriorityTests(unittest.TestCase):
                 track=324, altitude=1935, vertical_rate=13,
             )
         self.assertEqual(verified["_confidence"], "high")
+
+    def test_haneda_departure_corrects_stale_narita_origin(self):
+        route = {
+            "origin": {
+                "iata_code": "NRT", "name": "Narita International Airport",
+                "latitude": 35.7720, "longitude": 140.3929,
+            },
+            "destination": {
+                "iata_code": "DFW", "name": "Dallas Fort Worth International Airport",
+                "latitude": 32.8998, "longitude": -97.0403,
+            },
+            "flight_iata": "AA176",
+        }
+        with (
+            patch("monitor.fetch_route_cached", return_value=route),
+            patch("monitor.fetch_fallback_callsign", return_value="AAL176"),
+        ):
+            _, corrected = monitor.resolve_flight_context(
+                "a9ddb0", "AAL176", 35.591, 139.774,
+                track=355, altitude=549, vertical_rate=11.4,
+            )
+        self.assertEqual(corrected["origin"]["iata_code"], "HND")
+        self.assertEqual(corrected["destination"]["iata_code"], "DFW")
+        self.assertEqual(corrected["_scheduled_origin"]["iata_code"], "NRT")
+        self.assertEqual(corrected["_confidence"], "corrected")
+
+        aircraft = ["a9ddb0", "AAL176", None, None, None, 139.774, 35.591, 549, False, 103, 355, 11.4]
+        embed = monitor.build_embed(
+            "a9ddb0", {"label": "N735AT", "type": "B77W"}, aircraft, route=corrected,
+        )
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+        self.assertIn("区間(実測補正)", fields)
+        self.assertIn("Haneda (HND) → Dallas Fort Worth International Airport (DFW)", fields["区間(実測補正)"])
+        self.assertIn("予定情報は Narita (NRT) 発", fields["区間(実測補正)"])
+
+    def test_cruising_aircraft_does_not_override_scheduled_origin(self):
+        route = {
+            "origin": {"iata_code": "NRT", "latitude": 35.7720, "longitude": 140.3929},
+            "destination": {"iata_code": "DFW", "latitude": 32.8998, "longitude": -97.0403},
+        }
+        unchanged = monitor.reconcile_route_departure(
+            route, 35.591, 139.774, track=355, altitude=10000, vertical_rate=5,
+        )
+        self.assertIs(unchanged, route)
+
+    def test_go_around_does_not_turn_destination_into_origin(self):
+        route = {
+            "origin": {"iata_code": "ITM", "latitude": 34.7855, "longitude": 135.4382},
+            "destination": {"iata_code": "HND", "latitude": 35.5494, "longitude": 139.7798},
+        }
+        unchanged = monitor.reconcile_route_departure(
+            route, 35.591, 139.774, track=355, altitude=549, vertical_rate=11.4,
+        )
+        self.assertIs(unchanged, route)
+
+    def test_route_cache_is_separated_by_aircraft_and_japan_date(self):
+        route = {
+            "origin": {"iata_code": "HND"},
+            "destination": {"iata_code": "DFW"},
+        }
+        first_day = datetime(2026, 10, 13, 3, 0, tzinfo=timezone.utc).timestamp()
+        next_day = datetime(2026, 10, 14, 3, 0, tzinfo=timezone.utc).timestamp()
+        with patch("monitor.fetch_route", return_value=route) as mocked:
+            self.assertIs(monitor.fetch_route_cached("AAL176", "a9ddb0", first_day), route)
+            self.assertIs(monitor.fetch_route_cached("AAL176", "a9ddb0", first_day), route)
+            self.assertIs(monitor.fetch_route_cached("AAL176", "abcdef", first_day), route)
+            self.assertIs(monitor.fetch_route_cached("AAL176", "a9ddb0", next_day), route)
+        self.assertEqual(mocked.call_count, 3)
 
     def test_missing_opensky_callsign_is_filled_from_secondary_adsb(self):
         response = Mock(status_code=200)

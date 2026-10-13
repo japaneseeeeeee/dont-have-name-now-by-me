@@ -153,6 +153,10 @@ CALLSIGN_TIMEOUT = 5
 CALLSIGN_CACHE_SECONDS = 10 * 60
 CALLSIGN_NEGATIVE_CACHE_SECONDS = 90
 ROUTE_CACHE_SECONDS = 30 * 60
+DEPARTURE_AIRPORT_RADIUS_KM = 20
+DEPARTURE_MAX_ALTITUDE_M = 2000
+DEPARTURE_MIN_VERTICAL_RATE_MPS = 1
+DEPARTURE_MAX_HEADING_DIFFERENCE = 70
 FLIGHT_CONTEXT_MAX_GAP_SECONDS = 45 * 60
 FLIGHT_CONTEXT_RETENTION_SECONDS = 6 * 60 * 60
 FLIGHT_CONTEXT_STABLE_OBSERVATIONS = 3
@@ -1015,16 +1019,96 @@ def fetch_fallback_callsign(icao24):
     return callsign
 
 
-def fetch_route_cached(callsign):
+def fetch_route_cached(callsign, icao24=None, now=None):
+    """同じ便名でも日付・機体が異なるルートを混同しないように保存する。"""
     key = str(callsign or "").strip().upper()
     if not key:
         return None
-    cached, value = _cache_get(_route_cache, key)
+    aircraft_key = str(icao24 or "").strip().lower()
+    current_time = time.time() if now is None else float(now)
+    japan_time = timezone(timedelta(hours=9))
+    flight_day = datetime.fromtimestamp(current_time, japan_time).date().isoformat()
+    cache_key = (key, flight_day, aircraft_key)
+    cached, value = _cache_get(_route_cache, cache_key)
     if cached:
         return value
     route = fetch_route(key)
-    _route_cache[key] = (time.monotonic() + ROUTE_CACHE_SECONDS, route)
+    _route_cache[cache_key] = (time.monotonic() + ROUTE_CACHE_SECONDS, route)
     return route
+
+
+def _airport_code(airport):
+    if not isinstance(airport, dict):
+        return ""
+    return str(airport.get("iata_code") or "").strip().upper()
+
+
+def observed_departure_airport(lat, lon, track=None, altitude=None, vertical_rate=None):
+    """離陸直後の位置・高度・上昇方向から、実際に離陸した主要空港を求める。"""
+    try:
+        lat_value, lon_value = float(lat), float(lon)
+        altitude_value = float(altitude)
+        vertical_rate_value = float(vertical_rate)
+    except (TypeError, ValueError):
+        return None
+    if altitude_value > DEPARTURE_MAX_ALTITUDE_M:
+        return None
+    if vertical_rate_value < DEPARTURE_MIN_VERTICAL_RATE_MPS:
+        return None
+
+    candidates = []
+    for code, (airport_lat, airport_lon, airport_name) in AIRPORT_WATCH_POINTS.items():
+        distance = haversine_km(lat_value, lon_value, airport_lat, airport_lon)
+        if distance <= DEPARTURE_AIRPORT_RADIUS_KM:
+            candidates.append((distance, code, airport_lat, airport_lon, airport_name))
+    if not candidates:
+        return None
+    distance, code, airport_lat, airport_lon, airport_name = min(candidates)
+
+    # 空港から十分離れた後は、機首が空港から現在地へ向かう方向と大きく
+    # 食い違う場合を除外する。空港上空では方位が不安定なので判定しない。
+    try:
+        track_value = float(track) % 360
+    except (TypeError, ValueError):
+        track_value = None
+    if track_value is not None and distance >= 2:
+        outbound_bearing = _initial_bearing(airport_lat, airport_lon, lat_value, lon_value)
+        if _heading_difference(track_value, outbound_bearing) > DEPARTURE_MAX_HEADING_DIFFERENCE:
+            return None
+
+    return {
+        "iata_code": code,
+        "name": AIRPORT_SHORT_NAMES.get(code) or airport_name,
+        "latitude": airport_lat,
+        "longitude": airport_lon,
+    }
+
+
+def reconcile_route_departure(route, lat, lon, track=None, altitude=None, vertical_rate=None):
+    """予定出発地と離陸直後の実測空港が違う場合だけ、安全に出発地を補正する。"""
+    if not isinstance(route, dict):
+        return route
+    observed = observed_departure_airport(
+        lat, lon, track=track, altitude=altitude, vertical_rate=vertical_rate,
+    )
+    if observed is None:
+        return route
+    scheduled_origin = route.get("origin") or {}
+    destination = route.get("destination") or {}
+    observed_code = _airport_code(observed)
+    scheduled_code = _airport_code(scheduled_origin)
+    destination_code = _airport_code(destination)
+    if not observed_code or observed_code == scheduled_code:
+        return route
+    # 到着空港付近で上昇するゴーアラウンドは、出発便として補正しない。
+    if observed_code == destination_code:
+        return route
+
+    corrected = dict(route)
+    corrected["origin"] = observed
+    corrected["_scheduled_origin"] = dict(scheduled_origin)
+    corrected["_origin_corrected"] = True
+    return corrected
 
 
 def resolve_flight_context(
@@ -1033,7 +1117,11 @@ def resolve_flight_context(
 ):
     """コールサインを補完し、現在位置と矛盾しない区間だけを返す。"""
     resolved = str(callsign or "").strip().upper()
-    route = fetch_route_cached(resolved) if resolved else None
+    route = fetch_route_cached(resolved, icao24) if resolved else None
+    route = reconcile_route_departure(
+        route, lat, lon, track=track, altitude=altitude,
+        vertical_rate=vertical_rate,
+    )
     verified_route = route if route_matches_position(
         route, lat, lon, track=track, altitude=altitude,
         vertical_rate=vertical_rate,
@@ -1045,7 +1133,11 @@ def resolve_flight_context(
     source_agreement = bool(resolved and fallback and resolved == fallback)
     fallback_verified = None
     if fallback and fallback != resolved:
-        fallback_route = fetch_route_cached(fallback)
+        fallback_route = fetch_route_cached(fallback, icao24)
+        fallback_route = reconcile_route_departure(
+            fallback_route, lat, lon, track=track, altitude=altitude,
+            vertical_rate=vertical_rate,
+        )
         fallback_verified = fallback_route if route_matches_position(
             fallback_route, lat, lon, track=track, altitude=altitude,
             vertical_rate=vertical_rate,
@@ -1069,10 +1161,13 @@ def resolve_flight_context(
                 verified_route = None
 
     if verified_route is not None:
-        confidence = "high" if (
-            source_agreement
-            or (observation and observation.get("callsign_stable"))
-        ) else "estimated"
+        confidence = (
+            "corrected" if verified_route.get("_origin_corrected")
+            else "high" if (
+                source_agreement
+                or (observation and observation.get("callsign_stable"))
+            ) else "estimated"
+        )
         verified_route = dict(verified_route)
         verified_route["_confidence"] = confidence
 
@@ -1382,10 +1477,20 @@ def build_embed(
     ):
         flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
         confidence = route.get("_confidence")
-        field_name = "区間(高信頼)" if confidence == "high" else "区間(推定)"
+        field_name = (
+            "区間(高信頼)" if confidence == "high"
+            else "区間(実測補正)" if confidence == "corrected"
+            else "区間(推定)"
+        )
+        value = f"{flight}{format_airport(route['origin'])} → {format_airport(route['destination'])}"
+        if confidence == "corrected" and route.get("_scheduled_origin"):
+            value += (
+                f"\n予定情報は {format_airport(route['_scheduled_origin'])} 発でしたが、"
+                f"{format_airport(route['origin'])}付近からの上昇を検知したため補正"
+            )
         fields.append({
             "name": field_name,
-            "value": f"{flight}{format_airport(route['origin'])} → {format_airport(route['destination'])}",
+            "value": value,
             "inline": False,
         })
 

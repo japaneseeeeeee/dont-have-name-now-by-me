@@ -2337,12 +2337,23 @@ async def personal_special_dispatch():
             if route.get("origin") and route.get("destination"):
                 flight = f"{route['flight_iata']} · " if route.get("flight_iata") else ""
                 confidence = route.get("_confidence")
+                field_name = (
+                    "区間(高信頼)" if confidence == "high"
+                    else "区間(実測補正)" if confidence == "corrected"
+                    else "区間(推定)"
+                )
+                route_value = (
+                    f"{flight}{format_airport(route['origin'])} → "
+                    f"{format_airport(route['destination'])}"
+                )
+                if confidence == "corrected" and route.get("_scheduled_origin"):
+                    route_value += (
+                        f"\n予定情報は {format_airport(route['_scheduled_origin'])} 発でしたが、"
+                        f"{format_airport(route['origin'])}付近からの上昇を検知したため補正"
+                    )
                 embed.add_field(
-                    name="区間(高信頼)" if confidence == "high" else "区間(推定)",
-                    value=(
-                        f"{flight}{format_airport(route['origin'])} → "
-                        f"{format_airport(route['destination'])}"
-                    ),
+                    name=field_name,
+                    value=route_value,
                     inline=False,
                 )
             if event.get("altitude") is not None and not event.get("on_ground"):
