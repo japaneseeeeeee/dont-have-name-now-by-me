@@ -78,6 +78,12 @@
         "description": "ページ番号",
         "type": 4,
         "required": false
+      },
+      {
+        "name": "aircraft",
+        "description": "機種名・ICAO/IATAコード（例: B77W / 77W / A359 / 359）",
+        "type": 3,
+        "required": false
       }
     ]
   },

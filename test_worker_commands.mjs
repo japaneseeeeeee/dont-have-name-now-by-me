@@ -5,11 +5,11 @@ let source = await fs.readFile(new URL("./worker.js", import.meta.url), "utf8");
 source = source.replace("export default {", "const workerDefault = {");
 source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority, cmdSpecial,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
-  cmdMenu, adminPanel, adminModal, menuModalToCommand,
+  cmdMenu, adminPanel, adminModal, menuModal, menuModalToCommand,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
-  lookupLiveryName, lifecycleButtonSpec, processLifecycleButton };`;
+  watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -133,6 +133,31 @@ result = await worker.cmdFind({ keyword: "JA0001" }, env);
 assert.match(result.content, /JA0001/);
 result = await worker.cmdList({ page: 1 }, env);
 assert.match(result.content, /JA0001/);
+
+Object.assign(watchlist, {
+  b77w01: { label: "ER-TEST", type: "Boeing 777-300ER" },
+  b77301: { label: "NONER-TEST", type: "Boeing 777-300" },
+  a35901: { label: "A350-TEST", type: "Airbus A350-941" },
+});
+result = await worker.cmdList({ page: 1, aircraft: "77W" }, env);
+assert.match(result.content, /機種絞り込み：`77W`/);
+assert.match(result.content, /`ER-TEST`/);
+assert.doesNotMatch(result.content, /`NONER-TEST`/);
+assert.match(JSON.stringify(result.components), /listpage\|1\|77W/);
+assert.match(JSON.stringify(result.components), /listselect\|77W/);
+
+result = await worker.cmdList({ page: 1, aircraft: "B773" }, env);
+assert.match(result.content, /`NONER-TEST`/);
+assert.doesNotMatch(result.content, /`ER-TEST`/);
+result = await worker.cmdList({ page: 1, aircraft: "359" }, env);
+assert.match(result.content, /A350-TEST/);
+result = await worker.cmdList({ page: 1, aircraft: "Boeing 777-300ER" }, env);
+assert.match(result.content, /ER-TEST/);
+result = await worker.cmdList({ page: 1, aircraft: "ZZZZ" }, env);
+assert.match(result.content, /一致する登録機はありません/);
+delete watchlist.b77w01;
+delete watchlist.b77301;
+delete watchlist.a35901;
 
 result = await worker.cmdPriority({ aircraft: "JA0001", level: "WATCH" }, env);
 assert.match(result.content, /WATCH/);
@@ -402,10 +427,23 @@ registrationLookupStatus = 200;
 const menu = worker.cmdMenu();
 assert.match(menu.content, /航空機通知Botメニュー/);
 assert.match(JSON.stringify(menu.components), /現在の発着を見る/);
+assert.match(JSON.stringify(menu.components), /登録機を機種で絞る/);
 assert.doesNotMatch(JSON.stringify(menu.components), /日付を指定して発着を見る/);
 assert.doesNotMatch(JSON.stringify(menu.components), /航空会社で発着を絞る/);
 assert.match(worker.adminPanel().content, /管理画面/);
 assert.equal(worker.adminModal("priority").custom_id, "admin_modal|priority");
+assert.equal(worker.menuModal("list-filter").custom_id, "menu_modal|list-filter");
+const listFilterCommand = worker.menuModalToCommand({
+  data: {
+    components: [{ components: [{ custom_id: "aircraft", value: "77W" }] }],
+  },
+}, "list-filter");
+assert.equal(listFilterCommand.data.name, "list");
+assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
+
+const registeredCommands = JSON.parse(await fs.readFile(new URL("./worker/commands.json", import.meta.url), "utf8"));
+const listCommand = registeredCommands.find((command) => command.name === "list");
+assert.ok(listCommand.options.some((option) => option.name === "aircraft"));
 
 let response = worker.handlePersonalAlertButton({
   id: "1420070400000000000",

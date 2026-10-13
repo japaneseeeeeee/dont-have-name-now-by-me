@@ -115,7 +115,8 @@ export default {
     // 登録機一覧のページ移動（前へ・次へ・ページ選択）
     if (interaction.type === 3 && (
       interaction.data?.custom_id?.startsWith("listpage|") ||
-      interaction.data?.custom_id === "listselect"
+      interaction.data?.custom_id === "listselect" ||
+      interaction.data?.custom_id?.startsWith("listselect|")
     )) {
       ctx.waitUntil(processListPageButton(interaction, env));
       return json({ type: 6 });
@@ -413,10 +414,18 @@ async function processCommand(interaction, env) {
 async function processListPageButton(interaction, env) {
   try {
     const customId = String(interaction.data?.custom_id || "");
-    const selected = customId === "listselect"
+    const parts = customId.split("|");
+    const isSelect = parts[0] === "listselect";
+    const selected = isSelect
       ? interaction.data?.values?.[0]
-      : customId.split("|")[1];
-    const message = await cmdList({ page: Number(selected) || 1 }, env);
+      : parts[1];
+    let aircraft = "";
+    try {
+      aircraft = decodeURIComponent(parts[isSelect ? 1 : 2] || "");
+    } catch {
+      aircraft = "";
+    }
+    const message = await cmdList({ page: Number(selected) || 1, aircraft }, env);
     await editOriginal(interaction, message);
   } catch (err) {
     console.error("list page failed:", (err && err.stack) || err);
@@ -613,6 +622,7 @@ function cmdMenu() {
         type: 1,
         components: [
           { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "サーバー登録機を見る" },
+          { type: 2, style: 1, custom_id: "menu|list-filter", emoji: { name: "🔎" }, label: "登録機を機種で絞る" },
           { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "📖" }, label: "ボタンの説明" },
           { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "最新位置へ移動" },
           { type: 2, style: 4, custom_id: "menu|admin", emoji: { name: "⚙️" }, label: "管理者メニュー" },
@@ -639,7 +649,7 @@ function handleMenuButton(interaction, env, ctx) {
   if (action === "help") {
     return json({ type: 4, data: {
       flags: 64,
-      content: "✈️ **主な使い方**\n`機体を探して登録`：登録記号・便名・機種から検索して登録\n`機体の詳細を見る`：登録記号（小文字・ハイフンなし・一部分も可）またはICAO24の詳細を表示\n`飛行中の便を探す`：現在ADS-Bで確認できる便を検索\n`現在の発着を見る`：現在からの到着・出発便を表示（航空会社・機種で絞り込み可能）\n`サーバー登録機を見る`：watchlistを表示\n\n従来のスラッシュコマンドも引き続き利用できます。",
+      content: "✈️ **主な使い方**\n`機体を探して登録`：登録記号・便名・機種から検索して登録\n`機体の詳細を見る`：登録記号（小文字・ハイフンなし・一部分も可）またはICAO24の詳細を表示\n`飛行中の便を探す`：現在ADS-Bで確認できる便を検索\n`現在の発着を見る`：現在からの到着・出発便を表示（航空会社・機種で絞り込み可能）\n`サーバー登録機を見る`：watchlistを全件表示\n`登録機を機種で絞る`：ICAO/IATAコードや機種名でwatchlistを絞り込み\n\n例：`B77W` / `77W` / `Boeing 777-300ER` / `A359` / `359`\n従来のスラッシュコマンドも引き続き利用できます。",
     } });
   }
   if (action === "list") {
@@ -1102,6 +1112,12 @@ function menuModal(action) {
       title: "機体情報を表示",
       rows: [textInput("aircraft", "登録記号（一部分も可）またはICAO24", "例: JA784A / ja784a / JA78 / 867F7C", true, 20)],
     },
+    "list-filter": {
+      title: "サーバー登録機を機種で絞る",
+      rows: [
+        textInput("aircraft", "機種・ICAO/IATAコード", "例: B77W / 77W / A359 / 359", true, 40),
+      ],
+    },
     flight: {
       title: "運航中の便を検索",
       rows: [textInput("query", "便名・登録記号・ICAO24", "例: JL12 / JAL12 / JA784A", true, 50)],
@@ -1154,7 +1170,10 @@ function menuModalToCommand(interaction, command) {
       if (name === "enabled") return { name, value: ["on", "true", "1", "yes"].includes(value.toLowerCase()) };
       return { name, value };
     });
-  return { ...interaction, data: { name: ["airport-date", "airport-airline"].includes(command) ? "airport" : command, options } };
+  const commandName = ["airport-date", "airport-airline"].includes(command)
+    ? "airport"
+    : command === "list-filter" ? "list" : command;
+  return { ...interaction, data: { name: commandName, options } };
 }
 
 async function cmdAircraftSearch(o, env, interaction) {
@@ -1449,13 +1468,22 @@ async function cmdInfo(o, env, interaction = null) {
 
 async function cmdList(o, env) {
   const [{ data }, liveries] = await Promise.all([readWatchlist(env), readLiveries(env)]);
-  const items = Object.entries(data)
+  const aircraftFilter = String(o.aircraft || "").trim();
+  const allItems = Object.entries(data)
     .map(([icao24, value]) => ({ icao24, ...normalize(value) }))
     .sort((a, b) => a.label.toUpperCase().localeCompare(b.label.toUpperCase()));
-  if (items.length === 0) return { content: "watchlistは空です。" };
+  if (allItems.length === 0) return { content: "watchlistは空です。" };
+  const items = aircraftFilter
+    ? allItems.filter((item) => watchlistAircraftMatches(item, aircraftFilter))
+    : allItems;
+  if (items.length === 0) {
+    const safeFilter = aircraftFilter.replace(/`/g, "");
+    return { content: `⚠️ 機種 \`${safeFilter}\` に一致する登録機はありません。`, components: [] };
+  }
 
   const pages = Math.ceil(items.length / PAGE_SIZE);
   const page = Math.max(1, Math.min(Number(o.page) || 1, pages));
+  const encodedFilter = encodeURIComponent(aircraftFilter).slice(0, 80);
   const lines = items
     .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
     .map((x) => {
@@ -1469,20 +1497,23 @@ async function cmdList(o, env) {
     default: index + 1 === page,
   }));
   return {
-    content: `📋 watchlist 全${items.length}機(ページ ${page}/${pages})\n${lines.join("\n")}`.slice(0, 1990),
+    content: (
+      `📋 watchlist ${aircraftFilter ? `機種絞り込み：\`${aircraftFilter.replace(/`/g, "")}\`・` : ""}`
+      + `${items.length}機(ページ ${page}/${pages})\n${lines.join("\n")}`
+    ).slice(0, 1990),
     components: [
       {
         type: 1,
         components: [
-          { type: 2, style: 2, custom_id: `listpage|${Math.max(1, page - 1)}`, label: "◀ 前へ", disabled: page <= 1 },
-          { type: 2, style: 2, custom_id: `listpage|${Math.min(pages, page + 1)}`, label: "次へ ▶", disabled: page >= pages },
+          { type: 2, style: 2, custom_id: `listpage|${Math.max(1, page - 1)}|${encodedFilter}`, label: "◀ 前へ", disabled: page <= 1 },
+          { type: 2, style: 2, custom_id: `listpage|${Math.min(pages, page + 1)}|${encodedFilter}`, label: "次へ ▶", disabled: page >= pages },
         ],
       },
       {
         type: 1,
         components: [{
           type: 3,
-          custom_id: "listselect",
+          custom_id: `listselect|${encodedFilter}`,
           placeholder: "表示するページを選択",
           min_values: 1,
           max_values: 1,
@@ -2485,25 +2516,8 @@ function normalizeAircraftFilter(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-function airportAircraftTokens(item, movement) {
-  const aircraft = airportAircraft(item, movement);
-  const values = [
-    aircraft.model,
-    aircraft.type,
-    aircraft.typeName,
-    aircraft.typeCode,
-    aircraft.modelCode,
-    aircraft.iata,
-    aircraft.iataCode,
-    aircraft.iataTypeCode,
-    aircraft.icao,
-    aircraft.icaoCode,
-    aircraft.icaoTypeCode,
-    aircraft.reg,
-    aircraft.registration,
-    aircraft.modeS,
-    aircraft.icao24,
-  ].map(normalizeAircraftFilter).filter(Boolean);
+function aircraftTypeTokens(rawValues) {
+  const values = rawValues.map(normalizeAircraftFilter).filter(Boolean);
   const tokens = new Set(values);
   for (const value of values) {
     if (value.startsWith("BOEING")) {
@@ -2546,16 +2560,44 @@ function airportAircraftTokens(item, movement) {
   return tokens;
 }
 
-function airportAircraftMatches(item, movement, filter) {
+function aircraftTypeTokensMatch(tokens, filter) {
   const needle = normalizeAircraftFilter(filter);
   if (!needle) return true;
-  const tokens = airportAircraftTokens(item, movement);
   const is777300Er = [...tokens].some((value) =>
     value.includes("77W") || /7773[A-Z0-9]*ER/.test(value),
   );
   if (["773", "B773"].includes(needle) && is777300Er) return false;
   if (KNOWN_AIRCRAFT_TYPE_CODES.has(needle)) return tokens.has(needle);
   return [...tokens].some((value) => value.includes(needle));
+}
+
+function airportAircraftTokens(item, movement) {
+  const aircraft = airportAircraft(item, movement);
+  return aircraftTypeTokens([
+    aircraft.model,
+    aircraft.type,
+    aircraft.typeName,
+    aircraft.typeCode,
+    aircraft.modelCode,
+    aircraft.iata,
+    aircraft.iataCode,
+    aircraft.iataTypeCode,
+    aircraft.icao,
+    aircraft.icaoCode,
+    aircraft.icaoTypeCode,
+    aircraft.reg,
+    aircraft.registration,
+    aircraft.modeS,
+    aircraft.icao24,
+  ]);
+}
+
+function airportAircraftMatches(item, movement, filter) {
+  return aircraftTypeTokensMatch(airportAircraftTokens(item, movement), filter);
+}
+
+function watchlistAircraftMatches(item, filter) {
+  return aircraftTypeTokensMatch(aircraftTypeTokens([item.type]), filter);
 }
 
 function movementUtcTime(movement) {
