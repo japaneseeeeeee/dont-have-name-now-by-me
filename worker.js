@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-13-watchlist-filter-v5";
+const WORKER_BUILD = "2026-10-13-watchlist-filter-v6";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -2739,6 +2739,16 @@ function aircraftTypeTokensMatch(tokens, filter) {
   );
   if (["773", "B773"].includes(needle) && is777300Er) return false;
   if (KNOWN_AIRCRAFT_TYPE_CODES.has(needle)) return tokens.has(needle);
+  const generic = genericAircraftFamily(filter);
+  if (generic) {
+    const familyDefinition = GENERIC_AIRCRAFT_FAMILIES.find(([family]) => family === generic.family);
+    const aliases = familyDefinition?.[2] || [];
+    return [...tokens].some((token) => {
+      const known = AIRCRAFT_TYPE_DISPLAY_NAMES.get(token);
+      if (known?.[0] === generic.family) return true;
+      return aliases.some((alias) => token.startsWith(alias));
+    });
+  }
   return [...tokens].some((value) => value.includes(needle));
 }
 

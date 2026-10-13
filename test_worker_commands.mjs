@@ -178,6 +178,31 @@ result = await worker.cmdList({ page: 1, aircraft: "a340" }, env);
 assert.match(result.content, /A340-300-TEST/);
 assert.match(result.content, /A340-600-TEST/);
 assert.doesNotMatch(result.content, /A350-TEST/);
+
+// 系列名は、説明名だけでなくICAO/IATAコードだけの登録にも同じように一致する。
+for (const [query, type] of [
+  ["A220", "BCS3"],
+  ["A330", "A339"],
+  ["A340", "346"],
+  ["A350", "A35K"],
+  ["B747", "B748"],
+  ["B777", "77W"],
+  ["B787", "789"],
+  ["CRJ", "CRJ9"],
+  ["DHC8", "DH4"],
+  ["ATR72", "AT76"],
+]) {
+  assert.equal(
+    worker.watchlistAircraftMatches({ type }, query),
+    true,
+    `${query} should include ${type}`,
+  );
+}
+// ICAOコードと系列名が同じ場合は、短いコードを規格どおりの型式として扱う。
+assert.equal(worker.watchlistAircraftMatches({ type: "Airbus A320neo" }, "A320"), false);
+assert.equal(worker.watchlistAircraftMatches({ type: "Airbus A320neo" }, "Airbus A320"), true);
+assert.equal(worker.watchlistAircraftMatches({ type: "Boeing 737-800" }, "B737"), false);
+assert.equal(worker.watchlistAircraftMatches({ type: "Boeing 737-800" }, "Boeing 737"), true);
 result = await worker.cmdList({ page: 1, aircraft: "ZZZZ" }, env);
 assert.match(result.content, /一致する登録機はありません/);
 delete watchlist.b77w01;
