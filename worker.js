@@ -1,3 +1,5 @@
+import BUNDLED_WATCHLIST from "./watchlist.json";
+
 /**
  * aircraft-alert — Discord スラッシュコマンドの受け口(Cloudflare Workers、依存ライブラリなし)
  *
@@ -15,7 +17,7 @@
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-13-watchlist-filter-v4";
+const WORKER_BUILD = "2026-10-13-watchlist-filter-v5";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -123,7 +125,7 @@ export default {
       interaction.data?.custom_id === "listselect" ||
       interaction.data?.custom_id?.startsWith("listselect|")
     )) {
-      return handleListPageInteraction(interaction, env);
+      return handleListPageInteraction(interaction, env, ctx);
     }
 
     // 空港発着予定の省略分を、同じ条件のまま全便表示する。
@@ -203,7 +205,7 @@ export default {
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("menu_modal|")) {
       const command = String(interaction.data.custom_id).split("|")[1] || "";
       const synthetic = menuModalToCommand(interaction, command);
-      if (command === "list-filter") return directListResponse(synthetic, env);
+      if (command === "list-filter") return directListResponse(synthetic, env, ctx);
       ctx.waitUntil(processCommand(synthetic, env));
       return json({ type: 5, data: { flags: 64 } });
     }
@@ -435,11 +437,11 @@ function visibleMessageData(message, extra = {}) {
   return payload;
 }
 
-async function directListResponse(interaction, env) {
+async function directListResponse(interaction, env, ctx) {
   let message;
   try {
     message = await withTimeout(
-      cmdList(optionsOf(interaction), env),
+      cmdList(optionsOf(interaction), env, { immediate: true, ctx }),
       INTERACTION_RESPONSE_TIMEOUT_MS,
       "list response timed out",
     );
@@ -450,7 +452,7 @@ async function directListResponse(interaction, env) {
   return json({ type: 4, data: visibleMessageData(message, { flags: 64 }) });
 }
 
-async function handleListPageInteraction(interaction, env) {
+async function handleListPageInteraction(interaction, env, ctx) {
   let message;
   try {
     const customId = String(interaction.data?.custom_id || "");
@@ -464,7 +466,7 @@ async function handleListPageInteraction(interaction, env) {
       aircraft = "";
     }
     message = await withTimeout(
-      cmdList({ page: Number(selected) || 1, aircraft }, env),
+      cmdList({ page: Number(selected) || 1, aircraft }, env, { immediate: true, ctx }),
       INTERACTION_RESPONSE_TIMEOUT_MS,
       "list page response timed out",
     );
@@ -725,7 +727,7 @@ async function handleMenuButton(interaction, env, ctx) {
   }
   if (action === "list") {
     const synthetic = { ...interaction, data: { name: "list", options: [] } };
-    return directListResponse(synthetic, env);
+    return directListResponse(synthetic, env, ctx);
   }
   const modal = menuModal(action);
   return modal
@@ -1536,9 +1538,9 @@ async function cmdInfo(o, env, interaction = null) {
   };
 }
 
-async function cmdList(o, env) {
+async function cmdList(o, env, displayContext = {}) {
   const [data, liveries] = await Promise.all([
-    readWatchlistForDisplay(env),
+    readWatchlistForDisplay(env, displayContext),
     withTimeout(readLiveries(env), 600, "livery display timed out").catch(() => ({})),
   ]);
   const aircraftFilter = String(o.aircraft || "").trim();
@@ -1897,7 +1899,17 @@ async function readCanonicalWatchlist() {
   return data && typeof data === "object" && !Array.isArray(data) ? data : {};
 }
 
-async function readWatchlistForDisplay(env) {
+function storeWatchlistDisplayCache(key, data) {
+  watchlistCache = {
+    key,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    data: JSON.parse(JSON.stringify(data)),
+    sha: watchlistCache.key === key ? watchlistCache.sha : null,
+  };
+  return data;
+}
+
+async function readWatchlistForDisplay(env, { immediate = false, ctx = null } = {}) {
   const repo = String(env.GITHUB_REPO || DEFAULT_GITHUB_REPO).trim();
   const branch = branchOf(env);
   const key = `${repo}@${branch}`;
@@ -1906,6 +1918,8 @@ async function readWatchlistForDisplay(env) {
     watchlistCache.expiresAt > Date.now() &&
     Object.keys(watchlistCache.data).length > 0
   );
+
+  if (hasCache) return JSON.parse(JSON.stringify(watchlistCache.data));
 
   // Discordの初回応答は3秒以内。Contents APIとraw配信を並行して読み、
   // 先に取得できた正しいJSONを使うことで「考え中」のまま残るのを防ぐ。
@@ -1918,21 +1932,21 @@ async function readWatchlistForDisplay(env) {
     }
     return data;
   })();
-  const candidates = [apiRead, rawRead];
-  if (hasCache) {
-    candidates.push(new Promise((resolve) => setTimeout(
-      () => resolve(JSON.parse(JSON.stringify(watchlistCache.data))),
-      250,
-    )));
+  const freshRead = Promise.any([apiRead, rawRead])
+    .then((data) => storeWatchlistDisplayCache(key, data));
+
+  // Discordの入力画面は送信から3秒以内に初回応答が必要。コールドスタート時は
+  // デプロイ時に同梱した一覧を即時表示し、最新版の取得だけをバックグラウンドで行う。
+  if (immediate && BUNDLED_WATCHLIST && Object.keys(BUNDLED_WATCHLIST).length > 0) {
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(freshRead.catch((err) => {
+        console.error("watchlist background refresh failed:", err?.message || err);
+      }));
+    }
+    return JSON.parse(JSON.stringify(BUNDLED_WATCHLIST));
   }
-  const data = await Promise.any(candidates);
-  watchlistCache = {
-    key,
-    expiresAt: Date.now() + 5 * 60 * 1000,
-    data: JSON.parse(JSON.stringify(data)),
-    sha: watchlistCache.key === key ? watchlistCache.sha : null,
-  };
-  return data;
+
+  return freshRead;
 }
 
 // mutate(data) が { changed: true } を返したときだけ書き込む。他と衝突したら読み直して再試行する

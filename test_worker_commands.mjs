@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 
 let source = await fs.readFile(new URL("./worker.js", import.meta.url), "utf8");
+const bundledWatchlist = JSON.parse(await fs.readFile(new URL("./watchlist.json", import.meta.url), "utf8"));
+source = source.replace(
+  'import BUNDLED_WATCHLIST from "./watchlist.json";',
+  `const BUNDLED_WATCHLIST = ${JSON.stringify(bundledWatchlist)};`,
+);
 source = source.replace("export default {", "const workerDefault = {");
 source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority, cmdSpecial,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
