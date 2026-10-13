@@ -34,6 +34,9 @@ const AIRPORT_SHORT_NAMES = {
   ITM: "Itami", CTS: "New Chitose", FUK: "Fukuoka", OKA: "Naha",
 };
 let liveryCache = { key: "", expiresAt: 0, data: {} };
+let watchlistCache = { key: "", expiresAt: 0, data: {}, sha: null };
+const COMMAND_TIMEOUT_MS = 12000;
+const GITHUB_READ_TIMEOUT_MS = 4000;
 
 // IATA航空会社コード → ICAOコード(コールサインの先頭3文字)。足りない会社は追記してよい。
 // (GitHub側の lib.py の IATA_TO_ICAO と同じ内容)
@@ -400,7 +403,11 @@ async function verifyDiscordRequest(request, body, publicKeyHex) {
 async function processCommand(interaction, env) {
   let message;
   try {
-    message = await runCommand(interaction, env);
+    message = await withTimeout(
+      runCommand(interaction, env),
+      COMMAND_TIMEOUT_MS,
+      "command timed out",
+    );
   } catch (err) {
     console.error("command failed:", (err && err.stack) || err);
     message = { content: TEMPORARILY_UNAVAILABLE };
@@ -409,6 +416,14 @@ async function processCommand(interaction, env) {
   for (const followup of message.followups || []) {
     await sendFollowup(interaction, followup);
   }
+}
+
+function withTimeout(promise, timeoutMs, message = "operation timed out") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function processListPageButton(interaction, env) {
@@ -559,12 +574,21 @@ async function editOriginal(interaction, message) {
   const payload = { allowed_mentions: { parse: [] }, ...visibleMessage };
   if (payload.content) payload.content = payload.content.slice(0, 2000);
   const url = `${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
-  const r = await fetch(url, {
-    method: "PATCH",
-    headers: { "content-type": "application/json", "user-agent": UA },
-    body: JSON.stringify(payload),
-  });
-  if (!r.ok) console.error("editOriginal failed:", r.status, await r.text());
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(url, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "user-agent": UA },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) return;
+      console.error("editOriginal failed:", r.status, await r.text());
+      if (r.status < 500 && r.status !== 429) return;
+    } catch (err) {
+      console.error("editOriginal failed:", err?.name, err?.message);
+    }
+  }
 }
 
 async function sendFollowup(interaction, message) {
@@ -1688,6 +1712,7 @@ function gh(env, path, init = {}) {
       "user-agent": UA,
       ...(init.headers || {}),
     },
+    signal: init.signal || AbortSignal.timeout(8000),
   });
 }
 
@@ -1711,22 +1736,57 @@ function sortDeep(value) {
   return value;
 }
 
-async function readWatchlist(env) {
-  const r = await gh(env, `/contents/watchlist.json?ref=${encodeURIComponent(branchOf(env))}`);
-  if (r.status === 404) {
-    throw new Error("GitHub上のwatchlist.jsonまたは参照先リポジトリが見つかりません");
+async function readWatchlist(env, { allowFallback = true } = {}) {
+  const key = `${String(env.GITHUB_REPO || DEFAULT_GITHUB_REPO).trim()}@${branchOf(env)}`;
+  try {
+    const r = await gh(env, `/contents/watchlist.json?ref=${encodeURIComponent(branchOf(env))}`, {
+      signal: AbortSignal.timeout(GITHUB_READ_TIMEOUT_MS),
+    });
+    if (r.status === 404) {
+      throw new Error("GitHub上のwatchlist.jsonまたは参照先リポジトリが見つかりません");
+    }
+    if (!r.ok) throw new Error(`GitHub read failed: ${r.status} ${await r.text()}`);
+    const file = await r.json();
+    const parsed = JSON.parse(b64ToUtf8(file.content) || "{}");
+    const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    watchlistCache = {
+      key,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      data: JSON.parse(JSON.stringify(data)),
+      sha: file.sha || null,
+    };
+    return { data, sha: file.sha };
+  } catch (err) {
+    if (!allowFallback) throw err;
+    console.error("primary watchlist read failed:", err?.name, err?.message);
+    if (
+      watchlistCache.key === key &&
+      watchlistCache.expiresAt > Date.now() &&
+      Object.keys(watchlistCache.data).length > 0
+    ) {
+      return { data: JSON.parse(JSON.stringify(watchlistCache.data)), sha: watchlistCache.sha };
+    }
+    const data = await readCanonicalWatchlist();
+    if (Object.keys(data).length > 0) {
+      watchlistCache = {
+        key,
+        expiresAt: Date.now() + 5 * 60 * 1000,
+        data: JSON.parse(JSON.stringify(data)),
+        sha: null,
+      };
+      return { data, sha: null };
+    }
+    throw err;
   }
-  if (!r.ok) throw new Error(`GitHub read failed: ${r.status} ${await r.text()}`);
-  const file = await r.json();
-  const parsed = JSON.parse(b64ToUtf8(file.content) || "{}");
-  return { data: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}, sha: file.sha };
 }
 
 async function readLiveries(env) {
   const key = `${String(env.GITHUB_REPO || DEFAULT_GITHUB_REPO).trim()}@${branchOf(env)}`;
   if (liveryCache.key === key && liveryCache.expiresAt > Date.now()) return liveryCache.data;
   try {
-    const r = await gh(env, `/contents/liveries.json?ref=${encodeURIComponent(branchOf(env))}`);
+    const r = await gh(env, `/contents/liveries.json?ref=${encodeURIComponent(branchOf(env))}`, {
+      signal: AbortSignal.timeout(2500),
+    });
     if (!r.ok) throw new Error(`GitHub livery read failed: ${r.status}`);
     const file = await r.json();
     const parsed = JSON.parse(b64ToUtf8(file.content) || "{}");
@@ -1791,7 +1851,7 @@ async function readCanonicalWatchlist() {
 // mutate(data) が { changed: true } を返したときだけ書き込む。他と衝突したら読み直して再試行する
 async function updateWatchlist(env, mutate, message) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const { data, sha } = await readWatchlist(env);
+    const { data, sha } = await readWatchlist(env, { allowFallback: false });
     const outcome = mutate(data);
     if (!outcome.changed) return outcome;
 

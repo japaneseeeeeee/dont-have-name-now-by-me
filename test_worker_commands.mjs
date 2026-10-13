@@ -9,9 +9,15 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
-  watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton };`;
+  watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton,
+  withTimeout };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
+
+await assert.rejects(
+  worker.withTimeout(new Promise(() => {}), 5, "test timeout"),
+  /test timeout/,
+);
 
 const env = { GITHUB_REPO: "example/repo", GITHUB_TOKEN: "test", GITHUB_BRANCH: "main" };
 const interaction = { channel_id: "123" };
