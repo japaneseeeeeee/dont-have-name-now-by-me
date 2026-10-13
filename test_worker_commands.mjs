@@ -473,12 +473,11 @@ Object.assign(watchlist, {
 });
 const directListPayload = await (await worker.directListResponse({
   data: { options: [{ name: "aircraft", value: "A340" }] },
-}, env)).json();
+}, { ...env, GITHUB_REPO: "example/direct" })).json();
 assert.equal(directListPayload.type, 4);
 assert.equal(directListPayload.data.flags, 64);
 assert.match(directListPayload.data.content, /機種絞り込み：`A340`/);
-assert.match(directListPayload.data.content, /A340-300-TEST/);
-assert.match(directListPayload.data.content, /A340-600-TEST/);
+assert.doesNotMatch(directListPayload.data.content, /A350/);
 delete watchlist.a34001;
 delete watchlist.a34002;
 

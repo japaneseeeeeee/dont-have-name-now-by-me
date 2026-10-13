@@ -1919,8 +1919,6 @@ async function readWatchlistForDisplay(env, { immediate = false, ctx = null } = 
     Object.keys(watchlistCache.data).length > 0
   );
 
-  if (hasCache) return JSON.parse(JSON.stringify(watchlistCache.data));
-
   // Discordの初回応答は3秒以内。Contents APIとraw配信を並行して読み、
   // 先に取得できた正しいJSONを使うことで「考え中」のまま残るのを防ぐ。
   const apiRead = readWatchlist(env).then(({ data }) => data);
@@ -1937,16 +1935,28 @@ async function readWatchlistForDisplay(env, { immediate = false, ctx = null } = 
 
   // Discordの入力画面は送信から3秒以内に初回応答が必要。コールドスタート時は
   // デプロイ時に同梱した一覧を即時表示し、最新版の取得だけをバックグラウンドで行う。
-  if (immediate && BUNDLED_WATCHLIST && Object.keys(BUNDLED_WATCHLIST).length > 0) {
+  if (immediate) {
     if (ctx && typeof ctx.waitUntil === "function") {
       ctx.waitUntil(freshRead.catch((err) => {
         console.error("watchlist background refresh failed:", err?.message || err);
       }));
+    } else {
+      freshRead.catch(() => {});
     }
-    return JSON.parse(JSON.stringify(BUNDLED_WATCHLIST));
+    if (hasCache) return JSON.parse(JSON.stringify(watchlistCache.data));
+    if (BUNDLED_WATCHLIST && Object.keys(BUNDLED_WATCHLIST).length > 0) {
+      return JSON.parse(JSON.stringify(BUNDLED_WATCHLIST));
+    }
   }
 
-  return freshRead;
+  if (!hasCache) return freshRead;
+  return Promise.any([
+    freshRead,
+    new Promise((resolve) => setTimeout(
+      () => resolve(JSON.parse(JSON.stringify(watchlistCache.data))),
+      250,
+    )),
+  ]);
 }
 
 // mutate(data) が { changed: true } を返したときだけ書き込む。他と衝突したら読み直して再試行する
