@@ -289,6 +289,10 @@
     "label": "10+01",
     "type": "Airbus A350-941"
   },
+  "400f0b": {
+    "label": "G-ECLC",
+    "type": "Airbus A340 642"
+  },
   "405bfd": {
     "label": "G-YMMT",
     "type": "Boeing 777-236ER"
