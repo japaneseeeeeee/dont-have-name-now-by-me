@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-14-menu-response-guard-v11";
+const WORKER_BUILD = "2026-10-14-watchlist-safety-v12";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -805,6 +805,7 @@ function adminPanel() {
       { type: 1, components: [
         { type: 2, style: 2, custom_id: "admin|list", emoji: { name: "📋" }, label: "登録機を見る" },
         { type: 2, style: 2, custom_id: "admin|special-list", emoji: { name: "🔎" }, label: "SPECIAL機を見る" },
+        { type: 2, style: 1, custom_id: "admin|watchlist-status", emoji: { name: "🔄" }, label: "watchlist同期" },
         { type: 2, style: 2, custom_id: "admin|status", emoji: { name: "🟢" }, label: "Botの稼働を確認" },
         { type: 2, style: 2, custom_id: "admin|help", emoji: { name: "📖" }, label: "ボタンの説明" },
       ] },
@@ -852,8 +853,20 @@ function handleAdminButton(interaction, env, ctx) {
       "🗾 **全国通知を設定**：日本周辺チャンネルへの通知をON/OFFします。\n" +
       "📋 **登録機を見る**：watchlistを表示します。\n" +
       "🔎 **SPECIAL機を見る**：現在SPECIALの機体を表示します。\n" +
+      "🔄 **watchlist同期**：GitHub版とMac版の件数・同期時刻・バックアップ状態を管理者DMへ送ります。\n" +
       "🟢 **Botの稼働を確認**：主要機能の状態を表示します。\n" +
       "📖 **ボタンの説明**：この案内を表示します。"
+    } });
+  }
+  if (action === "watchlist-status") {
+    const userId = personalUserId(interaction);
+    if (!/^\d+$/.test(userId)) {
+      return json({ type: 4, data: { flags: 64, content: "⚠️ 管理者を確認できませんでした。" } });
+    }
+    // Mac側Botがこの短いメッセージを受け取り、照合・必要な自動修復後にDMする。
+    return json({ type: 4, data: {
+      content: `__WATCHLIST_STATUS__|${userId}\n⏳ watchlistの同期状態を確認しています。結果は管理者DMへ送ります。`,
+      allowed_mentions: { parse: [] },
     } });
   }
   if (action === "status") {

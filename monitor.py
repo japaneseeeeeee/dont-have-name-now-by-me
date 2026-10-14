@@ -11,6 +11,12 @@ import requests
 
 from route_corrections import correct_route
 from livery import lookup_livery
+from watchlist_sync import (
+    build_sync_status,
+    read_json_locked,
+    replace_local_watchlist,
+    save_sync_status,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -102,6 +108,14 @@ SHARED_WATCHLIST_URL = os.environ.get(
     "SHARED_WATCHLIST_URL",
     "https://raw.githubusercontent.com/japaneseeeeeee/dont-have-name-now-by-me/main/watchlist.json",
 )
+
+
+def _watchlist_backup_dir():
+    return os.path.join(os.path.dirname(WATCHLIST_PATH), "watchlist_backups")
+
+
+def _watchlist_sync_status_path():
+    return os.path.join(os.path.dirname(WATCHLIST_PATH), "watchlist_sync_status.json")
 
 # 通知済みの機体を記録しておくファイル(同じ機体を何度も通知しないため)
 STATE_PATH = os.path.join(BASE_DIR, "notified.json")
@@ -279,6 +293,7 @@ def request_with_retry(method, url, **kwargs):
 def load_watchlist():
     """GitHubの共通watchlistを読み込む(障害時のみローカルへフォールバック)。"""
     fetched_shared = False
+    fetch_error = ""
     try:
         response = requests.get(SHARED_WATCHLIST_URL, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
@@ -287,19 +302,21 @@ def load_watchlist():
             raise ValueError("watchlist must be an object")
         fetched_shared = True
     except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+        fetch_error = str(exc)
         logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
         status = getattr(getattr(exc, "response", None), "status_code", None)
         queue_system_alert("GitHub", "共通watchlistの取得に失敗", str(exc), status)
-        with open(WATCHLIST_PATH + ".lock", "a+", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_SH)
-            try:
-                with open(WATCHLIST_PATH, "r", encoding="utf-8") as stream:
-                    raw = json.load(stream)
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+        raw = read_json_locked(WATCHLIST_PATH, {})
 
     if fetched_shared:
         cache_shared_watchlist(raw)
+    else:
+        save_sync_status(_watchlist_sync_status_path(), build_sync_status(
+            None,
+            raw,
+            source="local_fallback",
+            error=fetch_error,
+        ))
 
     watchlist = {}
     for icao24, value in raw.items():
@@ -318,27 +335,20 @@ def load_watchlist():
 
 def cache_shared_watchlist(data):
     """GitHub版を障害時用ローカルコピーへ、変更がある時だけ安全に反映する。"""
-    lock_path = WATCHLIST_PATH + ".lock"
-    tmp_path = WATCHLIST_PATH + ".tmp"
-    with open(lock_path, "a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            current = None
-            try:
-                with open(WATCHLIST_PATH, "r", encoding="utf-8") as stream:
-                    current = json.load(stream)
-            except (OSError, ValueError):
-                pass
-            if current == data:
-                return False
-            with open(tmp_path, "w", encoding="utf-8") as stream:
-                json.dump(data, stream, ensure_ascii=False, indent=2, sort_keys=True)
-                stream.write("\n")
-            os.replace(tmp_path, WATCHLIST_PATH)
-            logger.info("ローカルwatchlistをGitHub版へ同期: %d機", len(data))
-            return True
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    outcome = replace_local_watchlist(WATCHLIST_PATH, data, _watchlist_backup_dir())
+    local = read_json_locked(WATCHLIST_PATH, {})
+    save_sync_status(_watchlist_sync_status_path(), build_sync_status(
+        data,
+        local,
+        source="github",
+        repaired=outcome["changed"],
+    ))
+    if outcome["changed"]:
+        logger.info(
+            "ローカルwatchlistをGitHub版へ同期: %d機 / backup=%s",
+            len(data), outcome["backup"] or "なし",
+        )
+    return outcome["changed"]
 
 
 def load_notified():

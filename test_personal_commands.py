@@ -292,6 +292,63 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIsNone(discord_bot.load_shared_watchlist_for_quality_check())
 
+    def test_watchlist_sync_audit_repairs_mac_copy_and_creates_backup(self):
+        remote = {"8691aa": {"label": "JA784A", "type": "B77W"}}
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = remote
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "watchlist.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({"abc123": {"label": "OLD", "type": "TEST"}}, stream)
+            with (
+                patch.object(discord_bot, "WATCHLIST_PATH", path),
+                patch.object(discord_bot.requests, "get", return_value=response),
+            ):
+                status = discord_bot.inspect_watchlist_sync(True)
+                message = discord_bot.format_watchlist_sync_status(status)
+            with open(path, encoding="utf-8") as stream:
+                cached = json.load(stream)
+
+        self.assertEqual(cached, remote)
+        self.assertTrue(status["in_sync"])
+        self.assertTrue(status["repaired"])
+        self.assertEqual(status["remote_count"], 1)
+        self.assertEqual(status["local_count"], 1)
+        self.assertEqual(status["backup_count"], 1)
+        self.assertIn("自動修復", message)
+
+    async def test_watchlist_status_bridge_accepts_friendly_progress_text(self):
+        member = SimpleNamespace(
+            guild_permissions=SimpleNamespace(administrator=True),
+            send=AsyncMock(),
+        )
+        guild = SimpleNamespace(get_member=lambda user_id: member, fetch_member=AsyncMock())
+        message = SimpleNamespace(
+            content=(
+                "__WATCHLIST_STATUS__|123\n"
+                "⏳ watchlistの同期状態を確認しています。結果は管理者DMへ送ります。"
+            ),
+            guild=guild,
+            delete=AsyncMock(),
+        )
+        status = {
+            "remote_count": 1,
+            "local_count": 1,
+            "in_sync": True,
+            "source": "github",
+            "last_success_at": "2026-10-14T00:00:00+00:00",
+            "anomalies": [],
+            "backup_count": 2,
+        }
+        with patch.object(discord_bot, "inspect_watchlist_sync", return_value=status):
+            handled = await discord_bot.handle_watchlist_status_bridge(message)
+
+        self.assertTrue(handled)
+        member.send.assert_awaited_once()
+        self.assertIn("✅ 一致", member.send.await_args.args[0])
+        message.delete.assert_awaited_once()
+
     async def test_personal_channel_uses_second_category_when_first_is_full(self):
         first = SimpleNamespace(name="🔒｜個人設定", channels=[object()] * 50)
         second = SimpleNamespace(name="🔒｜個人設定2", channels=[])

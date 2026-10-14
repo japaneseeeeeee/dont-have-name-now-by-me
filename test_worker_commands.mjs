@@ -10,7 +10,7 @@ source = source.replace(
 source = source.replace("export default {", "const workerDefault = {");
 source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority, cmdSpecial,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
-  cmdMenu, adminPanel, adminModal, menuModal, menuModalToCommand,
+  cmdMenu, adminPanel, adminModal, menuModal, menuModalToCommand, handleAdminButton,
   handleMenuButton, safeHandleMenuButton,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
@@ -525,6 +525,17 @@ assert.match(JSON.stringify(menu.components), /登録機を機種で絞る/);
 assert.doesNotMatch(JSON.stringify(menu.components), /日付を指定して発着を見る/);
 assert.doesNotMatch(JSON.stringify(menu.components), /航空会社で発着を絞る/);
 assert.match(worker.adminPanel().content, /管理画面/);
+assert.match(JSON.stringify(worker.adminPanel().components), /watchlist同期/);
+const syncStatusResponse = worker.handleAdminButton({
+  member: { permissions: "8", user: { id: "123456789" } },
+  data: { custom_id: "admin|watchlist-status" },
+}, {}, {});
+const syncStatusPayload = await syncStatusResponse.json();
+assert.equal(syncStatusPayload.type, 4);
+assert.equal(
+  syncStatusPayload.data.content,
+  "__WATCHLIST_STATUS__|123456789\n⏳ watchlistの同期状態を確認しています。結果は管理者DMへ送ります。",
+);
 assert.equal(worker.adminModal("priority").custom_id, "admin_modal|priority");
 assert.equal(worker.menuModal("list-filter").custom_id, "menu_modal|list-filter");
 const listFilterCommand = worker.menuModalToCommand({
@@ -534,7 +545,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
-assert.equal(worker.WORKER_BUILD, "2026-10-14-menu-response-guard-v11");
+assert.equal(worker.WORKER_BUILD, "2026-10-14-watchlist-safety-v12");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },

@@ -50,6 +50,13 @@ from livery import load_liveries, lookup_livery
 from lifecycle_review import expired_liveries, registrations_in_tar1090, update_retirement_observations
 from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_equipment
 from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, prune_notified as prune_destination_notified, route_matches_destination, should_notify as should_notify_destination)
+from watchlist_sync import (
+    backup_count,
+    build_sync_status,
+    read_json_locked,
+    replace_local_watchlist,
+    save_sync_status,
+)
 
 
 def load_env_file(path):
@@ -74,6 +81,14 @@ SHARED_WATCHLIST_URL = os.environ.get(
     "SHARED_WATCHLIST_URL",
     "https://api.github.com/repos/japaneseeeeeee/dont-have-name-now-by-me/contents/watchlist.json?ref=main",
 )
+
+
+def _watchlist_backup_dir():
+    return os.path.join(os.path.dirname(WATCHLIST_PATH), "watchlist_backups")
+
+
+def _watchlist_sync_status_path():
+    return os.path.join(os.path.dirname(WATCHLIST_PATH), "watchlist_sync_status.json")
 # OpenSkyの aircraftDatabase.csv を置いておくと、hexdb.io で見つからない機体も登録できる
 AIRCRAFT_DB_PATH = os.path.expanduser(
     os.environ.get("AIRCRAFT_DB_PATH", "~/aircraft-alert/aircraftDatabase.csv")
@@ -251,6 +266,7 @@ bot = AircraftBot(command_prefix=PREFIX, intents=intents)
 
 def load_watchlist():
     """GitHub版を優先し、成功時はローカルの障害時用コピーも更新する。"""
+    fetch_error = ""
     try:
         response = requests.get(
             SHARED_WATCHLIST_URL,
@@ -261,31 +277,33 @@ def load_watchlist():
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError("watchlist must be an object")
-        save_watchlist(data)
+        save_watchlist(data, source="github")
         return data
     except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+        fetch_error = str(exc)
         logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
 
-    with open(WATCHLIST_LOCK_PATH, "a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_SH)
-        try:
-            with open(WATCHLIST_PATH, "r", encoding="utf-8") as stream:
-                return json.load(stream)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    local = read_json_locked(WATCHLIST_PATH, {})
+    save_sync_status(_watchlist_sync_status_path(), build_sync_status(
+        None,
+        local,
+        source="local_fallback",
+        error=fetch_error,
+    ))
+    return local
 
 
-def save_watchlist(data):
-    tmp_path = WATCHLIST_PATH + ".tmp"
-    with open(WATCHLIST_LOCK_PATH, "a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as tmp:
-                json.dump(data, tmp, ensure_ascii=False, indent=2, sort_keys=True)
-                tmp.write("\n")
-            os.replace(tmp_path, WATCHLIST_PATH)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+def save_watchlist(data, source="local_update"):
+    outcome = replace_local_watchlist(WATCHLIST_PATH, data, _watchlist_backup_dir())
+    local = read_json_locked(WATCHLIST_PATH, {})
+    remote = data if source == "github" else None
+    save_sync_status(_watchlist_sync_status_path(), build_sync_status(
+        remote,
+        local,
+        source=source,
+        repaired=source == "github" and outcome["changed"],
+    ))
+    return outcome
 
 
 def load_shared_watchlist_for_quality_check():
@@ -3035,6 +3053,127 @@ def find_watchlist_anomalies(watchlist):
     return anomalies
 
 
+def inspect_watchlist_sync(repair=True):
+    """Compare GitHub and Mac copies, repairing the Mac copy from GitHub when needed."""
+    local = read_json_locked(WATCHLIST_PATH, {})
+    try:
+        response = requests.get(
+            SHARED_WATCHLIST_URL,
+            headers={"Accept": "application/vnd.github.raw+json", "User-Agent": "aircraft-alert-bot/1.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        remote = response.json()
+        if not isinstance(remote, dict):
+            raise ValueError("watchlist must be an object")
+    except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+        status = build_sync_status(None, local, source="local_fallback", error=str(exc))
+        status["anomalies"] = []
+        status["backup_count"] = backup_count(_watchlist_backup_dir())
+        return save_sync_status(_watchlist_sync_status_path(), status)
+
+    before = build_sync_status(remote, local, source="github")
+    repaired = False
+    if repair and not before["in_sync"]:
+        outcome = save_watchlist(remote, source="github")
+        repaired = outcome["changed"]
+        local = read_json_locked(WATCHLIST_PATH, {})
+
+    status = build_sync_status(
+        remote,
+        local,
+        source="github",
+        repaired=repaired,
+    )
+    status["anomalies"] = find_watchlist_anomalies(remote)
+    status["backup_count"] = backup_count(_watchlist_backup_dir())
+    return save_sync_status(_watchlist_sync_status_path(), status)
+
+
+def format_watchlist_sync_status(status):
+    source_labels = {
+        "github": "GitHub版",
+        "local_fallback": "Mac版（GitHub接続失敗時の予備）",
+        "local_update": "Mac版（未同期の変更あり）",
+    }
+    stamp = str(status.get("last_success_at") or "")
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        last_sync = parsed.astimezone(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S JST")
+    except (TypeError, ValueError):
+        last_sync = "未確認"
+    remote_count = status.get("remote_count")
+    local_count = status.get("local_count")
+    state = "✅ 一致" if status.get("in_sync") else "⚠️ 不一致またはGitHub未確認"
+    repaired = "\n自動修復: ✅ Mac版をGitHub版へ更新" if status.get("repaired") else ""
+    error = f"\n直近エラー: `{status['error'][:200]}`" if status.get("error") else ""
+    anomaly_count = len(status.get("anomalies") or [])
+    return (
+        "📋 **watchlist同期状態**\n"
+        f"GitHub版: **{remote_count if remote_count is not None else '取得失敗'}機**\n"
+        f"Mac版: **{local_count if local_count is not None else '読込失敗'}機**\n"
+        f"状態: {state}\n"
+        f"現在使用: **{source_labels.get(status.get('source'), status.get('source') or '不明')}**\n"
+        f"最終同期成功: `{last_sync}`\n"
+        f"データ異常: **{anomaly_count}件**\n"
+        f"Mac内バックアップ: **{status.get('backup_count', 0)}世代 / 最大10世代**"
+        f"{repaired}{error}"
+    )
+
+
+WATCHLIST_STATUS_BRIDGE_PREFIX = "__WATCHLIST_STATUS__|"
+
+
+async def handle_watchlist_status_bridge(message):
+    content = str(message.content or "")
+    if not content.startswith(WATCHLIST_STATUS_BRIDGE_PREFIX):
+        return False
+    bridge_line = content.splitlines()[0]
+    user_text = bridge_line.split("|", 2)[1]
+    try:
+        member = message.guild.get_member(int(user_text)) if message.guild and user_text.isdigit() else None
+        if member is None and message.guild and user_text.isdigit():
+            member = await message.guild.fetch_member(int(user_text))
+        if member is None or not member.guild_permissions.administrator:
+            return True
+        status = await asyncio.to_thread(inspect_watchlist_sync, True)
+        await member.send(format_watchlist_sync_status(status))
+    except (discord.HTTPException, ValueError) as exc:
+        logger.error("watchlist同期状態の送信に失敗しました: %s", exc)
+    finally:
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+    return True
+
+
+watchlist_status_catchup_lock = asyncio.Lock()
+
+
+async def catch_up_watchlist_status_bridges():
+    """Mac停止中に一般コマンドへ残った同期確認依頼を復旧後に処理する。"""
+    async with watchlist_status_catchup_lock:
+        cutoff = datetime.now(timezone.utc) - CATCHUP_MAX_AGE
+        for guild in bot.guilds:
+            channels = [channel for channel in guild.text_channels if "一般コマンド" in channel.name]
+            for channel in channels:
+                try:
+                    async for message in channel.history(limit=CATCHUP_LIMIT, oldest_first=True):
+                        if not bot.user or message.author.id != bot.user.id:
+                            continue
+                        if message.created_at < cutoff:
+                            continue
+                        if str(message.content or "").startswith(WATCHLIST_STATUS_BRIDGE_PREFIX):
+                            await handle_watchlist_status_bridge(message)
+                except discord.HTTPException as exc:
+                    logger.warning(
+                        "watchlist同期確認のcatch-up失敗: channel=%s error=%s",
+                        channel.id,
+                        exc,
+                    )
+
+
 _last_anomaly_fingerprint = None
 
 
@@ -3175,18 +3314,21 @@ async def data_quality_check():
     global _last_anomaly_fingerprint
     if not bot.is_ready() or bot.is_closed():
         return
-    watchlist = await asyncio.to_thread(load_shared_watchlist_for_quality_check)
-    if watchlist is None:
-        return
-    anomalies = await asyncio.to_thread(find_watchlist_anomalies, watchlist)
-    fingerprint = tuple(anomalies)
-    if not anomalies or fingerprint == _last_anomaly_fingerprint:
+    status = await asyncio.to_thread(inspect_watchlist_sync, True)
+    anomalies = list(status.get("anomalies") or [])
+    notices = list(anomalies)
+    if status.get("repaired"):
+        notices.insert(0, "GitHub版とMac版の差を検出し、Mac版を自動修復しました")
+    if status.get("error"):
+        notices.insert(0, f"GitHub版を確認できません: {status['error'][:160]}")
+    fingerprint = tuple(notices)
+    if not notices or fingerprint == _last_anomaly_fingerprint:
         _last_anomaly_fingerprint = fingerprint
         return
     _last_anomaly_fingerprint = fingerprint
     owner = await bot.fetch_user(FEEDBACK_OWNER_ID)
-    preview = "\n".join(f"• {item}" for item in anomalies[:20])
-    more = f"\n…ほか{len(anomalies) - 20}件" if len(anomalies) > 20 else ""
+    preview = "\n".join(f"• {item}" for item in notices[:20])
+    more = f"\n…ほか{len(notices) - 20}件" if len(notices) > 20 else ""
     try:
         await owner.send(f"⚠️ **航空機データ異常を検出**\n{preview}{more}")
     except discord.HTTPException as exc:
@@ -3225,6 +3367,7 @@ async def on_ready():
         logger.error("個人設定入口チャンネルの自動設置に失敗しました: %s", exc)
     await refresh_personal_control_panels()
     await refresh_general_menu_panel()
+    await catch_up_watchlist_status_bridges()
     await catch_up_personal_alert_bridges()
     await catch_up_lifecycle_bridges()
     await catch_up_missed_commands()
@@ -3232,6 +3375,7 @@ async def on_ready():
 
 @bot.event
 async def on_resumed():
+    await catch_up_watchlist_status_bridges()
     await catch_up_personal_alert_bridges()
     await catch_up_lifecycle_bridges()
     await catch_up_missed_commands()
@@ -3241,6 +3385,8 @@ async def on_resumed():
 async def on_message(message):
     if message.author.bot:
         if bot.user and message.author.id == bot.user.id:
+            if await handle_watchlist_status_bridge(message):
+                return
             if await handle_personal_alert_bridge(message):
                 return
             if await handle_lifecycle_bridge(message):
