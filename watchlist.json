@@ -389,6 +389,10 @@
     "label": "HZ-HM4",
     "type": "BOEING 787-8 Dreamliner"
   },
+  "7103b9": {
+    "label": "HZ-SKY1",
+    "type": "Airbus A340 212"
+  },
   "717fff": {
     "label": "HZ-HM1",
     "type": "BOEING 747-8"
