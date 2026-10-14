@@ -16,7 +16,7 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
   watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton,
-  withTimeout, directListResponse, handleListPageInteraction };`;
+  withTimeout, directListResponse, processListFilterModal, handleListPageInteraction };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -496,18 +496,16 @@ Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
 });
-const directListPayload = await (await worker.directListResponse({
+editedOriginalPayload = null;
+await worker.processListFilterModal({
+  application_id: "app",
+  token: "token",
   data: { options: [{ name: "aircraft", value: "A340" }] },
-}, { ...env, GITHUB_REPO: "example/direct" }, null, {
-  includeComponents: true,
-  includeLiveries: false,
-})).json();
-assert.equal(directListPayload.type, 4);
-assert.equal(directListPayload.data.flags, 64);
-assert.match(directListPayload.data.content, /機種絞り込み：`A340`/);
-assert.doesNotMatch(directListPayload.data.content, /A350/);
-assert.match(JSON.stringify(directListPayload.data.components), /listpage\|1\|A340/);
-assert.match(JSON.stringify(directListPayload.data.components), /listselect\|A340/);
+}, { ...env, GITHUB_REPO: "example/direct" }, null);
+assert.match(editedOriginalPayload.content, /機種絞り込み：`A340`/);
+assert.doesNotMatch(editedOriginalPayload.content, /A350/);
+assert.match(JSON.stringify(editedOriginalPayload.components), /listpage\|1\|A340/);
+assert.match(JSON.stringify(editedOriginalPayload.components), /listselect\|A340/);
 delete watchlist.a34001;
 delete watchlist.a34002;
 

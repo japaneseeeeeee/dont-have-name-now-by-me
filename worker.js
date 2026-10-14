@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-14-watchlist-filter-pagination-v8";
+const WORKER_BUILD = "2026-10-14-watchlist-filter-pagination-v9";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -206,12 +206,12 @@ export default {
       const command = String(interaction.data.custom_id).split("|")[1] || "";
       const synthetic = menuModalToCommand(interaction, command);
       if (command === "list-filter") {
-        return directListResponse(synthetic, env, ctx, {
-          // Keep this response fast by skipping the external livery lookup, but
-          // retain the normal watchlist pagination controls.
-          includeComponents: true,
-          includeLiveries: false,
-        });
+        // Discord rejects message components in a direct modal-submit reply.
+        // Acknowledge first, then replace the deferred reply with the paginated
+        // result. The bundled/cache watchlist keeps this update fast and avoids
+        // the previous indefinitely pending response.
+        ctx.waitUntil(processListFilterModal(synthetic, env, ctx));
+        return json({ type: 5, data: { flags: 64 } });
       }
       ctx.waitUntil(processCommand(synthetic, env));
       return json({ type: 5, data: { flags: 64 } });
@@ -461,6 +461,25 @@ async function directListResponse(interaction, env, ctx, responseOptions = {}) {
   const visible = visibleMessageData(message, { flags: 64 });
   if (!includeComponents) delete visible.components;
   return json({ type: 4, data: visible });
+}
+
+async function processListFilterModal(interaction, env, ctx) {
+  let message;
+  try {
+    message = await withTimeout(
+      cmdList(optionsOf(interaction), env, {
+        immediate: true,
+        ctx,
+        includeLiveries: false,
+      }),
+      INTERACTION_RESPONSE_TIMEOUT_MS,
+      "list filter modal timed out",
+    );
+  } catch (err) {
+    console.error("list filter modal failed:", (err && err.stack) || err);
+    message = { content: TEMPORARILY_UNAVAILABLE, components: [] };
+  }
+  await editOriginal(interaction, message);
 }
 
 async function handleListPageInteraction(interaction, env, ctx) {
