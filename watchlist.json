@@ -405,6 +405,10 @@
     "label": "HZ-HM1",
     "type": "BOEING 747-8"
   },
+  "7335b5": {
+    "label": "EP-MMU",
+    "type": "Airbus A340 642X"
+  },
   "7380c5": {
     "label": "4X-EDF",
     "type": "BOEING 787-9 Dreamliner (B789)"
