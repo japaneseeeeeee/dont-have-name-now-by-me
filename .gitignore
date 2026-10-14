@@ -38,6 +38,9 @@ destination_alerts.json.lock
 equipment_alerts.json
 equipment_alerts.json.lock
 watchlist.json.lock
+watchlist_sync_status.json
+watchlist_sync_status.json.lock
+watchlist_backups/
 
 actions-runner-new/
 worker/
