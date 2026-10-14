@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-13-watchlist-filter-v7";
+const WORKER_BUILD = "2026-10-14-watchlist-filter-pagination-v8";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -207,7 +207,9 @@ export default {
       const synthetic = menuModalToCommand(interaction, command);
       if (command === "list-filter") {
         return directListResponse(synthetic, env, ctx, {
-          includeComponents: false,
+          // Keep this response fast by skipping the external livery lookup, but
+          // retain the normal watchlist pagination controls.
+          includeComponents: true,
           includeLiveries: false,
         });
       }

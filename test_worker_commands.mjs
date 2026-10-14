@@ -499,14 +499,15 @@ Object.assign(watchlist, {
 const directListPayload = await (await worker.directListResponse({
   data: { options: [{ name: "aircraft", value: "A340" }] },
 }, { ...env, GITHUB_REPO: "example/direct" }, null, {
-  includeComponents: false,
+  includeComponents: true,
   includeLiveries: false,
 })).json();
 assert.equal(directListPayload.type, 4);
 assert.equal(directListPayload.data.flags, 64);
 assert.match(directListPayload.data.content, /機種絞り込み：`A340`/);
 assert.doesNotMatch(directListPayload.data.content, /A350/);
-assert.equal(directListPayload.data.components, undefined);
+assert.match(JSON.stringify(directListPayload.data.components), /listpage\|1\|A340/);
+assert.match(JSON.stringify(directListPayload.data.components), /listselect\|A340/);
 delete watchlist.a34001;
 delete watchlist.a34002;
 
