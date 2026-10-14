@@ -16,7 +16,8 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
   watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton,
-  withTimeout, directListResponse, processListFilterModal, handleListPageInteraction };`;
+  withTimeout, directListResponse, processListFilterModal, handleListPageInteraction,
+  WORKER_BUILD };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const worker = await import(moduleUrl);
 
@@ -492,6 +493,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
+assert.equal(worker.WORKER_BUILD, "2026-10-14-watchlist-filter-pagination-v10");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },

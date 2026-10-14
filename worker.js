@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-14-watchlist-filter-pagination-v9";
+const WORKER_BUILD = "2026-10-14-watchlist-filter-pagination-v10";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -206,12 +206,18 @@ export default {
       const command = String(interaction.data.custom_id).split("|")[1] || "";
       const synthetic = menuModalToCommand(interaction, command);
       if (command === "list-filter") {
-        // Discord rejects message components in a direct modal-submit reply.
-        // Acknowledge first, then replace the deferred reply with the paginated
-        // result. The bundled/cache watchlist keeps this update fast and avoids
-        // the previous indefinitely pending response.
+        // Discord rejects the pagination components when they are included in
+        // this modal's initial reply. Send the proven component-free response
+        // first, then edit that ephemeral message to add the result controls.
         ctx.waitUntil(processListFilterModal(synthetic, env, ctx));
-        return json({ type: 5, data: { flags: 64 } });
+        return json({
+          type: 4,
+          data: {
+            flags: 64,
+            content: "🔎 登録機を絞り込んでいます…",
+            allowed_mentions: { parse: [] },
+          },
+        });
       }
       ctx.waitUntil(processCommand(synthetic, env));
       return json({ type: 5, data: { flags: 64 } });
