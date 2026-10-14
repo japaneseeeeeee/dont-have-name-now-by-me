@@ -301,6 +301,10 @@
     "label": "ZZ336",
     "type": "Airbus A330-243 MRTT"
   },
+  "43f72a": {
+    "label": "2-HPGS",
+    "type": "Airbus A340 642X"
+  },
   "4408fb": {
     "label": "OE-LPF",
     "type": "Boeing 777-2Q8ER"
