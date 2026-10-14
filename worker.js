@@ -17,7 +17,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-14-watchlist-filter-pagination-v10";
+const WORKER_BUILD = "2026-10-14-menu-response-guard-v11";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
@@ -104,7 +104,7 @@ export default {
 
     // 3: メッセージ内のボタン
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("menu|")) {
-      return handleMenuButton(interaction, env, ctx);
+      return safeHandleMenuButton(interaction, env, ctx);
     }
 
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("feedback:")) {
@@ -769,6 +769,24 @@ async function handleMenuButton(interaction, env, ctx) {
   return modal
     ? json({ type: 9, data: modal })
     : json({ type: 4, data: { flags: 64, content: "⚠️ このボタンは現在利用できません。" } });
+}
+
+async function safeHandleMenuButton(interaction, env, ctx, handler = handleMenuButton) {
+  try {
+    // メニューはDiscordの3秒制限内に必ず返す。awaitしておくことで、将来
+    // ハンドラー内に非同期処理が追加されても例外をここで返信へ変換できる。
+    return await handler(interaction, env, ctx);
+  } catch (err) {
+    console.error("menu button failed:", (err && err.stack) || err);
+    return json({
+      type: 4,
+      data: {
+        flags: 64,
+        content: "⚠️ ボタンの応答に失敗しました。一時的な問題の可能性があります。少し待ってからもう一度お試しください。",
+        allowed_mentions: { parse: [] },
+      },
+    });
+  }
 }
 
 function adminPanel() {

@@ -11,7 +11,7 @@ source = source.replace("export default {", "const workerDefault = {");
 source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority, cmdSpecial,
   cmdSpecialList, cmdNationwide, cmdFlight, cmdAirport, cmdAircraftSearch,
   cmdMenu, adminPanel, adminModal, menuModal, menuModalToCommand,
-  handleMenuButton,
+  handleMenuButton, safeHandleMenuButton,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
@@ -32,6 +32,47 @@ const filterButtonResponse = await worker.handleMenuButton({
 const filterButtonPayload = await filterButtonResponse.json();
 assert.equal(filterButtonPayload.type, 9);
 assert.equal(filterButtonPayload.data.custom_id, "menu_modal|list-filter");
+
+// メニューの入力系ボタンは、外部APIを待たずDiscordへ有効なモーダルを即返す。
+// 行数・入力欄数もDiscordの制限内であることを全ボタンについて保証する。
+for (const action of ["aircraft-search", "info", "flight", "airport", "list-filter"]) {
+  const response = await worker.handleMenuButton({
+    data: { custom_id: `menu|${action}` },
+  }, {}, {});
+  const payload = await response.json();
+  assert.equal(payload.type, 9, `${action} must return a modal response`);
+  assert.equal(payload.data.custom_id, `menu_modal|${action}`);
+  assert.ok(payload.data.title.length <= 45, `${action} modal title is too long`);
+  assert.ok(payload.data.components.length >= 1 && payload.data.components.length <= 5);
+  const inputIds = new Set();
+  for (const row of payload.data.components) {
+    assert.equal(row.type, 1);
+    assert.equal(row.components.length, 1);
+    const input = row.components[0];
+    assert.equal(input.type, 4);
+    assert.ok(input.custom_id.length <= 100);
+    assert.ok(!inputIds.has(input.custom_id), `${action} has a duplicate input id`);
+    inputIds.add(input.custom_id);
+  }
+}
+
+const originalConsoleError = console.error;
+let failedMenuResponse;
+try {
+  console.error = () => {};
+  failedMenuResponse = await worker.safeHandleMenuButton(
+    { data: { custom_id: "menu|aircraft-search" } },
+    {},
+    {},
+    async () => { throw new Error("simulated menu failure"); },
+  );
+} finally {
+  console.error = originalConsoleError;
+}
+const failedMenuPayload = await failedMenuResponse.json();
+assert.equal(failedMenuPayload.type, 4);
+assert.equal(failedMenuPayload.data.flags, 64);
+assert.match(failedMenuPayload.data.content, /ボタンの応答に失敗/);
 
 const env = { GITHUB_REPO: "example/repo", GITHUB_TOKEN: "test", GITHUB_BRANCH: "main" };
 const interaction = { channel_id: "123" };
@@ -493,7 +534,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
-assert.equal(worker.WORKER_BUILD, "2026-10-14-watchlist-filter-pagination-v10");
+assert.equal(worker.WORKER_BUILD, "2026-10-14-menu-response-guard-v11");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
