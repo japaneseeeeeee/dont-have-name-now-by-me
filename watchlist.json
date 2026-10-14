@@ -409,6 +409,10 @@
     "label": "HZ-HM1",
     "type": "BOEING 747-8"
   },
+  "7335b1": {
+    "label": "EP-MMQ",
+    "type": "Airbus A340 642"
+  },
   "7335b2": {
     "label": "EP-MMR",
     "type": "Airbus A340 642"
