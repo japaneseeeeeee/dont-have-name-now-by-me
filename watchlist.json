@@ -385,6 +385,10 @@
     "label": "A4O-HMS",
     "type": "BOEING 747-8"
   },
+  "71002e": {
+    "label": "HZ-A42",
+    "type": "Airbus A340 642X"
+  },
   "71019b": {
     "label": "HZ-HM4",
     "type": "BOEING 787-8 Dreamliner"
