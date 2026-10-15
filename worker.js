@@ -392,6 +392,22 @@ async function sendRequesterDm(env, requesterId, content) {
   });
 }
 
+async function hasPendingAircraftRequest(env, adminChannelId, icao24) {
+  try {
+    const messages = await discordBotRequest(env, `/channels/${adminChannelId}/messages?limit=100`);
+    return Array.isArray(messages) && messages.some((message) =>
+      (message.components || []).some((row) => (row.components || []).some((component) => {
+        const parts = String(component.custom_id || "").split("|");
+        return parts[0] === "aircraft_request" && parts[1] === "approve"
+          && String(parts[3] || "").toLowerCase() === icao24;
+      })),
+    );
+  } catch (err) {
+    console.error("pending aircraft request check failed:", err?.message || err);
+    return false;
+  }
+}
+
 function aircraftRequestReviewEmbed({ requesterId, requesterName, registration, icao24, details }) {
   const yearLabel = details.year
     ? `${details.year}（${details.yearSource === "manufacture" ? "製造年" : "初飛行年"}）`
@@ -446,6 +462,13 @@ async function processAircraftRequestSubmit(interaction, env, rawRegistration = 
       return;
     }
     const adminChannelId = String(env.FEEDBACK_DESTINATION_CHANNEL_ID || DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID).trim();
+    if (await hasPendingAircraftRequest(env, adminChannelId, icao24)) {
+      await editOriginal(interaction, {
+        content: `ℹ️ \`${registration}\` (${icao24}) は既に管理者の確認待ちです。結果が確定するまでお待ちください。`,
+        components: [],
+      });
+      return;
+    }
     const requesterName = String(
       interaction.member?.nick
       || interaction.member?.user?.global_name

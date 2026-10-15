@@ -90,6 +90,7 @@ let editedOriginalPayload = null;
 let airportFollowupPayloads = [];
 let adminReviewPayloads = [];
 let dmPayloads = [];
+let pendingAdminMessages = [];
 const liveries = {
   JA339J: { name: "JAL Jubilee Express", valid_until: "2027-04-30" },
   JA784A: { name: "Test Special Livery", valid_until: "2027-12-31" },
@@ -185,6 +186,11 @@ globalThis.fetch = async (url, init = {}) => {
     airportFollowupPayloads.push(JSON.parse(init.body));
     return new Response(null, { status: 200 });
   }
+  if (value.endsWith("discord.com/api/v10/channels/admin-channel/messages?limit=100")) {
+    return new Response(JSON.stringify(pendingAdminMessages), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
   if (value.endsWith("discord.com/api/v10/channels/admin-channel/messages")) {
     adminReviewPayloads.push(JSON.parse(init.body));
     return new Response(JSON.stringify({ id: "review-message" }), {
@@ -244,6 +250,17 @@ assert.equal(adminReviewPayloads[0].embeds[0].title, "🛩️ サーバー監視
 assert.match(JSON.stringify(adminReviewPayloads[0]), /G-EZBZ/);
 assert.match(JSON.stringify(adminReviewPayloads[0]), /Airbus A319 111/);
 assert.match(JSON.stringify(adminReviewPayloads[0].components), /aircraft_request\|approve/);
+
+pendingAdminMessages = [{ components: adminReviewPayloads[0].components }];
+editedOriginalPayload = null;
+const duplicateTasks = [];
+worker.feedbackModalSubmit(requestInteraction, requestEnv, {
+  waitUntil(promise) { duplicateTasks.push(promise); },
+});
+await Promise.all(duplicateTasks);
+assert.equal(adminReviewPayloads.length, 1);
+assert.match(editedOriginalPayload.content, /既に管理者の確認待ち/);
+pendingAdminMessages = [];
 
 editedOriginalPayload = null;
 dmPayloads = [];
