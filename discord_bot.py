@@ -2665,6 +2665,10 @@ class FeedbackPanelView(discord.ui.View):
     async def request(self, interaction, button):
         pass
 
+    @discord.ui.button(label="機材追加を要望", emoji="🛩️", style=discord.ButtonStyle.primary, custom_id="feedback:aircraft-request")
+    async def aircraft_request(self, interaction, button):
+        pass
+
     @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="feedback:help")
     async def help(self, interaction, button):
         pass
@@ -2865,26 +2869,35 @@ async def handle_channel_panel_bridge(message):
     return True
 
 
-async def send_feedback_panel(channel):
+def feedback_panel_embed():
     embed = discord.Embed(
         title="📮 質問・改善要望",
         description=(
             "Botについての質問や改善してほしい内容を、下のボタンから送信できます。\n"
             "送信内容は管理者へ転送され、回答はDMで届きます。\n\n"
+            "サーバー全体で検知してほしい機体は、**機材追加を要望**から登録記号を送信できます。\n"
+            "管理者が承認するとサーバー監視へ追加され、結果がDMで届きます。\n\n"
             "従来どおり、メッセージの先頭に `📮` を付ける方法も使用できます。"
         ),
         color=0x5865F2,
     )
+    embed.set_footer(text="feedback-panel")
+    return embed
+
+
+async def send_feedback_panel(channel):
+    embed = feedback_panel_embed()
     return await channel.send(embed=embed, view=FeedbackPanelView())
 
 
 async def ensure_feedback_panel():
-    """質問チャンネルにパネルが無い場合だけ自動設置する。"""
+    """質問チャンネルの常設パネルを設置し、既存パネルも最新版へ更新する。"""
     channel = bot.get_channel(FEEDBACK_SOURCE_CHANNEL_ID)
     if channel is None:
         channel = await bot.fetch_channel(FEEDBACK_SOURCE_CHANNEL_ID)
     async for item in channel.history(limit=50):
         if item.author.id == bot.user.id and item.embeds and item.embeds[0].title == "📮 質問・改善要望":
+            await item.edit(embed=feedback_panel_embed(), view=FeedbackPanelView())
             return item
     return await send_feedback_panel(channel)
 

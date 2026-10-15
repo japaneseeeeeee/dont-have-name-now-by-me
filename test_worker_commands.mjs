@@ -14,6 +14,8 @@ source += `\nexport { cmdAdd, cmdRemove, cmdFind, cmdList, cmdInfo, cmdPriority,
   handleMenuButton, safeHandleMenuButton,
   handlePersonalAlertButton, handleLegacyPersonalAlertButton,
   handlePersonalPanelButton, handlePersonalPanelAction, personalModalSubmit,
+  handleFeedbackButton, feedbackModalSubmit, processAircraftRequestSubmit,
+  processAircraftRequestDecision,
   processAirportAllButton, airportAircraftMatches, airportAircraftDisplayName,
   watchlistAircraftMatches, lookupLiveryName, lifecycleButtonSpec, processLifecycleButton,
   withTimeout, directListResponse, processListFilterModal, handleListPageInteraction,
@@ -86,6 +88,8 @@ let registrationLookupStatus = 200;
 let aeroDataBoxAircraftLookup = false;
 let editedOriginalPayload = null;
 let airportFollowupPayloads = [];
+let adminReviewPayloads = [];
+let dmPayloads = [];
 const liveries = {
   JA339J: { name: "JAL Jubilee Express", valid_until: "2027-04-30" },
   JA784A: { name: "Test Special Livery", valid_until: "2027-12-31" },
@@ -181,8 +185,83 @@ globalThis.fetch = async (url, init = {}) => {
     airportFollowupPayloads.push(JSON.parse(init.body));
     return new Response(null, { status: 200 });
   }
+  if (value.endsWith("discord.com/api/v10/channels/admin-channel/messages")) {
+    adminReviewPayloads.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ id: "review-message" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.endsWith("discord.com/api/v10/users/@me/channels")) {
+    return new Response(JSON.stringify({ id: "dm-channel" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.endsWith("discord.com/api/v10/channels/dm-channel/messages")) {
+    dmPayloads.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ id: "dm-message" }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  }
   throw new Error(`Unexpected fetch: ${value}`);
 };
+
+const requestButtonResponse = worker.handleFeedbackButton({
+  data: { custom_id: "feedback:aircraft-request" },
+});
+const requestButtonPayload = await requestButtonResponse.json();
+assert.equal(requestButtonPayload.type, 9);
+assert.equal(requestButtonPayload.data.custom_id, "feedback_modal|aircraft-request");
+assert.equal(requestButtonPayload.data.components[0].components[0].custom_id, "registration");
+
+const requestEnv = {
+  ...env,
+  DISCORD_BOT_TOKEN: "discord-test-token",
+  FEEDBACK_SOURCE_CHANNEL_ID: "source-channel",
+  FEEDBACK_DESTINATION_CHANNEL_ID: "admin-channel",
+};
+const requestInteraction = {
+  application_id: "app",
+  token: "request-token",
+  channel_id: "source-channel",
+  member: { user: { id: "123456789012345678", username: "requester" } },
+  data: {
+    custom_id: "feedback_modal|aircraft-request",
+    components: [{ components: [{ value: "g-ezbz" }] }],
+  },
+};
+const requestTasks = [];
+editedOriginalPayload = null;
+const requestResponse = worker.feedbackModalSubmit(requestInteraction, requestEnv, {
+  waitUntil(promise) { requestTasks.push(promise); },
+});
+const requestResponsePayload = await requestResponse.json();
+assert.equal(requestResponsePayload.type, 5);
+assert.equal(requestResponsePayload.data.flags, 64);
+await Promise.all(requestTasks);
+assert.match(editedOriginalPayload.content, /追加要望を管理者へ送りました/);
+assert.equal(adminReviewPayloads.length, 1);
+assert.equal(adminReviewPayloads[0].embeds[0].title, "🛩️ サーバー監視機体の追加要望");
+assert.match(JSON.stringify(adminReviewPayloads[0]), /G-EZBZ/);
+assert.match(JSON.stringify(adminReviewPayloads[0]), /Airbus A319 111/);
+assert.match(JSON.stringify(adminReviewPayloads[0].components), /aircraft_request\|approve/);
+
+editedOriginalPayload = null;
+dmPayloads = [];
+await worker.processAircraftRequestDecision({
+  application_id: "app",
+  token: "decision-token",
+  data: { custom_id: "aircraft_request|approve|123456789012345678|4010ee|G-EZBZ" },
+  message: {
+    embeds: adminReviewPayloads[0].embeds,
+    components: adminReviewPayloads[0].components,
+  },
+}, requestEnv);
+assert.equal(watchlist["4010ee"].label, "G-EZBZ");
+assert.match(editedOriginalPayload.content, /サーバー監視へ追加しました/);
+assert.deepEqual(editedOriginalPayload.components, []);
+assert.equal(dmPayloads.length, 1);
+assert.match(dmPayloads[0].content, /追加されました/);
+delete watchlist["4010ee"];
 
 let result = await worker.cmdAdd(
   { tail: "JA0001", icao24: "abc123", type: "TEST" }, env, interaction,
@@ -545,7 +624,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
-assert.equal(worker.WORKER_BUILD, "2026-10-14-watchlist-safety-v12");
+assert.equal(worker.WORKER_BUILD, "2026-10-15-aircraft-request-review-v13");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },

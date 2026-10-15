@@ -10,15 +10,20 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  *
  * 必要な設定(Cloudflareの「変数とシークレット」):
  *   DISCORD_PUBLIC_KEY  (シークレット) DiscordアプリのPUBLIC KEY
+ *   DISCORD_BOT_TOKEN   (シークレット) 管理者チャンネルへの申請送信と申請者DMに使用
  *   GITHUB_TOKEN        (シークレット) このリポジトリだけに権限がある、Contents: Read and write のトークン
  *   GITHUB_REPO         (テキスト)     例: yourname/aircraft-alert
  *   GITHUB_BRANCH       (テキスト、省略可) 既定は main
  *   ALLOWED_CHANNEL_ID  (テキスト、省略可) 指定すると、一般用と管理者用チャンネルでコマンドを使える
+ *   FEEDBACK_SOURCE_CHANNEL_ID      (テキスト、省略可) 質問・改善要望チャンネル
+ *   FEEDBACK_DESTINATION_CHANNEL_ID (テキスト、省略可) 管理者専用の転送先チャンネル
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-14-watchlist-safety-v12";
+const WORKER_BUILD = "2026-10-15-aircraft-request-review-v13";
 const DISCORD_API = "https://discord.com/api/v10";
+const DEFAULT_FEEDBACK_SOURCE_CHANNEL_ID = "1554454760038465576";
+const DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID = "1552647426253389926";
 const DEFAULT_GITHUB_REPO = "japaneseeeeeee/dont-have-name-now-by-me";
 // 受信局のカバー範囲や一時的な遅延で1つの提供元に出ない便があるため、
 // 同じADS-B形式を返す複数の提供元を順に照会する。
@@ -109,6 +114,18 @@ export default {
 
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("feedback:")) {
       return handleFeedbackButton(interaction);
+    }
+
+    if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("aircraft_request|")) {
+      if (!isAdministrator(interaction)) {
+        return json({ type: 4, data: { flags: 64, content: "⛔ この申請を処理できるのはサーバー管理者だけです。" } });
+      }
+      const adminChannelId = String(env.FEEDBACK_DESTINATION_CHANNEL_ID || DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID).trim();
+      if (adminChannelId && String(interaction.channel_id || "") !== adminChannelId) {
+        return json({ type: 4, data: { flags: 64, content: "⛔ 管理者専用チャンネルで操作してください。" } });
+      }
+      ctx.waitUntil(processAircraftRequestDecision(interaction, env));
+      return json({ type: 6 });
     }
 
     if (interaction.type === 3 && interaction.data?.custom_id?.startsWith("photo:")) {
@@ -240,7 +257,7 @@ export default {
     }
 
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("feedback_modal|")) {
-      return feedbackModalSubmit(interaction);
+      return feedbackModalSubmit(interaction, env, ctx);
     }
 
     if (interaction.type === 5 && interaction.data?.custom_id?.startsWith("equipment_server_modal|")) {
@@ -268,6 +285,18 @@ function json(obj, status = 200) {
 }
 
 function feedbackModal(kind) {
+  if (kind === "aircraft-request") {
+    return {
+      custom_id: "feedback_modal|aircraft-request",
+      title: "サーバー監視機体の追加要望",
+      components: [{ type: 1, components: [{
+        type: 4, custom_id: "registration", style: 1,
+        label: "機体番号（登録記号）",
+        placeholder: "例: JA738B / G-EZBZ",
+        required: true, min_length: 3, max_length: 20,
+      }] }],
+    };
+  }
   return {
     custom_id: `feedback_modal|${kind}`,
     title: kind === "question" ? "Botへの質問" : "Botの改善要望",
@@ -291,6 +320,9 @@ function feedbackBridge(interaction, operation, body = "") {
 
 function handleFeedbackButton(interaction) {
   const action = String(interaction.data?.custom_id || "").split(":")[1] || "";
+  if (action === "aircraft-request") {
+    return json({ type: 9, data: feedbackModal(action) });
+  }
   if (action === "question" || action === "request") {
     return json({ type: 9, data: feedbackModal(action) });
   }
@@ -298,6 +330,7 @@ function handleFeedbackButton(interaction) {
     return json({ type: 4, data: { flags: 64, content:
       "❓ **質問**：Botの使い方や動作について管理者へ送信します。\n" +
       "💡 **改善要望**：追加してほしい機能や直してほしい点を送信します。\n" +
+      "🛩️ **機材追加を要望**：サーバー全体で検知してほしい機体を管理者へ申請します。\n" +
       "📖 **ボタンの説明**：この案内を表示します。\n" +
       "🔄 **最新位置へ移動**：管理者がパネルをチャンネルの一番下へ移動します。\n\n" +
       "回答はBotからDMで届くため、サーバーメンバーからのDMを許可してください。"
@@ -312,10 +345,215 @@ function handleFeedbackButton(interaction) {
   return json({ type: 4, data: { flags: 64, content: "⚠️ このボタンは利用できません。" } });
 }
 
-function feedbackModalSubmit(interaction) {
+function feedbackModalSubmit(interaction, env = {}, ctx = null) {
   const kind = String(interaction.data?.custom_id || "").split("|")[1] || "question";
+  if (kind === "aircraft-request") {
+    const registration = String(interaction.data?.components?.[0]?.components?.[0]?.value || "").trim();
+    if (!ctx || typeof ctx.waitUntil !== "function") {
+      return json({ type: 4, data: { flags: 64, content: "⚠️ 申請処理を開始できませんでした。もう一度お試しください。" } });
+    }
+    ctx.waitUntil(processAircraftRequestSubmit(interaction, env, registration));
+    return json({ type: 5, data: { flags: 64 } });
+  }
   const body = String(interaction.data?.components?.[0]?.components?.[0]?.value || "").trim();
   return feedbackBridge(interaction, kind, body);
+}
+
+function aircraftRequestButton(action, requesterId, icao24, registration) {
+  return ["aircraft_request", action, requesterId, icao24, encodeURIComponent(String(registration).toUpperCase())].join("|");
+}
+
+async function discordBotRequest(env, path, init = {}) {
+  const token = String(env.DISCORD_BOT_TOKEN || "").trim();
+  if (!token) throw new Error("DISCORD_BOT_TOKEN is not configured in Worker");
+  const response = await fetch(`${DISCORD_API}${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bot ${token}`,
+      "content-type": "application/json",
+      "user-agent": UA,
+      ...(init.headers || {}),
+    },
+    signal: init.signal || AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`Discord API failed: ${response.status} ${await response.text()}`);
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+async function sendRequesterDm(env, requesterId, content) {
+  const dm = await discordBotRequest(env, "/users/@me/channels", {
+    method: "POST",
+    body: JSON.stringify({ recipient_id: String(requesterId) }),
+  });
+  await discordBotRequest(env, `/channels/${dm.id}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content: String(content).slice(0, 2000), allowed_mentions: { parse: [] } }),
+  });
+}
+
+function aircraftRequestReviewEmbed({ requesterId, requesterName, registration, icao24, details }) {
+  const yearLabel = details.year
+    ? `${details.year}（${details.yearSource === "manufacture" ? "製造年" : "初飛行年"}）`
+    : "不明";
+  return {
+    title: "🛩️ サーバー監視機体の追加要望",
+    description: "内容を確認し、サーバー全体の検知対象へ追加するか選んでください。",
+    color: 0xf1c40f,
+    fields: [
+      { name: "申請者", value: `${requesterName || "Discordユーザー"}\nID: \`${requesterId}\``, inline: true },
+      { name: "登録記号", value: `\`${registration}\``, inline: true },
+      { name: "ICAO24", value: `\`${icao24}\``, inline: true },
+      { name: "機種", value: String(details.type || UNKNOWN_TYPE).slice(0, 1024), inline: false },
+      { name: "運航会社・所有者", value: String(details.operator || "不明").slice(0, 1024), inline: true },
+      { name: "登録国", value: String(details.country || "不明").slice(0, 1024), inline: true },
+      { name: "製造・初飛行", value: yearLabel, inline: true },
+    ],
+    footer: { text: "承認するとGitHub上のサーバー全体watchlistへ追加され、申請者へDMします。" },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function processAircraftRequestSubmit(interaction, env, rawRegistration = "") {
+  const sourceChannelId = String(env.FEEDBACK_SOURCE_CHANNEL_ID || DEFAULT_FEEDBACK_SOURCE_CHANNEL_ID).trim();
+  const requesterId = String(interaction.member?.user?.id || interaction.user?.id || "");
+  try {
+    if (sourceChannelId && String(interaction.channel_id || "") !== sourceChannelId) {
+      throw new Error("この申請は質問・改善要望チャンネルから送信してください。");
+    }
+    if (!requesterId) throw new Error("申請者を確認できませんでした。");
+    const compact = normalizeRegistration(rawRegistration);
+    if (!/^[A-Z0-9]{3,12}$/.test(compact)) {
+      throw new Error("機体番号は英数字とハイフンで入力してください（例: JA738B / G-EZBZ）。");
+    }
+    const icao24 = await lookupIcao24(rawRegistration);
+    if (!icao24) {
+      throw new Error(`\`${String(rawRegistration).toUpperCase()}\` のICAO24を確認できませんでした。登録記号を確認してください。`);
+    }
+    const [{ data: watchlist }, details] = await Promise.all([
+      readWatchlist(env),
+      lookupAircraftDetails(icao24, env),
+    ]);
+    const registration = String(details.registration || rawRegistration).trim().toUpperCase();
+    const existing = Object.entries(watchlist).find(([hex, value]) => (
+      hex.toLowerCase() === icao24 || normalizeRegistration(normalize(value).label) === normalizeRegistration(registration)
+    ));
+    if (existing) {
+      await editOriginal(interaction, {
+        content: `ℹ️ \`${normalize(existing[1]).label}\` (${existing[0]}) はサーバー全体の検知対象に登録済みです。`,
+        components: [],
+      });
+      return;
+    }
+    const adminChannelId = String(env.FEEDBACK_DESTINATION_CHANNEL_ID || DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID).trim();
+    const requesterName = String(
+      interaction.member?.nick
+      || interaction.member?.user?.global_name
+      || interaction.member?.user?.username
+      || interaction.user?.global_name
+      || interaction.user?.username
+      || "Discordユーザー",
+    );
+    await discordBotRequest(env, `/channels/${adminChannelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [aircraftRequestReviewEmbed({ requesterId, requesterName, registration, icao24, details })],
+        components: [{ type: 1, components: [
+          {
+            type: 2, style: 3, label: "サーバー監視へ追加", emoji: { name: "✅" },
+            custom_id: aircraftRequestButton("approve", requesterId, icao24, registration),
+          },
+          {
+            type: 2, style: 4, label: "見送る", emoji: { name: "❌" },
+            custom_id: aircraftRequestButton("reject", requesterId, icao24, registration),
+          },
+        ] }],
+        allowed_mentions: { parse: [] },
+      }),
+    });
+    await editOriginal(interaction, {
+      content: `✅ \`${registration}\` (${icao24}) の追加要望を管理者へ送りました。結果はDMで届きます。`,
+      components: [],
+    });
+  } catch (err) {
+    console.error("aircraft request submit failed:", (err && err.stack) || err);
+    const message = String(err?.message || "");
+    const safeMessage = message.startsWith("Discord API failed") || message.includes("DISCORD_BOT_TOKEN")
+      ? "現在、追加要望を受け付けられません。管理者へお知らせください。"
+      : message || "追加要望の送信に失敗しました。もう一度お試しください。";
+    await editOriginal(interaction, { content: `⚠️ ${safeMessage}`, components: [] });
+  }
+}
+
+function aircraftRequestDecisionMessage(interaction, text, color) {
+  const embeds = Array.isArray(interaction.message?.embeds)
+    ? interaction.message.embeds.map((embed, index) => index === 0
+      ? { ...embed, color, footer: { text }, timestamp: new Date().toISOString() }
+      : embed)
+    : [];
+  return { content: `**${text}**`, embeds, components: [], allowed_mentions: { parse: [] } };
+}
+
+async function processAircraftRequestDecision(interaction, env) {
+  const [, action, requesterId, rawIcao24, rawRegistration] =
+    String(interaction.data?.custom_id || "").split("|");
+  const icao24 = String(rawIcao24 || "").toLowerCase();
+  const registration = decodeURIComponent(String(rawRegistration || "")).toUpperCase();
+  try {
+    if (!/^(approve|reject)$/.test(action || "") || !/^\d{15,22}$/.test(requesterId || "")
+        || !HEX6.test(icao24) || !/^[A-Z0-9-]{3,20}$/.test(registration)) {
+      throw new Error("invalid aircraft request custom_id");
+    }
+    if (action === "reject") {
+      let dmNote = "";
+      try {
+        await sendRequesterDm(env, requesterId,
+          `❌ 申請した機体 \`${registration}\` は、今回はサーバー全体の検知対象へ追加されませんでした。`);
+      } catch (err) {
+        console.error("aircraft request reject DM failed:", err?.message || err);
+        dmNote = "（申請者へのDM送信には失敗しました）";
+      }
+      await editOriginal(interaction, aircraftRequestDecisionMessage(
+        interaction, `❌ ${registration} の追加を見送りました。${dmNote}`, 0xe74c3c,
+      ));
+      return;
+    }
+
+    const details = await lookupAircraftDetails(icao24, env);
+    const typeName = details.type || UNKNOWN_TYPE;
+    const outcome = await updateWatchlist(env, (watchlist) => {
+      const existing = Object.entries(watchlist).find(([hex, value]) => (
+        hex.toLowerCase() === icao24 || normalizeRegistration(normalize(value).label) === normalizeRegistration(registration)
+      ));
+      if (existing) return { changed: false, existing: normalize(existing[1]).label };
+      watchlist[icao24] = { label: registration, type: typeName };
+      return { changed: true };
+    }, `watchlist: approve requested aircraft ${registration}`);
+
+    const resultText = outcome.existing
+      ? `ℹ️ ${outcome.existing} は既にサーバー監視へ登録済みでした。`
+      : `✅ ${registration} (${icao24} / ${typeName}) をサーバー監視へ追加しました。`;
+    let dmNote = "";
+    try {
+      await sendRequesterDm(env, requesterId, outcome.existing
+        ? `ℹ️ 申請した機体 \`${outcome.existing}\` は、サーバー全体の検知対象に登録済みです。`
+        : `✅ 申請した機体 \`${registration}\` (${typeName}) が、サーバー全体の検知対象へ追加されました。`);
+    } catch (err) {
+      console.error("aircraft request approval DM failed:", err?.message || err);
+      dmNote = "（申請者へのDM送信には失敗しました）";
+    }
+    await editOriginal(interaction, aircraftRequestDecisionMessage(
+      interaction, `${resultText}${dmNote}`, outcome.existing ? 0x95a5a6 : 0x2ecc71,
+    ));
+  } catch (err) {
+    console.error("aircraft request decision failed:", (err && err.stack) || err);
+    await editOriginal(interaction, {
+      content: "⚠️ 処理に失敗しました。ボタンは残しているため、少し待ってから再度お試しください。",
+      embeds: interaction.message?.embeds || [],
+      components: interaction.message?.components || [],
+      allowed_mentions: { parse: [] },
+    });
+  }
 }
 
 function channelPanelBridge(interaction, panel, operation, args = []) {
