@@ -20,7 +20,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-15-aircraft-request-review-v13";
+const WORKER_BUILD = "2026-10-15-aircraft-lookup-fallback-v14";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_FEEDBACK_SOURCE_CHANNEL_ID = "1554454760038465576";
 const DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID = "1552647426253389926";
@@ -442,7 +442,7 @@ async function processAircraftRequestSubmit(interaction, env, rawRegistration = 
     if (!/^[A-Z0-9]{3,12}$/.test(compact)) {
       throw new Error("機体番号は英数字とハイフンで入力してください（例: JA738B / G-EZBZ）。");
     }
-    const icao24 = await lookupIcao24(rawRegistration);
+    const icao24 = await lookupIcao24(rawRegistration, env);
     if (!icao24) {
       throw new Error(`\`${String(rawRegistration).toUpperCase()}\` のICAO24を確認できませんでした。登録記号を確認してください。`);
     }
@@ -1676,7 +1676,7 @@ async function cmdAdd(o, env, interaction) {
   }
 
   if (!icao24) {
-    icao24 = await lookupIcao24(tail);
+    icao24 = await lookupIcao24(tail, env);
     if (!icao24) {
       // すぐには見つからない → GitHub Actionsで、60万機のデータベースを使って詳しく検索する
       return startSlowLookup(env, "add", [tail, ...(typeName ? [typeName] : [])], interaction, {
@@ -1778,7 +1778,7 @@ async function cmdInfo(o, env, interaction = null) {
       [icao24, entry] = found;
     }
   }
-  if (!icao24) icao24 = await lookupIcao24(query);
+  if (!icao24) icao24 = await lookupIcao24(query, env);
   if (!icao24) {
     if (!interaction?.channel_id) return { content: `❓ \`${query}\` の機体情報は見つかりませんでした。` };
     return startSlowLookup(env, "info_search", [query, 0], interaction, {
@@ -2364,7 +2364,21 @@ function registrationLookupCandidates(registration) {
   return [...new Set([raw.includes("-") ? raw : inferred, raw, compact].filter(Boolean))];
 }
 
-async function lookupIcao24(registration) {
+function aeroDataBoxIcao24(data) {
+  const records = Array.isArray(data)
+    ? data
+    : [data, ...(Array.isArray(data?.items) ? data.items : []), ...(Array.isArray(data?.registrations) ? data.registrations : [])];
+  const active = records.find((record) => record && record.active !== false && HEX6.test(String(
+    record.hexIcao || record.modeS || record.icao24 || "",
+  )));
+  const any = active || records.find((record) => record && HEX6.test(String(
+    record.hexIcao || record.modeS || record.icao24 || "",
+  )));
+  const value = String(any?.hexIcao || any?.modeS || any?.icao24 || "").trim();
+  return HEX6.test(value) ? value.toLowerCase() : null;
+}
+
+async function lookupIcao24(registration, env = {}) {
   for (const candidate of registrationLookupCandidates(registration)) {
     try {
       const r = await fetch(`https://hexdb.io/reg-hex?reg=${encodeURIComponent(candidate)}`, {
@@ -2376,6 +2390,20 @@ async function lookupIcao24(registration) {
       if (HEX6.test(text)) return text.toLowerCase();
     } catch {
       // 次の表記候補を試す。
+    }
+  }
+  if (env.AERODATABOX_RAPIDAPI_KEY) {
+    for (const candidate of registrationLookupCandidates(registration)) {
+      const data = await fetchJson(
+        `https://aerodatabox.p.rapidapi.com/aircrafts/reg/${encodeURIComponent(candidate)}`,
+        3000,
+        {
+          "x-rapidapi-key": env.AERODATABOX_RAPIDAPI_KEY,
+          "x-rapidapi-host": "aerodatabox.p.rapidapi.com",
+        },
+      );
+      const icao24 = aeroDataBoxIcao24(data);
+      if (icao24) return icao24;
     }
   }
   return null;
@@ -2427,9 +2455,11 @@ async function lookupAircraftDetails(icao24, env = {}) {
   let aero = {};
   // 既存のAeroDataBox無料枠は、他の公開DBで年が取れない場合だけ使う。
   // 通常の監視では呼ばず、詳細カードを開いた時だけなので消費を最小限にする。
-  if (registration && env.AERODATABOX_RAPIDAPI_KEY && !manufactureYear && !firstFlightYear) {
+  if (env.AERODATABOX_RAPIDAPI_KEY && (!registration || (!manufactureYear && !firstFlightYear))) {
+    const searchBy = registration ? "reg" : "icao24";
+    const searchValue = registration || icao24;
     aero = await fetchJson(
-      `https://aerodatabox.p.rapidapi.com/aircrafts/reg/${encodeURIComponent(registration)}`,
+      `https://aerodatabox.p.rapidapi.com/aircrafts/${searchBy}/${encodeURIComponent(searchValue)}`,
       3000,
       {
         "x-rapidapi-key": env.AERODATABOX_RAPIDAPI_KEY,

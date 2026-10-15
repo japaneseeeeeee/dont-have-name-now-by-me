@@ -123,6 +123,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (value.includes("hexdb.io/reg-hex?")) {
     registrationLookupUrl = value;
+    if (value.endsWith("reg=JA738A")) return new Response("n/a", { status: 404 });
     return new Response(registrationLookupStatus === 200 ? "4010EE" : "", { status: registrationLookupStatus });
   }
   if (value.includes("hexdb.io/api/v1/aircraft/4010ee")) {
@@ -137,6 +138,9 @@ globalThis.fetch = async (url, init = {}) => {
       RegisteredOwners: "All Nippon Airways",
     }), { status: 200, headers: { "content-type": "application/json" } });
   }
+  if (value.includes("hexdb.io/api/v1/aircraft/86804e")) {
+    return new Response("n/a", { status: 404 });
+  }
   if (value.includes("api.adsbdb.com/v0/aircraft/4010ee")) {
     return new Response(JSON.stringify({ response: { aircraft: {} } }), {
       status: 200, headers: { "content-type": "application/json" },
@@ -146,6 +150,23 @@ globalThis.fetch = async (url, init = {}) => {
     return new Response(JSON.stringify({ response: { aircraft: { registration: "JA784A", registered_owner_country_name: "Japan" } } }), {
       status: 200, headers: { "content-type": "application/json" },
     });
+  }
+  if (value.includes("api.adsbdb.com/v0/aircraft/86804e")) {
+    return new Response(JSON.stringify({ response: "unknown aircraft" }), {
+      status: 404, headers: { "content-type": "application/json" },
+    });
+  }
+  if (value.includes("aerodatabox.p.rapidapi.com/aircrafts/reg/JA738A")) {
+    return new Response(JSON.stringify({
+      reg: "JA738A", hexIcao: "86804E", model: "Boeing 737 MAX 8",
+      modelCode: "B38M", airlineName: "Skymark Airlines", firstFlightDate: "2026-03-20",
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (value.includes("aerodatabox.p.rapidapi.com/aircrafts/icao24/86804e")) {
+    return new Response(JSON.stringify({
+      reg: "JA738A", hexIcao: "86804E", model: "Boeing 737 MAX 8",
+      modelCode: "B38M", airlineName: "Skymark Airlines", firstFlightDate: "2026-03-20",
+    }), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (value.includes("aerodatabox.p.rapidapi.com/aircrafts/reg/JA784A")) {
     aeroDataBoxAircraftLookup = true;
@@ -261,6 +282,24 @@ await Promise.all(duplicateTasks);
 assert.equal(adminReviewPayloads.length, 1);
 assert.match(editedOriginalPayload.content, /既に管理者の確認待ち/);
 pendingAdminMessages = [];
+
+editedOriginalPayload = null;
+const newAircraftTasks = [];
+worker.feedbackModalSubmit({
+  ...requestInteraction,
+  token: "new-aircraft-token",
+  data: {
+    custom_id: "feedback_modal|aircraft-request",
+    components: [{ components: [{ value: "JA738A" }] }],
+  },
+}, { ...requestEnv, AERODATABOX_RAPIDAPI_KEY: "test" }, {
+  waitUntil(promise) { newAircraftTasks.push(promise); },
+});
+await Promise.all(newAircraftTasks);
+assert.match(editedOriginalPayload.content, /`JA738A` \(86804e\)/);
+assert.equal(adminReviewPayloads.length, 2);
+assert.match(JSON.stringify(adminReviewPayloads[1]), /Boeing 737 MAX 8/);
+assert.match(JSON.stringify(adminReviewPayloads[1]), /Skymark Airlines/);
 
 editedOriginalPayload = null;
 dmPayloads = [];
@@ -641,7 +680,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
-assert.equal(worker.WORKER_BUILD, "2026-10-15-aircraft-request-review-v13");
+assert.equal(worker.WORKER_BUILD, "2026-10-15-aircraft-lookup-fallback-v14");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
