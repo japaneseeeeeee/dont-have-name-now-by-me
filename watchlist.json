@@ -213,6 +213,10 @@
     "label": "A7-APJ",
     "type": "Airbus A380-861"
   },
+  "06a1bd": {
+    "label": "A7-BEG",
+    "type": "Boeing 777 3DZER"
+  },
   "06a1be": {
     "label": "A7-BEH",
     "type": "Boeing 777-300ER"
