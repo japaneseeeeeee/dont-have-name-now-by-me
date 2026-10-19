@@ -127,6 +127,25 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         view = discord_bot.PersonalControlPanelView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
         self.assertEqual(buttons["機体＋地方通知"], "personal_panel:region")
+        self.assertEqual(buttons["最近の検知履歴"], "personal_panel:history")
+
+    def test_personal_detection_history_is_formatted_newest_first(self):
+        self.store = {"123": [
+            {"detected_at": 100, "label": "JA0001", "region": "関東", "callsign": "ANA1"},
+            {"detected_at": 200, "label": "JA0002", "region": "九州", "flight": "NH2", "origin": "FUK", "destination": "HND"},
+        ]}
+        result = discord_bot.format_personal_detection_history(123)
+        self.assertLess(result.index("JA0002"), result.index("JA0001"))
+        self.assertIn("FUK→HND", result)
+
+    def test_destination_eta_requires_heading_toward_destination(self):
+        aircraft = {"lat": 35.0, "lon": 139.0, "gs": 400, "track": 90}
+        route = {"destination": {"latitude": 35.0, "longitude": 140.0}}
+        minutes = discord_bot._destination_eta_minutes(aircraft, route)
+        self.assertIsNotNone(minutes)
+        self.assertGreater(minutes, 0)
+        aircraft["track"] = 270
+        self.assertIsNone(discord_bot._destination_eta_minutes(aircraft, route))
 
     def test_general_menu_has_watchlist_aircraft_filter_button(self):
         view = discord_bot.GeneralMenuView()
@@ -401,6 +420,7 @@ class PersonalDataDeletionTests(unittest.TestCase):
                 "PERSONAL_SPECIALS_PATH": os.path.join(temp_dir, "personal.json"),
                 "PERSONAL_SPECIAL_EVENTS_PATH": os.path.join(temp_dir, "events.json"),
                 "PERSONAL_SPECIAL_NOTIFIED_PATH": os.path.join(temp_dir, "notified.json"),
+                "PERSONAL_DETECTION_HISTORY_PATH": os.path.join(temp_dir, "detection-history.json"),
                 "DESTINATION_ALERTS_PATH": os.path.join(temp_dir, "destinations.json"),
                 "EQUIPMENT_ALERTS_PATH": os.path.join(temp_dir, "equipment.json"),
             }
@@ -408,6 +428,7 @@ class PersonalDataDeletionTests(unittest.TestCase):
                 "PERSONAL_SPECIALS_PATH": {"123": {"aircraft": {"abc123": {}}}, "456": {"aircraft": {"def456": {}}}},
                 "PERSONAL_SPECIAL_EVENTS_PATH": [{"user_id": "123"}, {"user_id": "456"}],
                 "PERSONAL_SPECIAL_NOTIFIED_PATH": {"123:abc123": 1, "456:def456": 2},
+                "PERSONAL_DETECTION_HISTORY_PATH": {"123": [{"icao24": "abc123"}], "456": [{"icao24": "def456"}]},
                 "DESTINATION_ALERTS_PATH": {"next_id": 4, "rules": [
                     {"id": 1, "scope": "personal", "owner_id": "123"},
                     {"id": 2, "scope": "personal", "owner_id": "456"},
@@ -427,12 +448,15 @@ class PersonalDataDeletionTests(unittest.TestCase):
             self.assertEqual(removed["settings"], 1)
             self.assertEqual(removed["destinations"], 1)
             self.assertEqual(removed["equipment"], 1)
+            self.assertEqual(removed["detections"], 1)
             with open(paths["PERSONAL_SPECIALS_PATH"], encoding="utf-8") as handle:
                 self.assertEqual(set(json.load(handle)), {"456"})
             with open(paths["PERSONAL_SPECIAL_EVENTS_PATH"], encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), [{"user_id": "456"}])
             with open(paths["PERSONAL_SPECIAL_NOTIFIED_PATH"], encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), {"456:def456": 2})
+            with open(paths["PERSONAL_DETECTION_HISTORY_PATH"], encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), {"456": [{"icao24": "def456"}]})
             with open(paths["DESTINATION_ALERTS_PATH"], encoding="utf-8") as handle:
                 self.assertEqual([rule["id"] for rule in json.load(handle)["rules"]], [2, 3])
             with open(paths["EQUIPMENT_ALERTS_PATH"], encoding="utf-8") as handle:

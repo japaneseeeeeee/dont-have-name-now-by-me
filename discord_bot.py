@@ -105,6 +105,7 @@ STATE_PATH = os.path.join(BASE_DIR, "bot_state.json")          # チャンネル
 HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が更新時刻を見る
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
+PERSONAL_DETECTION_HISTORY_PATH = os.path.join(BASE_DIR, "personal_detection_history.json")
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 PERSONAL_SPECIAL_NOTIFIED_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
 PERSONAL_ALERT_ACTIONS_PATH = os.path.join(BASE_DIR, "personal_alert_actions.json")
@@ -1440,20 +1441,50 @@ def personal_panel_summary(user_id):
     config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
     _, destinations = personal_destination_rules(user_id)
     equipment = equipment_rules_for(load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store()), user_id, "personal")
+    history = load_locked_json(PERSONAL_DETECTION_HISTORY_PATH, {}).get(str(user_id)) or []
     return (
         f"DM通知: **{'ON' if config.get('enabled', True) else 'OFF'}**\n"
         f"✈️ 登録機体: **{len(config.get('aircraft') or {})}機**\n"
         f"📍 機体＋地方通知: **{personal_region_rule_count(config)}件**\n"
         f"🌍 目的地早期通知: **{len(destinations)}件**\n"
         f"🏢 空港ウォッチ: **{len(config.get('airports') or {})}件**\n"
-        f"🔔 機材投入通知: **{len(equipment)}件**"
+        f"🔔 機材投入通知: **{len(equipment)}件**\n"
+        f"🕘 保存中の検知履歴: **{len(history)}件**"
     )
+
+
+def format_personal_detection_history(user_id, limit=10):
+    """個人検知履歴をDiscordで読みやすい短い一覧にする。"""
+    history = load_locked_json(PERSONAL_DETECTION_HISTORY_PATH, {})
+    entries = history.get(str(user_id)) if isinstance(history, dict) else []
+    if not isinstance(entries, list) or not entries:
+        return "🕘 **最近の検知履歴**\nまだ検知履歴はありません。"
+    jst = timezone(timedelta(hours=9))
+    lines = []
+    for entry in reversed(entries[-max(1, min(int(limit), 20)):]):
+        try:
+            stamp = datetime.fromtimestamp(float(entry.get("detected_at") or 0), timezone.utc).astimezone(jst)
+            when = stamp.strftime("%m/%d %H:%M")
+        except (OSError, OverflowError, TypeError, ValueError):
+            when = "時刻不明"
+        label = str(entry.get("label") or entry.get("icao24") or "不明")
+        region = str(entry.get("region") or "不明")
+        flight = str(entry.get("flight") or entry.get("callsign") or "").strip()
+        origin = str(entry.get("origin") or "").strip()
+        destination = str(entry.get("destination") or "").strip()
+        route = f" {origin}→{destination}" if origin and destination else ""
+        flight_text = f" `{flight}`" if flight else ""
+        lines.append(f"`{when}` **{label}**｜{region}{flight_text}{route}")
+    return "🕘 **最近の検知履歴（最大10件・30日保存）**\n" + "\n".join(lines)
 
 
 def delete_personal_notification_data(user_id):
     """個人チャンネル削除時に、その利用者の通知設定と待機データをすべて消す。"""
     owner_id = str(user_id)
-    removed = {"settings": 0, "destinations": 0, "equipment": 0, "events": 0, "history": 0}
+    removed = {
+        "settings": 0, "destinations": 0, "equipment": 0,
+        "events": 0, "history": 0, "detections": 0,
+    }
 
     settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
     if settings.pop(owner_id, None) is not None:
@@ -1475,6 +1506,11 @@ def delete_personal_notification_data(user_id):
         removed["history"] += len(history_keys)
         if history_keys:
             save_locked_json(PERSONAL_SPECIAL_NOTIFIED_PATH, notified)
+
+    detection_history = load_locked_json(PERSONAL_DETECTION_HISTORY_PATH, {})
+    if isinstance(detection_history, dict) and detection_history.pop(owner_id, None) is not None:
+        removed["detections"] = 1
+        save_locked_json(PERSONAL_DETECTION_HISTORY_PATH, detection_history)
 
     destination_store = load_locked_json(DESTINATION_ALERTS_PATH, empty_destination_store())
     destination_rules = destination_store.get("rules") or []
@@ -2113,6 +2149,8 @@ async def handle_personal_panel_bridge(message):
             result = "✅ 飛行状態・航空会社・機種の絞り込みを解除しました。"
         elif operation == "summary":
             result = "👤 **現在の個人設定**\n" + personal_panel_summary(user_id)
+        elif operation == "history":
+            result = format_personal_detection_history(user_id)
         elif operation == "refresh":
             async for old_message in message.channel.history(limit=100):
                 if old_message.id == message.id:
@@ -2202,6 +2240,9 @@ class PersonalControlPanelView(discord.ui.View):
 
     @discord.ui.button(label="この画面の使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=1)
     async def help(self, interaction, button): pass
+
+    @discord.ui.button(label="最近の検知履歴", emoji="🕘", style=discord.ButtonStyle.secondary, custom_id="personal_panel:history", row=2)
+    async def history(self, interaction, button): pass
 
 
 async def refresh_personal_control_panels():
@@ -2521,6 +2562,43 @@ def _destination_distance_km(aircraft, route):
         return None
 
 
+def _destination_eta_minutes(aircraft, route):
+    """現在速度と直線距離から、進行方向が妥当な場合だけ概算所要分を返す。"""
+    distance = _destination_distance_km(aircraft, route)
+    speed_knots = aircraft.get("gs")
+    if distance is None or not isinstance(speed_knots, (int, float)) or speed_knots < 80:
+        return None
+    try:
+        destination = route["destination"]
+        lat1 = math.radians(float(aircraft["lat"]))
+        lon1 = math.radians(float(aircraft["lon"]))
+        lat2 = math.radians(float(destination["latitude"]))
+        lon2 = math.radians(float(destination["longitude"]))
+        y = math.sin(lon2 - lon1) * math.cos(lat2)
+        x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(lon2 - lon1)
+        bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
+        track = aircraft.get("track")
+        if isinstance(track, (int, float)):
+            difference = abs((float(track) - bearing + 180) % 360 - 180)
+            if difference > 70:
+                return None
+        minutes = distance / (float(speed_knots) * 1.852) * 60
+        return minutes if 1 <= minutes <= 24 * 60 else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _format_eta(minutes, now=None):
+    if minutes is None:
+        return "取得不可"
+    rounded = max(1, int(round(minutes / 5.0) * 5))
+    hours, mins = divmod(rounded, 60)
+    duration = f"約{hours}時間{mins}分後" if hours and mins else f"約{hours}時間後" if hours else f"約{mins}分後"
+    base = now or datetime.now(timezone.utc)
+    eta_jst = (base + timedelta(minutes=minutes)).astimezone(timezone(timedelta(hours=9)))
+    return f"{duration}（JST {eta_jst:%H:%M}ごろ）"
+
+
 def build_destination_alert_embed(rule, aircraft, route):
     callsign = str(aircraft.get("flight") or "").strip().upper()
     hex_id = str(aircraft.get("hex") or rule["icao24"]).lower()
@@ -2538,8 +2616,8 @@ def build_destination_alert_embed(rule, aircraft, route):
     embed.add_field(name="高度", value=f"{float(altitude):,.0f} ft" if isinstance(altitude, (int, float)) else "取得不可", inline=True)
     distance = _destination_distance_km(aircraft, route)
     embed.add_field(name=f"{rule['destination']}まで", value=f"約{distance:,.0f} km" if distance is not None else "取得不可", inline=True)
-    embed.add_field(name="到着予定", value="取得不可", inline=True)
-    embed.set_footer(text="目的地は便ルート情報との完全一致で判定｜到着予定は信頼できる情報源がある場合のみ表示")
+    embed.add_field(name="概算到着", value=_format_eta(_destination_eta_minutes(aircraft, route)), inline=True)
+    embed.set_footer(text="目的地は便ルート情報との完全一致で判定｜概算到着は直線距離÷現在速度の目安")
     return embed
 
 

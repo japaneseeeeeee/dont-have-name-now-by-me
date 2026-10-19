@@ -20,7 +20,7 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-15-aircraft-lookup-fallback-v14";
+const WORKER_BUILD = "2026-10-19-personal-history-eta-v15";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_FEEDBACK_SOURCE_CHANNEL_ID = "1554454760038465576";
 const DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID = "1552647426253389926";
@@ -1406,6 +1406,7 @@ function handlePersonalPanelButton(interaction) {
       "🔔 **機材通知**：指定便に指定機材が投入されたときに通知します。\n" +
       "⚙️ **通知ON・条件設定**：個人通知のON/OFFや条件を変更します。\n" +
       "📋 **全登録・設定を見る**：登録数と通知状態を表示します。\n" +
+      "🕘 **最近の検知履歴**：直近10件の個人通知履歴を表示します（30日保存）。\n" +
       "🔄 **パネルを一番下へ**：パネルをチャンネルの一番下へ移動します。\n" +
       "🗑️ **個人設定を全削除**：チャンネルと個人通知データをすべて削除します。\n" +
       "📖 **この画面の使い方**：この案内を表示します。"
@@ -1420,6 +1421,7 @@ function handlePersonalPanelButton(interaction) {
       : json({ type: 4, data: { flags: 64, content: "⛔ パネルの移動はサーバー管理者だけが実行できます。" } });
   }
   if (action === "summary") return personalBridge(interaction, "summary");
+  if (action === "history") return personalBridge(interaction, "history");
   if (action === "refresh") return personalBridge(interaction, "refresh");
   if (action === "delete") {
     return json({ type: 4, data: { flags: 64, content: "⚠️ **個人チャンネルを削除しますか？**\n個人機体通知・機体＋地方通知・目的地早期通知・空港ウォッチ・機材投入通知・通知条件もすべて削除され、個人通知は停止します。この操作は元に戻せません。", components: [

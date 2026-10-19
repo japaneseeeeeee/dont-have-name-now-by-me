@@ -122,11 +122,14 @@ STATE_PATH = os.path.join(BASE_DIR, "notified.json")
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_STATE_PATH = os.path.join(BASE_DIR, "personal_special_notified.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
+PERSONAL_DETECTION_HISTORY_PATH = os.path.join(BASE_DIR, "personal_detection_history.json")
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 SYSTEM_ALERT_STATE_PATH = os.path.join(BASE_DIR, "system_alert_state.json")
 FLIGHT_CONTEXT_STATE_PATH = os.path.join(BASE_DIR, "flight_context_state.json")
 PHOTO_CACHE_PATH = os.path.join(BASE_DIR, "photo_cache.json")
 SYSTEM_ALERT_COOLDOWN = 6 * 60 * 60
+PERSONAL_HISTORY_RETENTION_SECONDS = 30 * 24 * 60 * 60
+PERSONAL_HISTORY_LIMIT_PER_USER = 100
 # launchd本体とself-hosted Actionsのcheckout先が異なっても同じロックを使う。
 MONITOR_LOCK_PATH = os.environ.get(
     "AIRCRAFT_MONITOR_LOCK", "/tmp/aircraft-alert-monitor.lock"
@@ -519,6 +522,86 @@ def save_shared_json(path, data):
         try:
             with open(tmp_path, "w", encoding="utf-8") as data_file:
                 json.dump(data, data_file, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def append_personal_detection_history(events, now=None):
+    """個人通知の検知履歴を30日・利用者ごと最大100件だけ保存する。"""
+    if not events:
+        return
+    current_time = float(now if now is not None else time.time())
+    cutoff = current_time - PERSONAL_HISTORY_RETENTION_SECONDS
+    path = PERSONAL_DETECTION_HISTORY_PATH
+    lock_path = path + ".lock"
+    tmp_path = path + ".tmp"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            history = {}
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as data_file:
+                        loaded = json.load(data_file)
+                    if isinstance(loaded, dict):
+                        history = loaded
+                except (OSError, ValueError):
+                    history = {}
+
+            for event in events:
+                user_id = str(event.get("user_id") or "")
+                if not user_id:
+                    continue
+                route = event.get("route") if isinstance(event.get("route"), dict) else {}
+                origin = route.get("origin") if isinstance(route.get("origin"), dict) else {}
+                destination = route.get("destination") if isinstance(route.get("destination"), dict) else {}
+                record = {
+                    "detected_at": float(event.get("detected_at") or current_time),
+                    "icao24": str(event.get("icao24") or "").lower(),
+                    "label": str(event.get("label") or event.get("icao24") or "不明"),
+                    "type": str(event.get("type") or "不明"),
+                    "region": str(event.get("region") or "不明"),
+                    "priority": str(event.get("priority") or "NORMAL").upper(),
+                    "callsign": str(event.get("callsign") or "").strip().upper(),
+                    "alert_kind": str(event.get("alert_kind") or ("airport" if event.get("airport") else "aircraft")),
+                    "repeat": bool(event.get("repeat")),
+                    "flight": str(route.get("flight_iata") or "").strip().upper(),
+                    "origin": str(origin.get("iata_code") or origin.get("icao_code") or "").upper(),
+                    "destination": str(destination.get("iata_code") or destination.get("icao_code") or "").upper(),
+                    "route_confidence": str(route.get("_confidence") or ""),
+                }
+                entries = history.get(user_id)
+                if not isinstance(entries, list):
+                    entries = []
+                entries = [
+                    item for item in entries
+                    if isinstance(item, dict) and float(item.get("detected_at") or 0) >= cutoff
+                ]
+                # 監視処理が直後に再実行されても同一検知を二重記録しない。
+                duplicate = next((
+                    item for item in reversed(entries[-5:])
+                    if item.get("icao24") == record["icao24"]
+                    and item.get("region") == record["region"]
+                    and abs(float(item.get("detected_at") or 0) - record["detected_at"]) < 60
+                ), None)
+                if duplicate is None:
+                    entries.append(record)
+                history[user_id] = entries[-PERSONAL_HISTORY_LIMIT_PER_USER:]
+
+            # 30日より古い履歴しかない利用者の空キーも整理する。
+            cleaned = {}
+            for user_id, entries in history.items():
+                if not isinstance(entries, list):
+                    continue
+                recent = [
+                    item for item in entries
+                    if isinstance(item, dict) and float(item.get("detected_at") or 0) >= cutoff
+                ][-PERSONAL_HISTORY_LIMIT_PER_USER:]
+                if recent:
+                    cleaned[str(user_id)] = recent
+            with open(tmp_path, "w", encoding="utf-8") as data_file:
+                json.dump(cleaned, data_file, ensure_ascii=False, indent=2)
             os.replace(tmp_path, path)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
@@ -1684,6 +1767,7 @@ def run_monitor():
         states, personal_settings, personal_notified, now, watchlist
     )
     enrich_personal_event_flight_context(personal_events)
+    append_personal_detection_history(personal_events, now)
     if personal_notified != original_personal_notified:
         save_shared_json(PERSONAL_SPECIAL_STATE_PATH, personal_notified)
     append_personal_special_events(personal_events)

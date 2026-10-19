@@ -735,6 +735,14 @@ assert.match(JSON.stringify(responseBody.data.components), /personal_action\|reg
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_list/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_remove/);
 
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:history" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|history/);
+
 response = worker.handlePersonalPanelAction({
   user: { id: "123" },
   data: { custom_id: "personal_action|region_add" },

@@ -675,6 +675,26 @@ class PriorityTests(unittest.TestCase):
             finally:
                 monitor.PERSONAL_SPECIAL_EVENTS_PATH = old_path
 
+    def test_personal_detection_history_is_bounded_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_path = monitor.PERSONAL_DETECTION_HISTORY_PATH
+            old_limit = monitor.PERSONAL_HISTORY_LIMIT_PER_USER
+            monitor.PERSONAL_DETECTION_HISTORY_PATH = os.path.join(directory, "history.json")
+            monitor.PERSONAL_HISTORY_LIMIT_PER_USER = 2
+            try:
+                base = {"user_id": "100", "icao24": "abc123", "label": "JA0001", "region": "関東"}
+                monitor.append_personal_detection_history([{**base, "detected_at": 100}], 100)
+                monitor.append_personal_detection_history([{**base, "detected_at": 120}], 120)
+                monitor.append_personal_detection_history([{**base, "detected_at": 200}], 200)
+                monitor.append_personal_detection_history([{**base, "detected_at": 300}], 300)
+                with open(monitor.PERSONAL_DETECTION_HISTORY_PATH, "r", encoding="utf-8") as data_file:
+                    history = json.load(data_file)
+                self.assertEqual(len(history["100"]), 2)
+                self.assertEqual([item["detected_at"] for item in history["100"]], [200.0, 300.0])
+            finally:
+                monitor.PERSONAL_DETECTION_HISTORY_PATH = old_path
+                monitor.PERSONAL_HISTORY_LIMIT_PER_USER = old_limit
+
     def test_system_alert_queue_has_six_hour_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
             old_events = monitor.SYSTEM_ALERT_EVENTS_PATH
