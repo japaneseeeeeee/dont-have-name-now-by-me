@@ -115,6 +115,47 @@ class PriorityTests(unittest.TestCase):
         fields = {field["name"]: field["value"] for field in embed["fields"]}
         self.assertEqual(fields["🎨 特別塗装"], "記念特別塗装")
 
+    def test_special_livery_is_in_mobile_notification_content(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
+        response = Mock(status_code=204)
+        with (
+            patch("monitor.lookup_livery", return_value="記念特別塗装"),
+            patch("monitor.fetch_photo", return_value=None),
+            patch("monitor.resolve_flight_context", return_value=("TEST1", None)),
+            patch("monitor.request_with_retry", return_value=response) as request,
+        ):
+            monitor.notify_discord(
+                "abc123", {"label": "JA0001", "type": "TEST"}, aircraft,
+                "https://example.invalid/webhook", "関東",
+            )
+        payload = request.call_args.kwargs["json"]
+        self.assertIn("特別塗装：記念特別塗装", payload["content"])
+
+    def test_recovery_notice_waits_for_successful_monitor_and_clears_pending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pending_path = os.path.join(directory, "recovery.json")
+            events_path = os.path.join(directory, "events.json")
+            state_path = os.path.join(directory, "state.json")
+            with open(pending_path, "w", encoding="utf-8") as stream:
+                json.dump({
+                    "last_seen": 1000,
+                    "recovered_at": 1600,
+                    "duration_seconds": 600,
+                }, stream)
+            with (
+                patch.object(monitor, "RECOVERY_PENDING_PATH", pending_path),
+                patch.object(monitor, "SYSTEM_ALERT_EVENTS_PATH", events_path),
+                patch.object(monitor, "SYSTEM_ALERT_STATE_PATH", state_path),
+            ):
+                self.assertTrue(monitor.complete_recovery_notice(now=1700))
+                with open(events_path, encoding="utf-8") as stream:
+                    events = json.load(stream)
+                with open(pending_path, encoding="utf-8") as stream:
+                    pending = json.load(stream)
+        self.assertEqual(events[0]["severity"], "recovery")
+        self.assertIn("最新ADS-Bデータ", events[0]["detail"])
+        self.assertEqual(pending, {})
+
     def test_detection_reason_uses_natural_japanese(self):
         self.assertEqual(
             monitor.format_detection_reason("NORMAL", "関東"),

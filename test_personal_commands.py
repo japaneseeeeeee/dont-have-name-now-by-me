@@ -147,6 +147,12 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         aircraft["track"] = 270
         self.assertIsNone(discord_bot._destination_eta_minutes(aircraft, route))
 
+    def test_recovery_gap_is_recorded_only_after_five_minutes(self):
+        self.assertIsNone(discord_bot.build_recovery_pending(1000, 1299, 300))
+        pending = discord_bot.build_recovery_pending(1000, 1300, 300)
+        self.assertEqual(pending["duration_seconds"], 300)
+        self.assertEqual(pending["reason"], "heartbeat_gap")
+
     def test_general_menu_has_watchlist_aircraft_filter_button(self):
         view = discord_bot.GeneralMenuView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}

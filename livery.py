@@ -31,28 +31,36 @@ def load_liveries(path=DEFAULT_PATH):
     return result
 
 
-def lookup_livery(registration, *, today=None, data=None):
-    """Return a current livery name, or None when none is known."""
-    key = normalize_registration(registration)
-    if not key:
-        return None
+def lookup_livery(registration, *fallback_identifiers, today=None, data=None):
+    """Return a current livery name for the first known identifier.
 
-    entry = (data if data is not None else load_liveries()).get(key)
-    if isinstance(entry, str):
-        name = entry.strip()
-        return name or None
-    if not isinstance(entry, dict):
-        return None
+    通常は登録記号で引くが、通知データの表記揺れや登録記号欠落時に備えて
+    icao24などの代替識別子も順に確認できるようにする。
+    """
+    liveries = data if data is not None else load_liveries()
+    for identifier in (registration, *fallback_identifiers):
+        key = normalize_registration(identifier)
+        if not key:
+            continue
+        entry = liveries.get(key)
+        if isinstance(entry, str):
+            name = entry.strip()
+            if name:
+                return name
+            continue
+        if not isinstance(entry, dict):
+            continue
 
-    name = str(entry.get("name") or "").strip()
-    if not name:
-        return None
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
 
-    valid_until = entry.get("valid_until")
-    if valid_until:
-        try:
-            if (today or date.today()) > date.fromisoformat(str(valid_until)):
-                return None
-        except ValueError:
-            return None
-    return name
+        valid_until = entry.get("valid_until")
+        if valid_until:
+            try:
+                if (today or date.today()) > date.fromisoformat(str(valid_until)):
+                    continue
+            except ValueError:
+                continue
+        return name
+    return None

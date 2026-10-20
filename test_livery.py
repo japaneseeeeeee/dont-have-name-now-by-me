@@ -26,6 +26,13 @@ class LiveryTests(unittest.TestCase):
             lookup_livery("JA339J", today=date(2027, 5, 1), data=data)
         )
 
+    def test_fallback_identifier_can_resolve_livery(self):
+        data = {"8691AA": {"name": "記念塗装"}}
+        self.assertEqual(
+            lookup_livery(None, "8691aa", data=data),
+            "記念塗装",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

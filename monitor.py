@@ -125,6 +125,7 @@ PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.j
 PERSONAL_DETECTION_HISTORY_PATH = os.path.join(BASE_DIR, "personal_detection_history.json")
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 SYSTEM_ALERT_STATE_PATH = os.path.join(BASE_DIR, "system_alert_state.json")
+RECOVERY_PENDING_PATH = os.path.join(BASE_DIR, "recovery_pending.json")
 FLIGHT_CONTEXT_STATE_PATH = os.path.join(BASE_DIR, "flight_context_state.json")
 PHOTO_CACHE_PATH = os.path.join(BASE_DIR, "photo_cache.json")
 SYSTEM_ALERT_COOLDOWN = 6 * 60 * 60
@@ -643,7 +644,7 @@ def append_personal_special_events(events):
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
-def queue_system_alert(service, summary, detail="", status_code=None, now=None):
+def queue_system_alert(service, summary, detail="", status_code=None, now=None, severity="error"):
     """管理者DM用の障害イベントを、同じ内容は6時間に1回だけキューへ積む。"""
     now = time.time() if now is None else float(now)
     status = str(status_code) if status_code is not None else "error"
@@ -654,6 +655,7 @@ def queue_system_alert(service, summary, detail="", status_code=None, now=None):
     event = {
         "event_key": alert_key, "service": str(service), "summary": str(summary),
         "detail": str(detail)[:800], "status_code": status_code, "detected_at": now,
+        "severity": str(severity or "error"),
     }
     path = SYSTEM_ALERT_EVENTS_PATH
     lock_path, tmp_path = path + ".lock", path + ".tmp"
@@ -678,6 +680,53 @@ def queue_system_alert(service, summary, detail="", status_code=None, now=None):
     state[alert_key] = now
     save_shared_json(SYSTEM_ALERT_STATE_PATH, state)
     return True
+
+
+def format_elapsed(seconds):
+    """停止時間を読みやすい日本語へ変換する。"""
+    total = max(0, int(round(float(seconds))))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}時間")
+    if minutes:
+        parts.append(f"{minutes}分")
+    if seconds or not parts:
+        parts.append(f"{seconds}秒")
+    return "".join(parts)
+
+
+def complete_recovery_notice(now=None):
+    """復旧後の監視成功を確認してから、管理者DMキューへ積む。"""
+    pending = load_shared_json(RECOVERY_PENDING_PATH, {})
+    if not isinstance(pending, dict) or not pending.get("last_seen"):
+        return False
+    try:
+        last_seen = float(pending["last_seen"])
+        recovered_at = float(pending["recovered_at"])
+        duration = float(pending.get("duration_seconds") or (recovered_at - last_seen))
+        completed_at = float(now if now is not None else time.time())
+    except (TypeError, ValueError):
+        save_shared_json(RECOVERY_PENDING_PATH, {})
+        return False
+
+    jst = timezone(timedelta(hours=9))
+    detail = (
+        f"最終生存確認: {datetime.fromtimestamp(last_seen, jst):%Y-%m-%d %H:%M:%S JST}\n"
+        f"Bot復旧時刻: {datetime.fromtimestamp(recovered_at, jst):%Y-%m-%d %H:%M:%S JST}\n"
+        f"監視確認完了: {datetime.fromtimestamp(completed_at, jst):%Y-%m-%d %H:%M:%S JST}\n"
+        f"推定停止時間: {format_elapsed(duration)}\n"
+        "復旧後の最新ADS-Bデータで登録機の検知処理を実行しました。"
+        "停止中に飛行を終えた機体は、無料の現在位置データだけでは復元できません。"
+    )
+    summary = f"Mac/Botが復旧しました（{datetime.fromtimestamp(recovered_at, jst):%m/%d %H:%M}）"
+    queued = queue_system_alert(
+        "Mac監視", summary, detail, now=completed_at, severity="recovery"
+    )
+    if queued:
+        save_shared_json(RECOVERY_PENDING_PATH, {})
+    return queued
 
 
 def _in_quiet_hours(config, now):
@@ -1561,7 +1610,7 @@ def build_embed(
             "inline": False,
         },
     ]
-    livery_name = lookup_livery(label)
+    livery_name = lookup_livery(label, icao24)
     if livery_name:
         fields.insert(1, {"name": "🎨 特別塗装", "value": livery_name, "inline": False})
 
@@ -1648,6 +1697,7 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     label = entry["label"]
     aircraft_type = entry["type"]
     priority = effective_priority(entry)
+    livery_name = lookup_livery(label, icao24)
 
     photo = fetch_photo(icao24)
     callsign, route_verified = resolve_flight_context(
@@ -1667,6 +1717,7 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
             ("🚨 **SPECIAL**" if priority == "SPECIAL" else "🟠 **WATCH**" if priority == "WATCH" else "✈️")
             + f" **{label}** ({aircraft_type}) を検知"
             + ("(範囲内に継続中)" if repeat else "")
+            + (f"\n🎨 **特別塗装：{livery_name}**" if livery_name else "")
         ),
         "embeds": [embed],
     }
@@ -1838,6 +1889,10 @@ def run_monitor():
 
     if notified != original_notified:
         save_notified(notified)
+
+    # Mac/Botの停止を検知していた場合も、この実行で最新ADS-Bデータの処理が
+    # 最後まで成功したことを確認してから管理者へ復旧通知する。
+    complete_recovery_notice(now=time.time())
 
     logger.info(
         "チェック完了。地方別=%s / 日本周辺=%s / 個人SPECIAL=%d件",

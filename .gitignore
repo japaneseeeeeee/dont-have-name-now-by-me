@@ -29,6 +29,8 @@ system_alert_events.json
 system_alert_events.json.lock
 system_alert_state.json
 system_alert_state.json.lock
+recovery_pending.json
+recovery_pending.json.lock
 flight_context_state.json
 flight_context_state.json.lock
 photo_cache.json

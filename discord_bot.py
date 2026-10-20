@@ -103,6 +103,7 @@ TAR1090_REFRESH_SECONDS = 24 * 3600  # 見つからなかったとき、これ�
 BASE_DIR = os.path.expanduser("~/aircraft-alert")
 STATE_PATH = os.path.join(BASE_DIR, "bot_state.json")          # チャンネルごとの最終処理メッセージID
 HEARTBEAT_PATH = os.path.join(BASE_DIR, "bot_heartbeat")       # watchdog.sh が更新時刻を見る
+RECOVERY_PENDING_PATH = os.path.join(BASE_DIR, "recovery_pending.json")
 PERSONAL_SPECIALS_PATH = os.path.join(BASE_DIR, "personal_specials.json")
 PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.json")
 PERSONAL_DETECTION_HISTORY_PATH = os.path.join(BASE_DIR, "personal_detection_history.json")
@@ -113,6 +114,7 @@ LIFECYCLE_REVIEW_STATE_PATH = os.path.join(BASE_DIR, "lifecycle_review_state.jso
 EQUIPMENT_ALERTS_PATH = os.path.join(BASE_DIR, "equipment_alerts.json")
 DESTINATION_ALERTS_PATH = os.path.join(BASE_DIR, "destination_alerts.json")
 HEARTBEAT_INTERVAL = 30                                        # 秒
+RECOVERY_MIN_GAP_SECONDS = int(os.environ.get("RECOVERY_MIN_GAP_SECONDS", "300"))
 CATCHUP_MAX_AGE = timedelta(hours=12)                          # これより古い取りこぼしは処理しない
 CATCHUP_LIMIT = 50                                             # 1回の再接続で拾う最大件数
 FEEDBACK_SOURCE_CHANNEL_ID = int(os.environ.get("FEEDBACK_SOURCE_CHANNEL_ID", "1554454760038465576"))
@@ -446,6 +448,36 @@ def append_system_alert_events(events):
             os.replace(tmp_path, path)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def read_heartbeat_timestamp(path=None):
+    """最後にDiscord接続を確認できたepoch秒を返す。"""
+    heartbeat_path = path or HEARTBEAT_PATH
+    try:
+        with open(heartbeat_path, "r", encoding="utf-8") as stream:
+            value = float(stream.read().strip())
+        return value if value > 0 else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def build_recovery_pending(last_seen, recovered_at, minimum_gap=None):
+    """一定時間以上の生存確認断だけを復旧候補として記録する。"""
+    try:
+        previous = float(last_seen)
+        current = float(recovered_at)
+    except (TypeError, ValueError):
+        return None
+    gap = current - previous
+    threshold = RECOVERY_MIN_GAP_SECONDS if minimum_gap is None else float(minimum_gap)
+    if previous <= 0 or gap < threshold:
+        return None
+    return {
+        "last_seen": previous,
+        "recovered_at": current,
+        "duration_seconds": gap,
+        "reason": "heartbeat_gap",
+    }
 
 
 def normalize(value):
@@ -1008,13 +1040,27 @@ async def catch_up_missed_commands():
                 logger.warning(f"catch-up failed for channel {key}: {e}")
 
 
+_last_heartbeat_tick = None
+
+
 @tasks.loop(seconds=HEARTBEAT_INTERVAL)
 async def heartbeat():
     """Discordに接続できている間だけ、生存の印を更新する。"""
+    global _last_heartbeat_tick
     if bot.is_ready() and not bot.is_closed() and math.isfinite(bot.latency):
+        now = time.time()
+        previous = _last_heartbeat_tick or read_heartbeat_timestamp()
+        pending = build_recovery_pending(previous, now)
         try:
+            if pending:
+                await asyncio.to_thread(save_locked_json, RECOVERY_PENDING_PATH, pending)
+                logger.warning(
+                    "Mac/Botの停止時間を検出: %.0f秒。監視成功後に管理者へ通知します",
+                    pending["duration_seconds"],
+                )
             with open(HEARTBEAT_PATH, "w", encoding="utf-8") as f:
-                f.write(str(int(time.time())))
+                f.write(str(int(now)))
+            _last_heartbeat_tick = now
         except OSError as e:
             logger.warning(f"heartbeat write failed: {e}")
 
@@ -2385,7 +2431,7 @@ async def personal_special_dispatch():
                 url=f"https://globe.adsbexchange.com/?icao={event['icao24']}",
             )
             embed.add_field(name="機種", value=event.get("type") or "不明", inline=True)
-            livery_name = lookup_livery(event.get("label"))
+            livery_name = lookup_livery(event.get("label"), event.get("icao24"))
             if livery_name:
                 embed.add_field(name="🎨 特別塗装", value=livery_name, inline=False)
             embed.add_field(
@@ -2432,7 +2478,11 @@ async def personal_special_dispatch():
                     inline=True,
                 )
             embed.set_footer(text="タイトルをタップするとADS-B Exchangeを開きます")
+            notification_text = f"🔔 **{event['label']}** を{event['region']}で検知"
+            if livery_name:
+                notification_text += f"\n🎨 **特別塗装：{livery_name}**"
             await recipient.send(
+                notification_text,
                 embed=embed,
                 view=PersonalAlertView(
                     user_id,
@@ -2468,15 +2518,19 @@ async def system_alert_dispatch():
             if status is not None:
                 description += f"\nHTTP状態: `{status}`"
             detail = str(event.get("detail") or "").strip()
+            recovered = event.get("severity") == "recovery"
             embed = discord.Embed(
-                title=f"⚠️ システム警告｜{event.get('service') or '不明'}",
+                title=("✅ システム復旧" if recovered else "⚠️ システム警告") + f"｜{event.get('service') or '不明'}",
                 description=description,
-                color=0xED4245,
+                color=0x2ECC71 if recovered else 0xED4245,
                 timestamp=datetime.fromtimestamp(float(event.get("detected_at", time.time())), timezone.utc),
             )
             if detail:
                 embed.add_field(name="詳細", value=detail[:1000], inline=False)
-            embed.set_footer(text="同じ内容の通知は6時間抑制されます")
+            embed.set_footer(text=(
+                "復旧後の最新航空機データ確認まで完了しました"
+                if recovered else "同じ内容の通知は6時間抑制されます"
+            ))
             await owner.send(embed=embed)
         except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
             logger.error("システム警告の管理者DMに失敗しました: %s", exc)
@@ -2605,7 +2659,9 @@ def build_destination_alert_embed(rule, aircraft, route):
     embed = discord.Embed(title=f"✈️ 監視機体が{rule['destination']}へ向かっています", description=f"**{format_airport(route['origin'])} → {format_airport(route['destination'])}**", color=0x5865F2, timestamp=datetime.now(timezone.utc), url=f"https://globe.adsbexchange.com/?icao={hex_id}")
     embed.add_field(name="登録記号", value=f"`{aircraft.get('r') or rule['registration']}`", inline=True)
     embed.add_field(name="機種", value=aircraft.get("desc") or aircraft.get("t") or rule.get("type") or "不明", inline=True)
-    livery_name = lookup_livery(aircraft.get("r") or rule.get("registration"))
+    livery_name = lookup_livery(
+        aircraft.get("r"), rule.get("registration"), aircraft.get("hex"), rule.get("icao24")
+    )
     if livery_name:
         embed.add_field(name="🎨 特別塗装", value=livery_name, inline=False)
     embed.add_field(name="便名", value=f"`{route.get('flight_iata') or callsign}`", inline=True)
