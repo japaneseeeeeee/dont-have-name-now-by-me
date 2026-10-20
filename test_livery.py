@@ -5,6 +5,9 @@ from livery import lookup_livery
 
 
 class LiveryTests(unittest.TestCase):
+    def test_packaged_ei_ifd_special_livery(self):
+        self.assertEqual(lookup_livery("EI-IFD"), "Born to Be Sustainable")
+
     def test_matches_registration_without_hyphen_or_case(self):
         data = {"JA339J": {"name": "JAL Jubilee Express"}}
         self.assertEqual(
