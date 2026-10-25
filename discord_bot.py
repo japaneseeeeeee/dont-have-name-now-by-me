@@ -1490,11 +1490,11 @@ def personal_panel_summary(user_id):
     history = load_locked_json(PERSONAL_DETECTION_HISTORY_PATH, {}).get(str(user_id)) or []
     return (
         f"DM通知: **{'ON' if config.get('enabled', True) else 'OFF'}**\n"
-        f"✈️ 登録機体: **{len(config.get('aircraft') or {})}機**\n"
-        f"📍 機体＋地方通知: **{personal_region_rule_count(config)}件**\n"
-        f"🌍 目的地早期通知: **{len(destinations)}件**\n"
-        f"🏢 空港ウォッチ: **{len(config.get('airports') or {})}件**\n"
-        f"🔔 機材投入通知: **{len(equipment)}件**\n"
+        f"✈️ 全国で監視する機体: **{len(config.get('aircraft') or {})}機**\n"
+        f"📍 地方限定で監視する機体: **{personal_region_rule_count(config)}件**\n"
+        f"🌍 登録機の目的地設定: **{len(destinations)}件**\n"
+        f"🏢 空港周辺の監視: **{len(config.get('airports') or {})}件**\n"
+        f"🔔 便名×機種の設定: **{len(equipment)}件**\n"
         f"🕘 保存中の検知履歴: **{len(history)}件**"
     )
 
@@ -2095,9 +2095,9 @@ async def handle_personal_panel_bridge(message):
             result = await create_personal_destination_rule(user_id, args[0], args[1])
         elif operation == "destination_list":
             _, rules = personal_destination_rules(user_id)
-            result = ("🌍 **個人早期通知**\n" + "\n".join(
+            result = ("🌍 **登録機の行き先設定**\n" + "\n".join(
                 f"ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules
-            )) if rules else "個人早期通知は登録されていません。"
+            )) if rules else "登録機の行き先は設定されていません。"
         elif operation == "destination_remove" and args and args[0].isdigit():
             target_id = int(args[0])
             store, rules = personal_destination_rules(user_id)
@@ -2165,9 +2165,9 @@ async def handle_personal_panel_bridge(message):
         elif operation == "equipment_list":
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
             rules = equipment_rules_for(store, user_id, "personal")
-            result = ("🔔 **個人機材投入通知**\n" + "\n".join(
+            result = ("🔔 **便名×機種の設定**\n" + "\n".join(
                 f"ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`" for rule in rules
-            )) if rules else "個人機材投入通知は登録されていません。"
+            )) if rules else "便名×機種は設定されていません。"
         elif operation == "equipment_remove" and args and args[0].isdigit():
             target_id = int(args[0])
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
@@ -2259,35 +2259,33 @@ class PersonalControlPanelView(discord.ui.View):
 
     # 1行目から各通知の専用メニューを開く。似た操作を直接並べず、押し間違いを防ぐ。
     # Interaction EndpointはWorkerのため、ここのcallbackは永続View登録用。
-    @discord.ui.button(label="機体通知", emoji="✈️", style=discord.ButtonStyle.primary, custom_id="personal_panel:aircraft", row=0)
+    @discord.ui.button(label="全国で機体を監視", emoji="✈️", style=discord.ButtonStyle.primary, custom_id="personal_panel:aircraft", row=0)
     async def aircraft(self, interaction, button): pass
-    @discord.ui.button(label="機体＋地方通知", emoji="📍", style=discord.ButtonStyle.success, custom_id="personal_panel:region", row=0)
+    @discord.ui.button(label="地方限定で機体を監視", emoji="📍", style=discord.ButtonStyle.success, custom_id="personal_panel:region", row=0)
     async def region(self, interaction, button): pass
-    @discord.ui.button(label="目的地早期通知", emoji="🌍", style=discord.ButtonStyle.primary, custom_id="personal_panel:destination", row=0)
-    async def destination(self, interaction, button): pass
-    @discord.ui.button(label="空港ウォッチ", emoji="🏢", style=discord.ButtonStyle.primary, custom_id="personal_panel:airport", row=0)
+    @discord.ui.button(label="便・目的地を監視", emoji="🧭", style=discord.ButtonStyle.primary, custom_id="personal_panel:flight_route", row=0)
+    async def flight_route(self, interaction, button): pass
+    @discord.ui.button(label="空港周辺を監視", emoji="🏢", style=discord.ButtonStyle.primary, custom_id="personal_panel:airport", row=0)
     async def airport(self, interaction, button): pass
-    @discord.ui.button(label="機材投入通知", emoji="🔔", style=discord.ButtonStyle.primary, custom_id="personal_panel:equipment", row=0)
-    async def equipment(self, interaction, button): pass
 
-    @discord.ui.button(label="通知ON・条件設定", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings", row=1)
+    @discord.ui.button(label="通知のON/OFF・条件", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings", row=1)
     async def settings(self, interaction, button):
         await interaction.response.send_message("個人通知の設定です。", view=PersonalSettingsView(interaction.user.id), ephemeral=True)
 
-    @discord.ui.button(label="全登録・設定を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary", row=1)
+    @discord.ui.button(label="登録内容をまとめて確認", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary", row=1)
     async def summary(self, interaction, button):
         await interaction.response.send_message("👤 **現在の個人設定**\n" + personal_panel_summary(interaction.user.id), ephemeral=True)
 
-    @discord.ui.button(label="パネルを一番下へ", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:refresh", row=1)
+    @discord.ui.button(label="このパネルを下へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:refresh", row=1)
     async def refresh(self, interaction, button): pass
 
-    @discord.ui.button(label="個人設定を全削除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_panel:delete", row=1)
+    @discord.ui.button(label="個人チャンネルを削除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_panel:delete", row=1)
     async def delete_channel(self, interaction, button): pass
 
-    @discord.ui.button(label="この画面の使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=1)
+    @discord.ui.button(label="各ボタンの使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=1)
     async def help(self, interaction, button): pass
 
-    @discord.ui.button(label="最近の検知履歴", emoji="🕘", style=discord.ButtonStyle.secondary, custom_id="personal_panel:history", row=2)
+    @discord.ui.button(label="通知履歴を見る", emoji="🕘", style=discord.ButtonStyle.secondary, custom_id="personal_panel:history", row=2)
     async def history(self, interaction, button): pass
 
 
@@ -2366,24 +2364,24 @@ class GeneralMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="機体を探して登録", emoji="🔍", style=discord.ButtonStyle.primary, custom_id="menu|aircraft-search", row=0)
+    @discord.ui.button(label="機体を検索して登録", emoji="🔍", style=discord.ButtonStyle.primary, custom_id="menu|aircraft-search", row=0)
     async def search(self, interaction, button): pass
-    @discord.ui.button(label="機体の詳細を見る", emoji="🛩️", style=discord.ButtonStyle.secondary, custom_id="menu|info", row=0)
+    @discord.ui.button(label="1機の詳しい情報", emoji="🛩️", style=discord.ButtonStyle.secondary, custom_id="menu|info", row=0)
     async def info(self, interaction, button): pass
-    @discord.ui.button(label="飛行中の便を探す", emoji="🛫", style=discord.ButtonStyle.primary, custom_id="menu|flight", row=0)
+    @discord.ui.button(label="便名で飛行中を検索", emoji="🛫", style=discord.ButtonStyle.primary, custom_id="menu|flight", row=0)
     async def flight(self, interaction, button): pass
-    @discord.ui.button(label="現在の発着を見る", emoji="🏢", style=discord.ButtonStyle.secondary, custom_id="menu|airport", row=0)
+    @discord.ui.button(label="空港の発着予定", emoji="🏢", style=discord.ButtonStyle.secondary, custom_id="menu|airport", row=0)
     async def airport(self, interaction, button): pass
 
-    @discord.ui.button(label="サーバー登録機を見る", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="menu|list", row=1)
+    @discord.ui.button(label="登録機の全一覧", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="menu|list", row=1)
     async def list_aircraft(self, interaction, button): pass
-    @discord.ui.button(label="登録機を機種で絞る", emoji="🔎", style=discord.ButtonStyle.primary, custom_id="menu|list-filter", row=1)
+    @discord.ui.button(label="登録機を機種で検索", emoji="🔎", style=discord.ButtonStyle.primary, custom_id="menu|list-filter", row=1)
     async def filter_aircraft(self, interaction, button): pass
-    @discord.ui.button(label="ボタンの説明", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|help", row=1)
+    @discord.ui.button(label="各ボタンの使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|help", row=1)
     async def help(self, interaction, button): pass
-    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="menu|refresh", row=1)
+    @discord.ui.button(label="このメニューを下へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="menu|refresh", row=1)
     async def refresh(self, interaction, button): pass
-    @discord.ui.button(label="管理者メニュー", emoji="⚙️", style=discord.ButtonStyle.danger, custom_id="menu|admin", row=1)
+    @discord.ui.button(label="管理者専用の設定", emoji="⚙️", style=discord.ButtonStyle.danger, custom_id="menu|admin", row=1)
     async def admin(self, interaction, button): pass
 
 
@@ -2871,7 +2869,7 @@ async def send_personal_launcher_panel(channel):
         title="🔒 個人設定チャンネルを作成",
         description=(
             "下のボタンを押すと、本人とBotだけが見られる専用チャンネルを作成します。\n"
-            "作成後は、機体通知・目的地早期通知・空港ウォッチ・機材投入通知をボタンで設定できます。"
+            "作成後は、全国／地方限定の機体監視・便と目的地・空港周辺の通知をボタンで設定できます。"
         ),
         color=0x5865F2,
     )
@@ -4282,7 +4280,7 @@ async def personal_panel_setup(ctx):
         title="🔒 航空機Bot 個人設定パネル",
         description=(
             "下のボタン、または `!personal-panel-create` で、本人とBotだけが見られる専用チャンネルを作成します。\n"
-            "機体通知・目的地早期通知・空港ウォッチ・機材投入通知を個別に設定できます。"
+            "全国／地方限定の機体監視・便と目的地・空港周辺の通知を個別に設定できます。"
         ),
         color=0x5865F2,
     )

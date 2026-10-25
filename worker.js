@@ -982,20 +982,20 @@ function cmdMenu() {
       {
         type: 1,
         components: [
-          { type: 2, style: 1, custom_id: "menu|aircraft-search", emoji: { name: "🔍" }, label: "機体を探して登録" },
-          { type: 2, style: 2, custom_id: "menu|info", emoji: { name: "🛩️" }, label: "機体の詳細を見る" },
-          { type: 2, style: 1, custom_id: "menu|flight", emoji: { name: "🛫" }, label: "飛行中の便を探す" },
-          { type: 2, style: 2, custom_id: "menu|airport", emoji: { name: "🏢" }, label: "現在の発着を見る" },
+          { type: 2, style: 1, custom_id: "menu|aircraft-search", emoji: { name: "🔍" }, label: "機体を検索して登録" },
+          { type: 2, style: 2, custom_id: "menu|info", emoji: { name: "🛩️" }, label: "1機の詳しい情報" },
+          { type: 2, style: 1, custom_id: "menu|flight", emoji: { name: "🛫" }, label: "便名で飛行中を検索" },
+          { type: 2, style: 2, custom_id: "menu|airport", emoji: { name: "🏢" }, label: "空港の発着予定" },
         ],
       },
       {
         type: 1,
         components: [
-          { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "サーバー登録機を見る" },
-          { type: 2, style: 1, custom_id: "menu|list-filter", emoji: { name: "🔎" }, label: "登録機を機種で絞る" },
-          { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "📖" }, label: "ボタンの説明" },
-          { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "最新位置へ移動" },
-          { type: 2, style: 4, custom_id: "menu|admin", emoji: { name: "⚙️" }, label: "管理者メニュー" },
+          { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "登録機の全一覧" },
+          { type: 2, style: 1, custom_id: "menu|list-filter", emoji: { name: "🔎" }, label: "登録機を機種で検索" },
+          { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "📖" }, label: "各ボタンの使い方" },
+          { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "このメニューを下へ移動" },
+          { type: 2, style: 4, custom_id: "menu|admin", emoji: { name: "⚙️" }, label: "管理者専用の設定" },
         ],
       },
     ],
@@ -1019,7 +1019,7 @@ async function handleMenuButton(interaction, env, ctx) {
   if (action === "help") {
     return json({ type: 4, data: {
       flags: 64,
-      content: "✈️ **主な使い方**\n`機体を探して登録`：登録記号・便名・機種から検索して登録\n`機体の詳細を見る`：登録記号（小文字・ハイフンなし・一部分も可）またはICAO24の詳細を表示\n`飛行中の便を探す`：現在ADS-Bで確認できる便を検索\n`現在の発着を見る`：現在からの到着・出発便を表示（航空会社・機種で絞り込み可能）\n`サーバー登録機を見る`：watchlistを全件表示\n`登録機を機種で絞る`：ICAO/IATAコードや機種名でwatchlistを絞り込み\n\n例：`B77W` / `77W` / `Boeing 777-300ER` / `A359` / `359`\n従来のスラッシュコマンドも引き続き利用できます。",
+      content: "✈️ **主な使い方**\n`機体を検索して登録`：登録記号・便名・機種から検索し、サーバー監視へ登録\n`1機の詳しい情報`：登録記号（小文字・ハイフンなし・一部分も可）またはICAO24の詳細を表示\n`便名で飛行中を検索`：現在ADS-Bで確認できる便を便名から検索\n`空港の発着予定`：現在からの到着・出発便を表示（航空会社・機種で絞り込み可能）\n`登録機の全一覧`：サーバー監視に登録された機体を全件表示\n`登録機を機種で検索`：ICAO/IATAコードや機種名で登録機を絞り込み\n\n例：`B77W` / `77W` / `Boeing 777-300ER` / `A359` / `359`\n従来のスラッシュコマンドも引き続き利用できます。",
     } });
   }
   if (action === "list") {
@@ -1178,40 +1178,40 @@ function textInput(customId, label, placeholder, required = true, maxLength = 10
 
 function personalModal(action) {
   const definitions = {
-    aircraft_add: { title: "個人機体通知を追加", rows: [
+    aircraft_add: { title: "全国監視に機体を追加", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
       textInput("level", "通知レベル", "NORMAL または SPECIAL", true, 7),
     ] },
-    aircraft_remove: { title: "個人機体通知を解除", rows: [
+    aircraft_remove: { title: "全国監視から機体を削除", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
     ] },
-    region_add: { title: "機体＋地方通知を追加", rows: [
+    region_add: { title: "地方指定の機体を追加", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: JA738B", true, 20),
       textInput("region", "通知する地方", "例: 九州 / 関東 / 北海道", true, 20),
     ] },
-    region_remove: { title: "機体＋地方通知を解除", rows: [
+    region_remove: { title: "地方指定の登録を削除", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: JA738B", true, 20),
       textInput("region", "解除する地方", "例: 九州", true, 20),
     ] },
-    destination_add: { title: "個人早期通知を追加", rows: [
+    destination_add: { title: "登録機＋到着空港を追加", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: A7-BBA", true, 20),
       textInput("destination", "目的空港", "例: NRT / RJAA", true, 4),
     ] },
-    destination_remove: { title: "個人早期通知を解除", rows: [
+    destination_remove: { title: "行き先の設定を削除", rows: [
       textInput("rule_id", "登録ID", "例: 1", true, 8),
     ] },
-    airport_add: { title: "空港ウォッチを追加", rows: [
+    airport_add: { title: "監視する空港を追加", rows: [
       textInput("airport", "空港コード", "例: HND / NRT / CTS", true, 3),
       textInput("radius", "通知半径（km）", "例: 50", false, 3),
     ] },
-    airport_remove: { title: "空港ウォッチを解除", rows: [
+    airport_remove: { title: "空港周辺の監視を解除", rows: [
       textInput("airport", "空港コード", "例: HND / NRT / CTS", true, 3),
     ] },
-    equipment_add: { title: "個人機材通知を追加", rows: [
+    equipment_add: { title: "便名＋機種を追加", rows: [
       textInput("flight", "便名", "例: JL12", true, 12),
       textInput("equipment", "機材コード", "例: B77W", true, 12),
     ] },
-    equipment_remove: { title: "個人機材通知を解除", rows: [
+    equipment_remove: { title: "便名＋機種の設定を削除", rows: [
       textInput("rule_id", "登録ID", "例: 1", true, 8),
     ] },
   };
@@ -1398,18 +1398,16 @@ function handlePersonalPanelButton(interaction) {
   if (action === "help") {
     return json({ type: 4, data: { flags: 64, content:
       "📖 **個人設定のボタン説明**\n" +
-      "各通知の **追加** は新しく登録、**見る** は登録内容の確認、**解除** は登録の削除に使います。\n" +
-      "✈️ **機体通知**：指定した機体を日本国内で検出したときに通知します。\n" +
-      "📍 **機体＋地方通知**：指定した機体を選んだ地方で検出したときだけ通知します。例：JA738B＋九州。\n" +
-      "🌍 **目的地早期通知**：指定機体が指定空港へ向かうと判明したときに通知します。\n" +
-      "🏢 **空港ウォッチ**：指定空港の周辺で対象機を検出したときに通知します。\n" +
-      "🔔 **機材通知**：指定便に指定機材が投入されたときに通知します。\n" +
-      "⚙️ **通知ON・条件設定**：個人通知のON/OFFや条件を変更します。\n" +
-      "📋 **全登録・設定を見る**：登録数と通知状態を表示します。\n" +
-      "🕘 **最近の検知履歴**：直近10件の個人通知履歴を表示します（30日保存）。\n" +
-      "🔄 **パネルを一番下へ**：パネルをチャンネルの一番下へ移動します。\n" +
-      "🗑️ **個人設定を全削除**：チャンネルと個人通知データをすべて削除します。\n" +
-      "📖 **この画面の使い方**：この案内を表示します。"
+      "✈️ **全国で機体を監視**：登録機を日本国内のどこかで検出したら通知します。\n" +
+      "📍 **地方限定で機体を監視**：登録機を選んだ地方で検出したときだけ通知します。例：JA738B＋九州。\n" +
+      "🧭 **便・目的地を監視**：登録機の行き先、または便名に入った機種を監視します。\n" +
+      "🏢 **空港周辺を監視**：指定空港の周辺で対象機を検出したら通知します。\n" +
+      "⚙️ **通知のON/OFF・条件**：個人通知全体と絞り込み条件を変更します。\n" +
+      "📋 **登録内容をまとめて確認**：すべての登録数と通知状態を表示します。\n" +
+      "🔄 **このパネルを下へ移動**：このパネルをチャンネルの一番下へ移動します。\n" +
+      "🗑️ **個人チャンネルを削除**：チャンネルと個人通知データをすべて削除します。\n" +
+      "📖 **各ボタンの使い方**：この案内を表示します。\n" +
+      "🕘 **通知履歴を見る**：最近届いた個人通知を確認します。"
     } });
   }
   if (action === "create") {
@@ -1424,19 +1422,31 @@ function handlePersonalPanelButton(interaction) {
   if (action === "history") return personalBridge(interaction, "history");
   if (action === "refresh") return personalBridge(interaction, "refresh");
   if (action === "delete") {
-    return json({ type: 4, data: { flags: 64, content: "⚠️ **個人チャンネルを削除しますか？**\n個人機体通知・機体＋地方通知・目的地早期通知・空港ウォッチ・機材投入通知・通知条件もすべて削除され、個人通知は停止します。この操作は元に戻せません。", components: [
+    return json({ type: 4, data: { flags: 64, content: "⚠️ **個人チャンネルを削除しますか？**\n全国の機体監視・地方限定の機体監視・登録機の目的地・空港周辺の監視・便名×機種・通知条件もすべて削除され、個人通知は停止します。この操作は元に戻せません。", components: [
       { type: 1, components: [
         { type: 2, style: 4, custom_id: "personal_action|channel_delete_confirm", emoji: { name: "🗑️" }, label: "チャンネルと個人データを削除" },
       ] },
     ] } });
   }
+  if (action === "flight_route") {
+    return json({ type: 4, data: { flags: 64, content:
+      "🧭 **便・目的地の通知**\n" +
+      "監視したい条件を選んでください。\n" +
+      "🌍 登録機の行き先：特定の登録機が指定空港へ向かうと通知\n" +
+      "🔔 便名の機種：特定の便名に指定機種が入ると通知",
+      components: [{ type: 1, components: [
+        { type: 2, style: 1, custom_id: "personal_panel:destination", emoji: { name: "🌍" }, label: "登録機の行き先を監視" },
+        { type: 2, style: 1, custom_id: "personal_panel:equipment", emoji: { name: "🔔" }, label: "便名に入る機種を監視" },
+      ] }],
+    } });
+  }
   if (["aircraft", "region", "airport", "equipment"].includes(action)) {
-    const labels = { aircraft: "✈️ **機体通知**", region: "📍 **機体＋地方通知**", airport: "🏢 **空港ウォッチ**", equipment: "🔔 **機材投入通知**" };
+    const labels = { aircraft: "✈️ **全国で機体を監視**", region: "📍 **地方限定で機体を監視**", airport: "🏢 **空港周辺を監視**", equipment: "🔔 **便名に入る機種を監視**" };
     const buttonLabels = {
-      aircraft: ["機体を通知登録", "機体の登録一覧", "機体の登録解除"],
-      region: ["機体・地方を通知登録", "機体・地方の登録一覧", "機体・地方の登録解除"],
-      airport: ["空港周辺を通知登録", "空港の登録一覧", "空港の登録解除"],
-      equipment: ["便・機材を通知登録", "便・機材の登録一覧", "便・機材の登録解除"],
+      aircraft: ["全国監視に機体を追加", "全国監視の登録を見る", "全国監視から機体を削除"],
+      region: ["地方指定の機体を追加", "地方指定の登録を見る", "地方指定の登録を削除"],
+      airport: ["監視する空港を追加", "監視中の空港を見る", "空港周辺の監視を解除"],
+      equipment: ["便名＋機種を追加", "便名＋機種の設定を見る", "便名＋機種の設定を削除"],
     }[action];
     return json({ type: 4, data: { flags: 64, content: labels[action], components: [
       { type: 1, components: [
@@ -1447,20 +1457,20 @@ function handlePersonalPanelButton(interaction) {
     ] } });
   }
   if (action === "destination") {
-    return json({ type: 4, data: { flags: 64, content: "🌍 **目的地早期通知**", components: [
+    return json({ type: 4, data: { flags: 64, content: "🌍 **登録機の行き先を監視**", components: [
       { type: 1, components: [
-        { type: 2, style: 3, custom_id: "personal_action|destination_add", emoji: { name: "🌍" }, label: "目的地を通知登録" },
-        { type: 2, style: 1, custom_id: "personal_action|destination_list", emoji: { name: "📋" }, label: "目的地の登録一覧" },
-        { type: 2, style: 4, custom_id: "personal_action|destination_remove", emoji: { name: "🗑️" }, label: "目的地の登録解除" },
+        { type: 2, style: 3, custom_id: "personal_action|destination_add", emoji: { name: "🌍" }, label: "登録機＋到着空港を追加" },
+        { type: 2, style: 1, custom_id: "personal_action|destination_list", emoji: { name: "📋" }, label: "行き先の設定を見る" },
+        { type: 2, style: 4, custom_id: "personal_action|destination_remove", emoji: { name: "🗑️" }, label: "行き先の設定を削除" },
       ] },
     ] } });
   }
   if (action === "settings") {
     return json({ type: 4, data: { flags: 64, content: "⚙️ **個人通知設定**", components: [
       { type: 1, components: [
-        { type: 2, style: 1, custom_id: "personal_action|summary", emoji: { name: "📋" }, label: "設定を表示" },
-        { type: 2, style: 2, custom_id: "personal_action|settings_toggle", emoji: { name: "🔔" }, label: "全通知をON/OFF" },
-        { type: 2, style: 2, custom_id: "personal_action|filters_reset", emoji: { name: "↩️" }, label: "通知条件をリセット" },
+        { type: 2, style: 1, custom_id: "personal_action|summary", emoji: { name: "📋" }, label: "現在の設定を見る" },
+        { type: 2, style: 2, custom_id: "personal_action|settings_toggle", emoji: { name: "🔔" }, label: "個人通知をON/OFF" },
+        { type: 2, style: 2, custom_id: "personal_action|filters_reset", emoji: { name: "↩️" }, label: "絞り込み条件を初期化" },
       ] },
     ] } });
   }

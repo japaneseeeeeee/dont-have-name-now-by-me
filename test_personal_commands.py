@@ -123,11 +123,15 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
             "personal_alert|stop|123|87c003||kyushu",
         )
 
-    def test_personal_control_panel_has_aircraft_region_button(self):
+    def test_personal_control_panel_has_clear_grouped_buttons(self):
         view = discord_bot.PersonalControlPanelView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
-        self.assertEqual(buttons["機体＋地方通知"], "personal_panel:region")
-        self.assertEqual(buttons["最近の検知履歴"], "personal_panel:history")
+        self.assertEqual(buttons["全国で機体を監視"], "personal_panel:aircraft")
+        self.assertEqual(buttons["地方限定で機体を監視"], "personal_panel:region")
+        self.assertEqual(buttons["便・目的地を監視"], "personal_panel:flight_route")
+        self.assertNotIn("目的地早期通知", buttons)
+        self.assertNotIn("機材投入通知", buttons)
+        self.assertEqual(buttons["通知履歴を見る"], "personal_panel:history")
 
     def test_personal_detection_history_is_formatted_newest_first(self):
         self.store = {"123": [
@@ -156,7 +160,7 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
     def test_general_menu_has_watchlist_aircraft_filter_button(self):
         view = discord_bot.GeneralMenuView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
-        self.assertEqual(buttons["登録機を機種で絞る"], "menu|list-filter")
+        self.assertEqual(buttons["登録機を機種で検索"], "menu|list-filter")
 
     def test_personal_region_aliases_and_rule_count(self):
         self.assertEqual(discord_bot.normalize_personal_region("九州"), "kyushu")

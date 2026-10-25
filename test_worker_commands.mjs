@@ -655,8 +655,8 @@ registrationLookupStatus = 200;
 
 const menu = worker.cmdMenu();
 assert.match(menu.content, /航空機通知Botメニュー/);
-assert.match(JSON.stringify(menu.components), /現在の発着を見る/);
-assert.match(JSON.stringify(menu.components), /登録機を機種で絞る/);
+assert.match(JSON.stringify(menu.components), /空港の発着予定/);
+assert.match(JSON.stringify(menu.components), /登録機を機種で検索/);
 assert.doesNotMatch(JSON.stringify(menu.components), /日付を指定して発着を見る/);
 assert.doesNotMatch(JSON.stringify(menu.components), /航空会社で発着を絞る/);
 assert.match(worker.adminPanel().content, /管理画面/);
@@ -730,10 +730,37 @@ response = worker.handlePersonalPanelButton({
   message: { id: "panel-message" },
 });
 responseBody = await response.json();
-assert.match(responseBody.data.content, /機体＋地方通知/);
+assert.match(responseBody.data.content, /地方限定で機体を監視/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_add/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_list/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_remove/);
+
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:flight_route" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /便・目的地の通知/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_panel:destination/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_panel:equipment/);
+
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:destination" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /登録機の行き先を監視/);
+assert.match(JSON.stringify(responseBody.data.components), /登録機＋到着空港を追加/);
+
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:history" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|history/);
 
 response = worker.handlePersonalPanelButton({
   user: { id: "123" },
