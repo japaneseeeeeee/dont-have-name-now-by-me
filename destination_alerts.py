@@ -26,7 +26,7 @@ def add_rule(store, *, registration, icao24, aircraft_type, destination, owner_i
                 and rule.get("scope", "server") == scope
                 and str(rule.get("owner_id")) == owner_id):
             return rule, False
-    rule = {"id": int(store.get("next_id", 1)), "registration": str(registration or normalized_icao).upper(), "icao24": normalized_icao, "type": aircraft_type or "不明", "destination": destination, "owner_id": owner_id, "scope": scope, "created_at": time.time()}
+    rule = {"id": int(store.get("next_id", 1)), "registration": str(registration or normalized_icao).upper(), "icao24": normalized_icao, "type": aircraft_type or "不明", "destination": destination, "owner_id": owner_id, "scope": scope, "enabled": True, "created_at": time.time()}
     store["next_id"] = rule["id"] + 1
     store["rules"].append(rule)
     return rule, True

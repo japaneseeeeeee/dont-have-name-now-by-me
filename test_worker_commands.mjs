@@ -734,6 +734,7 @@ assert.match(responseBody.data.content, /地方限定で機体を監視/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_add/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_list/);
 assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_remove/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_toggle/);
 
 response = worker.handlePersonalPanelButton({
   user: { id: "123" },
@@ -753,6 +754,16 @@ response = worker.handlePersonalPanelButton({
 responseBody = await response.json();
 assert.match(responseBody.data.content, /登録機の行き先を監視/);
 assert.match(JSON.stringify(responseBody.data.components), /登録機＋到着空港を追加/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_action\|destination_toggle/);
+
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:settings" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.doesNotMatch(JSON.stringify(responseBody.data.components), /settings_toggle/);
+assert.match(responseBody.data.content, /登録1件ごと/);
 
 response = worker.handlePersonalPanelButton({
   user: { id: "123" },
@@ -792,6 +803,29 @@ response = worker.personalModalSubmit({
 });
 responseBody = await response.json();
 assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|region_add\|JA738B\|九州/);
+
+response = worker.handlePersonalPanelAction({
+  user: { id: "123" },
+  data: { custom_id: "personal_action|aircraft_toggle" },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.equal(responseBody.type, 9);
+assert.equal(responseBody.data.custom_id, "personal_modal|aircraft_toggle");
+
+response = worker.personalModalSubmit({
+  user: { id: "123" },
+  data: {
+    custom_id: "personal_modal|aircraft_toggle",
+    components: [
+      { components: [{ custom_id: "aircraft", value: "JA784A" }] },
+      { components: [{ custom_id: "mode", value: "OFF" }] },
+    ],
+  },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|aircraft_toggle\|JA784A\|OFF/);
 
 response = worker.handleLegacyPersonalAlertButton({
   id: "1420070400000000001",

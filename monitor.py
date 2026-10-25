@@ -798,14 +798,32 @@ def build_personal_subscriptions(settings):
     subscriptions = {}
     active_configs = {}
     for user_id, config in settings.items():
-        if not isinstance(config, dict) or config.get("enabled", True) is False:
+        if not isinstance(config, dict):
             continue
         user_id = str(user_id)
-        active_configs[user_id] = config
+        has_active_item = config.get("enabled", True) is not False
         for icao24, entry in (config.get("aircraft") or {}).items():
+            entry = entry if isinstance(entry, dict) else {}
+            if entry.get("enabled", config.get("enabled", True)) is False:
+                continue
+            has_active_item = True
             subscriptions.setdefault(str(icao24).lower(), []).append(
-                (user_id, entry if isinstance(entry, dict) else {})
+                (user_id, entry)
             )
+        for entry in (config.get("region_alerts") or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            overrides = entry.get("region_enabled") or {}
+            if any(overrides.get(region, config.get("enabled", True)) is not False
+                   for region in entry.get("regions") or []):
+                has_active_item = True
+                break
+        if any((value if isinstance(value, dict) else {}).get(
+                "enabled", config.get("enabled", True)) is not False
+               for value in (config.get("airports") or {}).values()):
+            has_active_item = True
+        if has_active_item:
+            active_configs[user_id] = config
     return subscriptions, active_configs
 
 
@@ -819,6 +837,11 @@ def build_personal_region_subscriptions(active_configs):
                 str(value).lower()
                 for value in (entry.get("regions") or [])
                 if str(value).lower() in REGIONS
+            ]
+            region_enabled = entry.get("region_enabled") or {}
+            regions = [
+                region for region in regions
+                if region_enabled.get(region, config.get("enabled", True)) is not False
             ]
             if not regions:
                 continue
@@ -904,9 +927,12 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
                 continue
             regular_entry = (config.get("aircraft") or {}).get(icao24)
             regular_regions = config.get("regions") or []
-            if regular_entry is not None and (
+            if (regular_entry is not None
+                    and (regular_entry if isinstance(regular_entry, dict) else {}).get(
+                        "enabled", config.get("enabled", True)) is not False
+                    and (
                 not regular_regions or region_key in regular_regions
-            ):
+            )):
                 continue
             if _in_quiet_hours(config, now):
                 continue
@@ -949,13 +975,20 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
         registered = config.get("aircraft") or {}
         # 空港ウォッチは、サーバーwatchlist内の注目機が指定空港へ近づいた時に通知する。
         for code, airport_config in (config.get("airports") or {}).items():
+            airport_config = airport_config if isinstance(airport_config, dict) else {}
+            if airport_config.get("enabled", config.get("enabled", True)) is False:
+                continue
             point = AIRPORT_WATCH_POINTS.get(str(code).upper())
             if point is None:
                 continue
             airport_lat, airport_lon, airport_name = point
             radius_km = max(10, min(float((airport_config or {}).get("radius_km", 50)), 200))
             for icao24, aircraft in aircraft_by_icao.items():
-                if icao24 in registered or icao24 not in watchlist:
+                regular_entry = registered.get(icao24)
+                regular_enabled = regular_entry is not None and (
+                    regular_entry if isinstance(regular_entry, dict) else {}
+                ).get("enabled", config.get("enabled", True)) is not False
+                if regular_enabled or icao24 not in watchlist:
                     continue
                 if aircraft[5] is None or aircraft[6] is None:
                     continue

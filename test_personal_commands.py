@@ -93,11 +93,21 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         await discord_bot.my_watch_filter.callback(self.ctx, "reset")
         self.assertNotIn("filters", self.store["123"])
 
-    async def test_settings_command_turns_notifications_off_and_on(self):
+    async def test_legacy_global_settings_command_points_to_item_controls(self):
         await discord_bot.my_special_settings.callback(self.ctx, "off")
-        self.assertFalse(self.store["123"]["enabled"])
-        await discord_bot.my_special_settings.callback(self.ctx, "on")
-        self.assertTrue(self.store["123"]["enabled"])
+        self.assertEqual(self.store, {})
+        self.assertIn("全体ON/OFFは廃止", self.ctx.messages[-1])
+
+    def test_personal_item_status_helpers_preserve_legacy_setting(self):
+        disabled = {"enabled": False}
+        self.assertFalse(discord_bot.personal_item_enabled({}, disabled))
+        self.assertTrue(discord_bot.personal_item_enabled({"enabled": True}, disabled))
+        self.assertFalse(discord_bot.personal_region_enabled({}, "kyushu", disabled))
+        self.assertTrue(discord_bot.personal_region_enabled(
+            {"region_enabled": {"kyushu": True}}, "kyushu", disabled
+        ))
+        self.assertTrue(discord_bot.normalize_personal_toggle("オン"))
+        self.assertFalse(discord_bot.normalize_personal_toggle("OFF"))
 
     def test_personal_alert_buttons_have_worker_routable_ids(self):
         view = discord_bot.PersonalAlertView(123, "87C003")

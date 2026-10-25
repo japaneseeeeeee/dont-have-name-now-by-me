@@ -650,6 +650,31 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual([item[0] for item in subscriptions["abc123"]], ["100", "200"])
         self.assertNotIn("300", configs)
 
+    def test_personal_aircraft_can_override_legacy_global_off(self):
+        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
+        settings = {"123": {"enabled": False, "aircraft": {
+            "abc123": {"label": "JA0001", "enabled": True},
+            "def456": {"label": "JA0002"},
+        }}}
+        events, _ = monitor.find_personal_special_events([aircraft], settings, {}, 100)
+        self.assertEqual([event["label"] for event in events], ["JA0001"])
+
+    def test_personal_region_and_airport_items_can_be_disabled_individually(self):
+        kyushu = ["abc123", "ANA101", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
+        settings = {"123": {
+            "aircraft": {},
+            "region_alerts": {"abc123": {
+                "label": "JA738B", "regions": ["kyushu"],
+                "region_enabled": {"kyushu": False},
+            }},
+            "airports": {"FUK": {"radius_km": 200, "enabled": False}},
+        }}
+        events, _ = monitor.find_personal_special_events(
+            [kyushu], settings, {}, 100,
+            {"abc123": {"label": "JA738B", "type": "B738"}},
+        )
+        self.assertEqual(events, [])
+
     def test_same_aircraft_position_is_reused_for_multiple_subscribers(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
         settings = {
@@ -695,6 +720,19 @@ class PriorityTests(unittest.TestCase):
         events, _ = monitor.find_personal_special_events([kyushu], settings, {}, 100)
         self.assertEqual(len(events), 1)
         self.assertNotEqual(events[0].get("alert_kind"), "region")
+
+    def test_disabled_regular_aircraft_does_not_block_enabled_region_rule(self):
+        kyushu = ["abc123", "ANA101", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
+        settings = {"123": {
+            "aircraft": {"abc123": {"label": "JA738B", "enabled": False}},
+            "region_alerts": {"abc123": {
+                "label": "JA738B", "regions": ["kyushu"],
+                "region_enabled": {"kyushu": True},
+            }},
+        }}
+        events, _ = monitor.find_personal_special_events([kyushu], settings, {}, 100)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].get("alert_kind"), "region")
 
     def test_tracked_icaos_include_region_only_aircraft(self):
         tracked = monitor._tracked_icaos({}, {
