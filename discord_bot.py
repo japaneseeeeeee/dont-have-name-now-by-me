@@ -1246,7 +1246,7 @@ class AirportWatchModal(discord.ui.Modal, title="空港ウォッチを追加"):
         settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
         config = settings.get(str(self.user_id)) or {"enabled": True, "aircraft": {}}
         airports = config.get("airports") or {}
-        airports[code] = {"radius_km": radius, "enabled": True}
+        airports[code] = {"radius_km": radius}
         config["airports"] = airports
         settings[str(self.user_id)] = config
         save_locked_json(PERSONAL_SPECIALS_PATH, settings)
@@ -1270,7 +1270,7 @@ class PersonalSettingsView(discord.ui.View):
         aircraft = config.get("aircraft") or {}
         filters = config.get("filters") or {}
         airports = config.get("airports") or {}
-        lines = [f"登録機: {len(aircraft)}機（各登録ごとにON/OFF）"]
+        lines = [f"登録機: {len(aircraft)}機", "通知状態は機能ボタンごとに切り替えます。"]
         lines.append(f"機体＋地方通知: {personal_region_rule_count(config)}件")
         lines.append("空港: " + (", ".join(f"{code}({value.get('radius_km', 50)}km)" for code, value in airports.items()) or "未登録"))
         lines.append("状態: " + filters.get("status", "all"))
@@ -1416,7 +1416,7 @@ class PersonalAircraftAddModal(discord.ui.Modal, title="個人機体通知を追
         if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
             await interaction.followup.send(f"個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。", ephemeral=True)
             return
-        registered[icao24] = {"label": label, "type": type_name, "priority": priority, "enabled": True}
+        registered[icao24] = {"label": label, "type": type_name, "priority": priority}
         config["aircraft"] = registered
         settings[str(interaction.user.id)] = config
         save_locked_json(PERSONAL_SPECIALS_PATH, settings)
@@ -1456,39 +1456,36 @@ def personal_region_rule_count(config):
     )
 
 
-def personal_item_enabled(item, config=None):
-    """項目単位の状態を返す。旧データは廃止前の全体ON/OFFを引き継ぐ。"""
-    item = item if isinstance(item, dict) else {}
+def personal_category_enabled(config, category):
+    """通知機能単位の状態を返す。旧データは廃止前の全体ON/OFFを引き継ぐ。"""
     config = config if isinstance(config, dict) else {}
-    return item.get("enabled", config.get("enabled", True)) is not False
-
-
-def personal_region_enabled(entry, region, config=None):
-    entry = entry if isinstance(entry, dict) else {}
-    overrides = entry.get("region_enabled") or {}
-    config = config if isinstance(config, dict) else {}
-    return overrides.get(region, config.get("enabled", True)) is not False
+    return (config.get("category_enabled") or {}).get(
+        category, config.get("enabled", True)
+    ) is not False
 
 
 def personal_status_label(enabled):
     return "🟢ON" if enabled else "⚫OFF"
 
 
-def normalize_personal_toggle(value):
-    normalized = str(value or "").strip().lower()
-    if normalized in {"on", "オン", "有効", "1", "true"}:
-        return True
-    if normalized in {"off", "オフ", "無効", "0", "false"}:
-        return False
-    return None
-
-
-def personal_rule_enabled(rule, personal_settings):
-    """目的地・機材ルールも旧全体設定を安全に引き継ぐ。"""
+def personal_rule_enabled(rule, personal_settings, category):
+    """目的地・機材通知を機能ボタン単位で有効化する。"""
     if rule.get("scope") != "personal":
         return rule.get("enabled", True) is not False
     config = (personal_settings or {}).get(str(rule.get("owner_id"))) or {}
-    return rule.get("enabled", config.get("enabled", True)) is not False
+    return personal_category_enabled(config, category)
+
+
+def toggle_personal_category(user_id, category):
+    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+    config = settings.get(str(user_id)) or {"aircraft": {}}
+    enabled = not personal_category_enabled(config, category)
+    category_enabled = dict(config.get("category_enabled") or {})
+    category_enabled[category] = enabled
+    config["category_enabled"] = category_enabled
+    settings[str(user_id)] = config
+    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+    return enabled
 
 
 def remove_personal_region_rule(config, icao24, region):
@@ -1515,21 +1512,14 @@ def personal_panel_summary(user_id):
     equipment = equipment_rules_for(load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store()), user_id, "personal")
     history = load_locked_json(PERSONAL_DETECTION_HISTORY_PATH, {}).get(str(user_id)) or []
     aircraft = config.get("aircraft") or {}
-    region_entries = config.get("region_alerts") or {}
-    region_states = [
-        personal_region_enabled(entry, region, config)
-        for entry in region_entries.values() if isinstance(entry, dict)
-        for region in entry.get("regions") or []
-    ]
-    airports = config.get("airports") or {}
-    count_text = lambda values: f"{len(values)}件（ON {sum(bool(value) for value in values)} / OFF {sum(not bool(value) for value in values)}）"
+    category_label = lambda category: personal_status_label(personal_category_enabled(config, category))
     return (
-        "通知は登録項目ごとにON/OFFできます。\n"
-        f"✈️ 全国で監視する機体: **{count_text([personal_item_enabled(value, config) for value in aircraft.values()])}**\n"
-        f"📍 地方限定で監視する機体: **{count_text(region_states)}**\n"
-        f"🌍 登録機の目的地設定: **{count_text([personal_rule_enabled(rule, {str(user_id): config}) for rule in destinations])}**\n"
-        f"🏢 空港周辺の監視: **{count_text([personal_item_enabled(value, config) for value in airports.values()])}**\n"
-        f"🔔 便名×機種の設定: **{count_text([personal_rule_enabled(rule, {str(user_id): config}) for rule in equipment])}**\n"
+        "通知は機能ボタンごとにON/OFFできます。\n"
+        f"✈️ 全国で監視する機体: **{category_label('aircraft')}・{len(aircraft)}機**\n"
+        f"📍 地方限定で監視する機体: **{category_label('region')}・{personal_region_rule_count(config)}件**\n"
+        f"🌍 登録機の目的地設定: **{category_label('destination')}・{len(destinations)}件**\n"
+        f"🏢 空港周辺の監視: **{category_label('airport')}・{len(config.get('airports') or {})}件**\n"
+        f"🔔 便名×機種の設定: **{category_label('equipment')}・{len(equipment)}件**\n"
         f"🕘 保存中の検知履歴: **{len(history)}件**"
     )
 
@@ -2012,7 +2002,18 @@ async def handle_personal_panel_bridge(message):
 
     result = "⚠️ この操作には対応していません。"
     try:
-        if operation == "aircraft_add" and args:
+        category_toggles = {
+            "aircraft_toggle": ("aircraft", "全国で機体を監視"),
+            "region_toggle": ("region", "地方限定で機体を監視"),
+            "destination_toggle": ("destination", "登録機の行き先を監視"),
+            "airport_toggle": ("airport", "空港周辺を監視"),
+            "equipment_toggle": ("equipment", "便名に入る機種を監視"),
+        }
+        if operation in category_toggles:
+            category, label = category_toggles[operation]
+            enabled = toggle_personal_category(user_id, category)
+            result = f"✅ **{label}** を **{'ON' if enabled else 'OFF'}** にしました。"
+        elif operation == "aircraft_add" and args:
             aircraft = args[0]
             priority = (args[1] if len(args) > 1 else "NORMAL").upper()
             if priority not in {"NORMAL", "SPECIAL"}:
@@ -2030,7 +2031,7 @@ async def handle_personal_panel_bridge(message):
                     if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
                         result = f"⚠️ 個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。"
                     else:
-                        registered[icao24] = {"label": label, "type": type_name, "priority": priority, "enabled": True}
+                        registered[icao24] = {"label": label, "type": type_name, "priority": priority}
                         config["aircraft"] = registered
                         settings[str(user_id)] = config
                         save_locked_json(PERSONAL_SPECIALS_PATH, settings)
@@ -2043,27 +2044,11 @@ async def handle_personal_panel_bridge(message):
                 label = value.get("label") or icao24
                 livery_name = lookup_livery(label)
                 lines.append(
-                    f"{personal_status_label(personal_item_enabled(value, config))}｜`{label}` ({icao24})｜{str(value.get('priority') or 'NORMAL').upper()}"
+                    f"`{label}` ({icao24})｜{str(value.get('priority') or 'NORMAL').upper()}"
                     + (f" · 🎨 {livery_name}" if livery_name else "")
                 )
-            result = ("✈️ **個人機体通知**\n" + "\n".join(lines)) if lines else "個人機体通知は登録されていません。"
-        elif operation == "aircraft_toggle" and len(args) >= 2:
-            target, enabled = args[0].strip().upper(), normalize_personal_toggle(args[1])
-            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-            config = settings.get(str(user_id)) or {}
-            registered = config.get("aircraft") or {}
-            found = next((icao24 for icao24, value in registered.items()
-                          if icao24.upper() == target or str(value.get("label") or "").upper() == target), None)
-            if enabled is None:
-                result = "⚠️ 状態は ON または OFF で入力してください。"
-            elif found is None:
-                result = f"⚠️ `{target}` は全国監視の登録に見つかりませんでした。"
-            else:
-                registered[found]["enabled"] = enabled
-                config["aircraft"] = registered
-                settings[str(user_id)] = config
-                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                result = f"✅ `{registered[found].get('label') or found}` の全国監視を **{'ON' if enabled else 'OFF'}** にしました。"
+            state = personal_status_label(personal_category_enabled(config, "aircraft"))
+            result = (f"✈️ **全国で機体を監視｜{state}**\n" + "\n".join(lines)) if lines else f"✈️ 全国監視は{state}｜登録機はありません。"
         elif operation == "aircraft_remove" and args:
             target = args[0].strip().upper()
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
@@ -2107,7 +2092,6 @@ async def handle_personal_panel_bridge(message):
                         regions.append(region_key)
                         alerts[icao24] = {
                             "label": label, "type": type_name, "regions": regions,
-                            "region_enabled": {**(entry.get("region_enabled") or {}), region_key: True},
                         }
                         config["region_alerts"] = alerts
                         settings[str(user_id)] = config
@@ -2123,34 +2107,10 @@ async def handle_personal_panel_bridge(message):
             for icao24, entry in sorted(alerts.items(), key=lambda item: str(item[1].get("label") or item[0])):
                 for region_key in entry.get("regions") or []:
                     lines.append(
-                        f"{personal_status_label(personal_region_enabled(entry, region_key, config))}｜`{entry.get('label') or icao24}` ({icao24})｜**{PERSONAL_REGION_LABELS.get(region_key, region_key)}**"
+                        f"`{entry.get('label') or icao24}` ({icao24})｜**{PERSONAL_REGION_LABELS.get(region_key, region_key)}**"
                     )
-            result = ("📍 **機体＋地方通知**\n" + "\n".join(lines)) if lines else "機体＋地方通知は登録されていません。"
-        elif operation == "region_toggle" and len(args) >= 3:
-            target = args[0].strip().upper()
-            region_key = normalize_personal_region(args[1])
-            enabled = normalize_personal_toggle(args[2])
-            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-            config = settings.get(str(user_id)) or {}
-            alerts = config.get("region_alerts") or {}
-            found = next((icao24 for icao24, value in alerts.items()
-                          if icao24.upper() == target or _normalize_reg(value.get("label", "")) == _normalize_reg(target)), None)
-            if region_key is None:
-                result = "⚠️ 地方名を確認してください。"
-            elif enabled is None:
-                result = "⚠️ 状態は ON または OFF で入力してください。"
-            elif found is None or region_key not in (alerts[found].get("regions") or []):
-                result = f"⚠️ `{target}` × **{PERSONAL_REGION_LABELS[region_key]}** は見つかりませんでした。"
-            else:
-                entry = alerts[found]
-                region_enabled = dict(entry.get("region_enabled") or {})
-                region_enabled[region_key] = enabled
-                entry["region_enabled"] = region_enabled
-                alerts[found] = entry
-                config["region_alerts"] = alerts
-                settings[str(user_id)] = config
-                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                result = f"✅ `{entry.get('label') or found}` × **{PERSONAL_REGION_LABELS[region_key]}** を **{'ON' if enabled else 'OFF'}** にしました。"
+            state = personal_status_label(personal_category_enabled(config, "region"))
+            result = (f"📍 **地方限定で機体を監視｜{state}**\n" + "\n".join(lines)) if lines else f"📍 地方限定監視は{state}｜登録はありません。"
         elif operation == "region_remove" and len(args) >= 2:
             target = args[0].strip().upper()
             region_key = normalize_personal_region(args[1])
@@ -2173,22 +2133,11 @@ async def handle_personal_panel_bridge(message):
             result = await create_personal_destination_rule(user_id, args[0], args[1])
         elif operation == "destination_list":
             _, rules = personal_destination_rules(user_id)
-            personal_settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-            result = ("🌍 **登録機の行き先設定**\n" + "\n".join(
-                f"{personal_status_label(personal_rule_enabled(rule, personal_settings))}｜ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules
-            )) if rules else "登録機の行き先は設定されていません。"
-        elif operation == "destination_toggle" and len(args) >= 2 and args[0].isdigit():
-            target_id, enabled = int(args[0]), normalize_personal_toggle(args[1])
-            store, rules = personal_destination_rules(user_id)
-            rule = next((item for item in rules if item.get("id") == target_id), None)
-            if enabled is None:
-                result = "⚠️ 状態は ON または OFF で入力してください。"
-            elif rule is None:
-                result = f"⚠️ ID `{target_id}` は見つかりませんでした。"
-            else:
-                rule["enabled"] = enabled
-                save_locked_json(DESTINATION_ALERTS_PATH, store)
-                result = f"✅ ID `{target_id}` の行き先通知を **{'ON' if enabled else 'OFF'}** にしました。"
+            config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
+            state = personal_status_label(personal_category_enabled(config, "destination"))
+            result = (f"🌍 **登録機の行き先を監視｜{state}**\n" + "\n".join(
+                f"ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules
+            )) if rules else f"🌍 行き先監視は{state}｜設定はありません。"
         elif operation == "destination_remove" and args and args[0].isdigit():
             target_id = int(args[0])
             store, rules = personal_destination_rules(user_id)
@@ -2216,7 +2165,7 @@ async def handle_personal_panel_bridge(message):
                 if code not in airports and len(airports) >= PERSONAL_AIRPORT_LIMIT:
                     result = f"⚠️ 空港ウォッチは{PERSONAL_AIRPORT_LIMIT}空港までです。"
                 else:
-                    airports[code] = {"radius_km": radius, "enabled": True}
+                    airports[code] = {"radius_km": radius}
                     config["airports"] = airports
                     settings[str(user_id)] = config
                     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
@@ -2224,24 +2173,10 @@ async def handle_personal_panel_bridge(message):
         elif operation == "airport_list":
             config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
             airports = config.get("airports") or {}
-            result = ("🏢 **空港ウォッチ**\n" + "\n".join(
-                f"{personal_status_label(personal_item_enabled(value, config))}｜`{code}`｜半径{value.get('radius_km', 50)}km" for code, value in sorted(airports.items())
-            )) if airports else "空港ウォッチは登録されていません。"
-        elif operation == "airport_toggle" and len(args) >= 2:
-            code, enabled = args[0].strip().upper(), normalize_personal_toggle(args[1])
-            settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-            config = settings.get(str(user_id)) or {}
-            airports = config.get("airports") or {}
-            if enabled is None:
-                result = "⚠️ 状態は ON または OFF で入力してください。"
-            elif code not in airports:
-                result = f"⚠️ `{code}` は空港ウォッチに見つかりませんでした。"
-            else:
-                airports[code]["enabled"] = enabled
-                config["airports"] = airports
-                settings[str(user_id)] = config
-                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                result = f"✅ `{code}` の空港周辺通知を **{'ON' if enabled else 'OFF'}** にしました。"
+            state = personal_status_label(personal_category_enabled(config, "airport"))
+            result = (f"🏢 **空港周辺を監視｜{state}**\n" + "\n".join(
+                f"`{code}`｜半径{value.get('radius_km', 50)}km" for code, value in sorted(airports.items())
+            )) if airports else f"🏢 空港周辺監視は{state}｜登録空港はありません。"
         elif operation == "airport_remove" and args:
             code = args[0].strip().upper()
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
@@ -2271,23 +2206,11 @@ async def handle_personal_panel_bridge(message):
         elif operation == "equipment_list":
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
             rules = equipment_rules_for(store, user_id, "personal")
-            personal_settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-            result = ("🔔 **便名×機種の設定**\n" + "\n".join(
-                f"{personal_status_label(personal_rule_enabled(rule, personal_settings))}｜ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`" for rule in rules
-            )) if rules else "便名×機種は設定されていません。"
-        elif operation == "equipment_toggle" and len(args) >= 2 and args[0].isdigit():
-            target_id, enabled = int(args[0]), normalize_personal_toggle(args[1])
-            store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
-            rules = equipment_rules_for(store, user_id, "personal")
-            rule = next((item for item in rules if item.get("id") == target_id), None)
-            if enabled is None:
-                result = "⚠️ 状態は ON または OFF で入力してください。"
-            elif rule is None:
-                result = f"⚠️ ID `{target_id}` は見つかりませんでした。"
-            else:
-                rule["enabled"] = enabled
-                save_locked_json(EQUIPMENT_ALERTS_PATH, store)
-                result = f"✅ ID `{target_id}` の便名×機種通知を **{'ON' if enabled else 'OFF'}** にしました。"
+            config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
+            state = personal_status_label(personal_category_enabled(config, "equipment"))
+            result = (f"🔔 **便名に入る機種を監視｜{state}**\n" + "\n".join(
+                f"ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`" for rule in rules
+            )) if rules else f"🔔 便名＋機種監視は{state}｜設定はありません。"
         elif operation == "equipment_remove" and args and args[0].isdigit():
             target_id = int(args[0])
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
@@ -2300,7 +2223,7 @@ async def handle_personal_panel_bridge(message):
                 save_locked_json(EQUIPMENT_ALERTS_PATH, store)
                 result = f"🗑️ `{rule['flight']}` × `{rule['equipment']}` を解除しました。"
         elif operation == "settings_toggle":
-            result = "ℹ️ 全体ON/OFFは廃止しました。各通知メニューの「個別にON/OFF」から登録ごとに変更してください。"
+            result = "ℹ️ 全体一括ON/OFFは廃止しました。各通知メニューの機能別ON/OFFボタンから変更してください。"
         elif operation == "filters_reset":
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
             config = settings.get(str(user_id)) or {"aircraft": {}}
@@ -2671,7 +2594,7 @@ async def equipment_alert_dispatch():
     changed = False
     live_cache = {}
     for rule in list(rules):
-        if not personal_rule_enabled(rule, personal_settings):
+        if not personal_rule_enabled(rule, personal_settings, "equipment"):
             continue
         flight = rule.get("flight") or ""
         equipment = rule.get("equipment") or ""
@@ -2804,7 +2727,7 @@ async def destination_alert_dispatch():
     personal_settings = await asyncio.to_thread(load_locked_json, PERSONAL_SPECIALS_PATH, {})
     rules_by_icao = {}
     for rule in rules:
-        if not personal_rule_enabled(rule, personal_settings):
+        if not personal_rule_enabled(rule, personal_settings, "destination"):
             continue
         rules_by_icao.setdefault(str(rule.get("icao24") or "").lower(), []).append(rule)
     now, notified, changed, route_cache = time.time(), store.setdefault("notified", {}), False, {}
@@ -3869,7 +3792,7 @@ async def my_special_help(ctx):
         "`!my-special-add JA784A` — 機体を追加\n"
         "`!my-special-remove JA784A` — 機体を解除\n"
         "`!my-special-list` — 自分の登録一覧\n"
-        "通知のON/OFFは個人設定チャンネルで登録1件ごとに変更できます。\n\n"
+        "通知のON/OFFは個人設定チャンネルで機能ボタンごとに変更できます。\n\n"
         "`!my-watch-add JA784A` — 通常の個人watchlistへ追加\n"
         "`!my-watch-remove JA784A` — 個人登録を解除\n"
         "`!my-watch-list` — 個人登録と設定を表示\n"
@@ -3914,7 +3837,7 @@ async def add_personal_aircraft(ctx, aircraft, priority):
     if icao24 in registered:
         await ctx.send(f"ℹ️ `{label}` ({icao24}) はすでに個人watchlistへ登録されています。")
         return
-    registered[icao24] = {"label": label, "type": type_name, "priority": priority, "enabled": True}
+    registered[icao24] = {"label": label, "type": type_name, "priority": priority}
     config["aircraft"] = registered
     config.setdefault("enabled", True)
     settings[user_id] = config
@@ -3976,7 +3899,7 @@ async def my_special_list(ctx):
     registered = config.get("aircraft") or {}
     if not registered:
         await ctx.send(
-            "👤 **自分の個人watchlist**（各機体ごとにON/OFF）\n登録機はありません。\n"
+            "👤 **自分の個人watchlist**（全国監視の機能単位でON/OFF）\n登録機はありません。\n"
             "`!my-watch-add JA784A` または `!my-special-add JA784A` で追加できます。"
         )
         return
@@ -3985,7 +3908,7 @@ async def my_special_list(ctx):
         label = entry.get("label", icao24)
         livery_name = lookup_livery(label)
         lines.append(
-            f"{personal_status_label(personal_item_enabled(entry, config))}｜`{label}` ({icao24} / {entry.get('type') or '不明'}) · **{entry.get('priority') or 'SPECIAL'}**"
+            f"`{label}` ({icao24} / {entry.get('type') or '不明'}) · **{entry.get('priority') or 'SPECIAL'}**"
             + (f" · 🎨 {livery_name}" if livery_name else "")
         )
     filters = config.get("filters") or {}
@@ -3996,7 +3919,7 @@ async def my_special_list(ctx):
     if filters.get("types"):
         conditions.append("機種: " + ", ".join(filters["types"]))
     await ctx.send(
-        (f"👤 **自分の個人watchlist**（{len(lines)}機・個別ON/OFF）\n"
+        (f"👤 **自分の個人watchlist**（{personal_status_label(personal_category_enabled(config, 'aircraft'))} / {len(lines)}機）\n"
          + "通知条件: " + "｜".join(conditions) + "\n" + "\n".join(lines))[:1990]
     )
 
@@ -4122,7 +4045,7 @@ async def my_airport_add(ctx, airport: str, radius_km: int = 50):
         await ctx.send(f"⚠️ 空港ウォッチは{PERSONAL_AIRPORT_LIMIT}空港まで登録できます。")
         return
     radius_km = max(10, min(radius_km, 200))
-    airports[code] = {"radius_km": radius_km, "enabled": True}
+    airports[code] = {"radius_km": radius_km}
     config["airports"] = airports
     settings[str(ctx.author.id)] = config
     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
@@ -4169,7 +4092,7 @@ async def my_special_settings(ctx, enabled: str):
         return
     await ctx.send(
         "ℹ️ 全体ON/OFFは廃止しました。個人設定チャンネルで対象の通知メニューを開き、"
-        "「個別にON/OFF」から登録ごとに変更してください。"
+        "機能別のON/OFFボタンから変更してください。"
     )
 
 

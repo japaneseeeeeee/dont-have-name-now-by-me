@@ -98,16 +98,18 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store, {})
         self.assertIn("全体ON/OFFは廃止", self.ctx.messages[-1])
 
-    def test_personal_item_status_helpers_preserve_legacy_setting(self):
+    def test_personal_category_status_preserves_legacy_setting(self):
         disabled = {"enabled": False}
-        self.assertFalse(discord_bot.personal_item_enabled({}, disabled))
-        self.assertTrue(discord_bot.personal_item_enabled({"enabled": True}, disabled))
-        self.assertFalse(discord_bot.personal_region_enabled({}, "kyushu", disabled))
-        self.assertTrue(discord_bot.personal_region_enabled(
-            {"region_enabled": {"kyushu": True}}, "kyushu", disabled
-        ))
-        self.assertTrue(discord_bot.normalize_personal_toggle("オン"))
-        self.assertFalse(discord_bot.normalize_personal_toggle("OFF"))
+        self.assertFalse(discord_bot.personal_category_enabled(disabled, "aircraft"))
+        disabled["category_enabled"] = {"aircraft": True}
+        self.assertTrue(discord_bot.personal_category_enabled(disabled, "aircraft"))
+
+    def test_category_toggle_only_changes_selected_notification_function(self):
+        self.store = {"123": {"enabled": False, "aircraft": {}}}
+        self.assertTrue(discord_bot.toggle_personal_category(123, "aircraft"))
+        config = self.store["123"]
+        self.assertTrue(discord_bot.personal_category_enabled(config, "aircraft"))
+        self.assertFalse(discord_bot.personal_category_enabled(config, "region"))
 
     def test_personal_alert_buttons_have_worker_routable_ids(self):
         view = discord_bot.PersonalAlertView(123, "87C003")

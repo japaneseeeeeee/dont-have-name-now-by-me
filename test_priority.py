@@ -650,24 +650,24 @@ class PriorityTests(unittest.TestCase):
         self.assertEqual([item[0] for item in subscriptions["abc123"]], ["100", "200"])
         self.assertNotIn("300", configs)
 
-    def test_personal_aircraft_can_override_legacy_global_off(self):
+    def test_personal_aircraft_category_can_override_legacy_global_off(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
-        settings = {"123": {"enabled": False, "aircraft": {
-            "abc123": {"label": "JA0001", "enabled": True},
+        settings = {"123": {"enabled": False, "category_enabled": {"aircraft": True}, "aircraft": {
+            "abc123": {"label": "JA0001"},
             "def456": {"label": "JA0002"},
         }}}
         events, _ = monitor.find_personal_special_events([aircraft], settings, {}, 100)
         self.assertEqual([event["label"] for event in events], ["JA0001"])
 
-    def test_personal_region_and_airport_items_can_be_disabled_individually(self):
+    def test_personal_region_and_airport_categories_can_be_disabled_independently(self):
         kyushu = ["abc123", "ANA101", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
         settings = {"123": {
+            "category_enabled": {"region": False, "airport": False},
             "aircraft": {},
             "region_alerts": {"abc123": {
                 "label": "JA738B", "regions": ["kyushu"],
-                "region_enabled": {"kyushu": False},
             }},
-            "airports": {"FUK": {"radius_km": 200, "enabled": False}},
+            "airports": {"FUK": {"radius_km": 200}},
         }}
         events, _ = monitor.find_personal_special_events(
             [kyushu], settings, {}, 100,
@@ -724,10 +724,10 @@ class PriorityTests(unittest.TestCase):
     def test_disabled_regular_aircraft_does_not_block_enabled_region_rule(self):
         kyushu = ["abc123", "ANA101", None, None, None, 130.4, 33.59, 1000, False, 100, 90, 0]
         settings = {"123": {
-            "aircraft": {"abc123": {"label": "JA738B", "enabled": False}},
+            "category_enabled": {"aircraft": False, "region": True},
+            "aircraft": {"abc123": {"label": "JA738B"}},
             "region_alerts": {"abc123": {
                 "label": "JA738B", "regions": ["kyushu"],
-                "region_enabled": {"kyushu": True},
             }},
         }}
         events, _ = monitor.find_personal_special_events([kyushu], settings, {}, 100)

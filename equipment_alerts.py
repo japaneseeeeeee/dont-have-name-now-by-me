@@ -70,7 +70,6 @@ def add_rule(store, *, owner_id, scope, flight, equipment):
         "scope": scope,
         "flight": flight,
         "equipment": equipment,
-        "enabled": True,
     }
     store["next_id"] = rule["id"] + 1
     store["rules"].append(rule)

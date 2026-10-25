@@ -801,28 +801,15 @@ def build_personal_subscriptions(settings):
         if not isinstance(config, dict):
             continue
         user_id = str(user_id)
-        has_active_item = config.get("enabled", True) is not False
-        for icao24, entry in (config.get("aircraft") or {}).items():
-            entry = entry if isinstance(entry, dict) else {}
-            if entry.get("enabled", config.get("enabled", True)) is False:
-                continue
-            has_active_item = True
-            subscriptions.setdefault(str(icao24).lower(), []).append(
-                (user_id, entry)
-            )
-        for entry in (config.get("region_alerts") or {}).values():
-            if not isinstance(entry, dict):
-                continue
-            overrides = entry.get("region_enabled") or {}
-            if any(overrides.get(region, config.get("enabled", True)) is not False
-                   for region in entry.get("regions") or []):
-                has_active_item = True
-                break
-        if any((value if isinstance(value, dict) else {}).get(
-                "enabled", config.get("enabled", True)) is not False
-               for value in (config.get("airports") or {}).values()):
-            has_active_item = True
-        if has_active_item:
+        category_enabled = config.get("category_enabled") or {}
+        aircraft_enabled = category_enabled.get("aircraft", config.get("enabled", True)) is not False
+        if aircraft_enabled:
+            for icao24, entry in (config.get("aircraft") or {}).items():
+                subscriptions.setdefault(str(icao24).lower(), []).append(
+                    (user_id, entry if isinstance(entry, dict) else {})
+                )
+        if any(category_enabled.get(category, config.get("enabled", True)) is not False
+               for category in ("aircraft", "region", "airport")):
             active_configs[user_id] = config
     return subscriptions, active_configs
 
@@ -831,17 +818,15 @@ def build_personal_region_subscriptions(active_configs):
     """機体＋地方の個人通知を機体から逆引きできる形にする。"""
     subscriptions = {}
     for user_id, config in active_configs.items():
+        category_enabled = config.get("category_enabled") or {}
+        if category_enabled.get("region", config.get("enabled", True)) is False:
+            continue
         for icao24, raw in (config.get("region_alerts") or {}).items():
             entry = raw if isinstance(raw, dict) else {}
             regions = [
                 str(value).lower()
                 for value in (entry.get("regions") or [])
                 if str(value).lower() in REGIONS
-            ]
-            region_enabled = entry.get("region_enabled") or {}
-            regions = [
-                region for region in regions
-                if region_enabled.get(region, config.get("enabled", True)) is not False
             ]
             if not regions:
                 continue
@@ -928,8 +913,8 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
             regular_entry = (config.get("aircraft") or {}).get(icao24)
             regular_regions = config.get("regions") or []
             if (regular_entry is not None
-                    and (regular_entry if isinstance(regular_entry, dict) else {}).get(
-                        "enabled", config.get("enabled", True)) is not False
+                    and (config.get("category_enabled") or {}).get(
+                        "aircraft", config.get("enabled", True)) is not False
                     and (
                 not regular_regions or region_key in regular_regions
             )):
@@ -973,11 +958,12 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
         if float(config.get("muted_until") or 0) > now:
             continue
         registered = config.get("aircraft") or {}
+        if (config.get("category_enabled") or {}).get(
+                "airport", config.get("enabled", True)) is False:
+            continue
         # 空港ウォッチは、サーバーwatchlist内の注目機が指定空港へ近づいた時に通知する。
         for code, airport_config in (config.get("airports") or {}).items():
             airport_config = airport_config if isinstance(airport_config, dict) else {}
-            if airport_config.get("enabled", config.get("enabled", True)) is False:
-                continue
             point = AIRPORT_WATCH_POINTS.get(str(code).upper())
             if point is None:
                 continue
@@ -986,8 +972,9 @@ def find_personal_special_events(states, settings, notified, now, watchlist=None
             for icao24, aircraft in aircraft_by_icao.items():
                 regular_entry = registered.get(icao24)
                 regular_enabled = regular_entry is not None and (
-                    regular_entry if isinstance(regular_entry, dict) else {}
-                ).get("enabled", config.get("enabled", True)) is not False
+                    (config.get("category_enabled") or {}).get(
+                        "aircraft", config.get("enabled", True)) is not False
+                )
                 if regular_enabled or icao24 not in watchlist:
                     continue
                 if aircraft[5] is None or aircraft[6] is None:

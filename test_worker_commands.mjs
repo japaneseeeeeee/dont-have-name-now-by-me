@@ -763,7 +763,7 @@ response = worker.handlePersonalPanelButton({
 });
 responseBody = await response.json();
 assert.doesNotMatch(JSON.stringify(responseBody.data.components), /settings_toggle/);
-assert.match(responseBody.data.content, /登録1件ごと/);
+assert.match(responseBody.data.content, /機能ごと/);
 
 response = worker.handlePersonalPanelButton({
   user: { id: "123" },
@@ -810,22 +810,8 @@ response = worker.handlePersonalPanelAction({
   message: { id: "panel-message" },
 });
 responseBody = await response.json();
-assert.equal(responseBody.type, 9);
-assert.equal(responseBody.data.custom_id, "personal_modal|aircraft_toggle");
-
-response = worker.personalModalSubmit({
-  user: { id: "123" },
-  data: {
-    custom_id: "personal_modal|aircraft_toggle",
-    components: [
-      { components: [{ custom_id: "aircraft", value: "JA784A" }] },
-      { components: [{ custom_id: "mode", value: "OFF" }] },
-    ],
-  },
-  message: { id: "panel-message" },
-});
-responseBody = await response.json();
-assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|aircraft_toggle\|JA784A\|OFF/);
+assert.equal(responseBody.type, 4);
+assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|aircraft_toggle/);
 
 response = worker.handleLegacyPersonalAlertButton({
   id: "1420070400000000001",
