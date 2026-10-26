@@ -262,6 +262,32 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
             await discord_bot.flight_lookup.callback(self.ctx, query="JL123")
         self.assertIn("現在一時的に利用できません", self.ctx.messages[-1])
 
+    async def test_destination_dispatch_survives_adsb_outage(self):
+        with (
+            patch.object(
+                discord_bot,
+                "_destination_alert_dispatch_once",
+                AsyncMock(side_effect=discord_bot.AdsbUnavailableError("temporary outage")),
+            ) as dispatch,
+            patch.object(discord_bot.logger, "warning") as warning,
+        ):
+            await discord_bot.destination_alert_dispatch.coro()
+        dispatch.assert_awaited_once()
+        warning.assert_called_once()
+
+    async def test_equipment_dispatch_survives_unexpected_error(self):
+        with (
+            patch.object(
+                discord_bot,
+                "_equipment_alert_dispatch_once",
+                AsyncMock(side_effect=RuntimeError("temporary failure")),
+            ) as dispatch,
+            patch.object(discord_bot.logger, "exception") as logged,
+        ):
+            await discord_bot.equipment_alert_dispatch.coro()
+        dispatch.assert_awaited_once()
+        logged.assert_called_once()
+
     def test_registration_lookup_uses_current_hexdb_endpoint(self):
         response = Mock(status_code=200, text="4010EE")
         with patch.object(discord_bot.requests, "get", return_value=response) as get:

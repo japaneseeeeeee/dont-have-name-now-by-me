@@ -2566,8 +2566,7 @@ async def system_alert_dispatch():
         await asyncio.to_thread(append_system_alert_events, retry_events)
 
 
-@tasks.loop(seconds=120)
-async def equipment_alert_dispatch():
+async def _equipment_alert_dispatch_once():
     """指定便へ対象機材が実際に入ったことをADS-Bで確認して通知する。"""
     if not bot.is_ready() or bot.is_closed():
         return
@@ -2629,6 +2628,19 @@ async def equipment_alert_dispatch():
         changed = True
     if changed:
         await asyncio.to_thread(save_locked_json, EQUIPMENT_ALERTS_PATH, store)
+
+
+@tasks.loop(seconds=120)
+async def equipment_alert_dispatch():
+    """外部APIの一時障害が起きても、次の周期で機材通知を再開する。"""
+    try:
+        await _equipment_alert_dispatch_once()
+    except asyncio.CancelledError:
+        raise
+    except AdsbUnavailableError as exc:
+        logger.warning("機材通知用ADS-Bを利用できません。次回再試行します: %s", exc)
+    except Exception:
+        logger.exception("機材通知の定期処理に失敗しました。次回再試行します")
 
 
 def _destination_distance_km(aircraft, route):
@@ -2699,8 +2711,7 @@ def build_destination_alert_embed(rule, aircraft, route):
     return embed
 
 
-@tasks.loop(seconds=120)
-async def destination_alert_dispatch():
+async def _destination_alert_dispatch_once():
     if not bot.is_ready() or bot.is_closed():
         return
     store = await asyncio.to_thread(load_locked_json, DESTINATION_ALERTS_PATH, empty_destination_store())
@@ -2752,6 +2763,19 @@ async def destination_alert_dispatch():
         store["notified"], changed = cleaned, True
     if changed:
         await asyncio.to_thread(save_locked_json, DESTINATION_ALERTS_PATH, store)
+
+
+@tasks.loop(seconds=120)
+async def destination_alert_dispatch():
+    """外部APIの一時障害が起きても、次の周期で目的地通知を再開する。"""
+    try:
+        await _destination_alert_dispatch_once()
+    except asyncio.CancelledError:
+        raise
+    except AdsbUnavailableError as exc:
+        logger.warning("目的地通知用ADS-Bを利用できません。次回再試行します: %s", exc)
+    except Exception:
+        logger.exception("目的地通知の定期処理に失敗しました。次回再試行します")
 
 
 # ============ イベント ============
