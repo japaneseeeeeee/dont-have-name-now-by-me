@@ -636,7 +636,7 @@ assert.equal(aeroDataBoxAircraftLookup, true);
 assert.equal(result.embeds[0].title, "✈️ JA784A");
 assert.match(JSON.stringify(result.embeds), /2010（初飛行年）/);
 assert.match(JSON.stringify(result.embeds), /機齢 約16年/);
-assert.match(JSON.stringify(result.embeds), /Test Special Livery/);
+assert.doesNotMatch(JSON.stringify(result.embeds), /Test Special Livery/);
 
 watchlist["4010ee"] = { label: "G-EZBZ", type: "Airbus A319-111" };
 registrationLookupUrl = "";
