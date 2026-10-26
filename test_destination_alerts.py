@@ -1,5 +1,13 @@
 import unittest
-from destination_alerts import add_rule, empty_store, event_fingerprint, route_matches_destination, should_notify
+from destination_alerts import (
+    add_rule,
+    empty_store,
+    event_fingerprint,
+    observe_candidate,
+    prune_pending,
+    route_matches_destination,
+    should_notify,
+)
 
 class DestinationAlertTests(unittest.TestCase):
     def test_add_and_deduplicate_rule(self):
@@ -30,6 +38,26 @@ class DestinationAlertTests(unittest.TestCase):
         key = event_fingerprint(rule, aircraft, route)
         self.assertFalse(should_notify({key: 1000}, key, now=2000))
         self.assertTrue(should_notify({key: 1000}, key, now=1000 + 20 * 3600))
+
+    def test_destination_requires_two_consecutive_confirmations(self):
+        pending = {}
+        self.assertFalse(observe_candidate(pending, "flight-a", now=1000))
+        self.assertTrue(observe_candidate(pending, "flight-a", now=1120))
+
+    def test_confirmation_resets_after_a_long_gap(self):
+        pending = {}
+        self.assertFalse(observe_candidate(pending, "flight-a", now=1000))
+        self.assertFalse(observe_candidate(pending, "flight-a", now=1400))
+
+    def test_old_or_invalid_pending_candidates_are_removed(self):
+        pending = {
+            "recent": {"count": 1, "last_seen": 1000},
+            "old": {"count": 2, "last_seen": 1},
+            "broken": "invalid",
+        }
+        self.assertEqual(prune_pending(pending, now=1100), {
+            "recent": {"count": 1, "last_seen": 1000.0},
+        })
 
 if __name__ == "__main__":
     unittest.main()

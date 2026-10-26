@@ -48,7 +48,8 @@ from discord.ext import commands, tasks
 from route_corrections import correct_route
 from lifecycle_review import registrations_in_tar1090, update_retirement_observations
 from equipment_alerts import add_rule, aircraft_matches, empty_store, normalize_equipment
-from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, prune_notified as prune_destination_notified, route_matches_destination, should_notify as should_notify_destination)
+from destination_alerts import (MAX_RULES as DESTINATION_ALERT_LIMIT, add_rule as add_destination_rule, empty_store as empty_destination_store, event_fingerprint, observe_candidate as observe_destination_candidate, prune_notified as prune_destination_notified, prune_pending as prune_destination_pending, route_matches_destination, should_notify as should_notify_destination)
+from route_validation import route_matches_position
 from watchlist_sync import (
     backup_count,
     build_sync_status,
@@ -161,6 +162,8 @@ DESTINATION_ALERT_CHANNEL_ID = int(os.environ.get("DESTINATION_ALERT_CHANNEL_ID"
 ADSB_API_BASES = ["https://api.adsb.lol", "https://api.adsb.one"]
 ADSB_TIMEOUT = 8
 HTTP_HEADERS = {"User-Agent": "aircraft-alert-bot/1.0"}
+DESTINATION_CALLSIGN_CACHE_SECONDS = 90
+_destination_callsign_evidence_cache = {}
 
 # IATA航空会社コード → ICAOコード(コールサインの先頭3文字)。
 # 「JL123」を「JAL123」に変換するために使う。足りない航空会社は追記してよい。
@@ -879,6 +882,56 @@ def adsb_lookup(kind: str, value: str):
     if not api_responded:
         raise AdsbUnavailableError("all ADS-B providers are unavailable")
     return []
+
+
+def fetch_destination_callsign_evidence(icao24: str):
+    """目的地通知候補だけを複数ADS-B提供元で照合する。"""
+    key = str(icao24 or "").strip().lower()
+    if not HEX6.fullmatch(key):
+        return {}
+    cached = _destination_callsign_evidence_cache.get(key)
+    if cached and cached[0] > time.monotonic():
+        return dict(cached[1])
+
+    evidence = {}
+    for base in ADSB_API_BASES:
+        try:
+            response = requests.get(
+                f"{base}/v2/hex/{key}", timeout=ADSB_TIMEOUT, headers=HTTP_HEADERS,
+            )
+            if response.status_code != 200:
+                continue
+            aircraft = next((
+                item for item in (response.json().get("ac") or [])
+                if str(item.get("hex") or "").strip().lower().lstrip("~") == key
+            ), None)
+            callsign = str(
+                (aircraft or {}).get("flight") or (aircraft or {}).get("callsign") or ""
+            ).strip().upper()
+            if callsign:
+                evidence[base] = callsign
+        except (requests.RequestException, ValueError, AttributeError):
+            continue
+    _destination_callsign_evidence_cache[key] = (
+        time.monotonic() + DESTINATION_CALLSIGN_CACHE_SECONDS,
+        dict(evidence),
+    )
+    return evidence
+
+
+def choose_destination_callsign(primary, evidence):
+    """提供元同士が矛盾する便名は採用しない。"""
+    current = str(primary or "").strip().upper()
+    values = {
+        str(value or "").strip().upper()
+        for value in (evidence or {}).values()
+        if str(value or "").strip()
+    }
+    if len(values) > 1:
+        return ""
+    if current and values and current not in values:
+        return ""
+    return current or (next(iter(values)) if values else "")
 
 
 class AdsbUnavailableError(RuntimeError):
@@ -2707,8 +2760,37 @@ def build_destination_alert_embed(rule, aircraft, route):
     distance = _destination_distance_km(aircraft, route)
     embed.add_field(name=f"{rule['destination']}まで", value=f"約{distance:,.0f} km" if distance is not None else "取得不可", inline=True)
     embed.add_field(name="概算到着", value=_format_eta(_destination_eta_minutes(aircraft, route)), inline=True)
-    embed.set_footer(text="目的地は便ルート情報との完全一致で判定｜概算到着は直線距離÷現在速度の目安")
+    embed.set_footer(text="現在位置との整合・複数回確認済み｜概算到着は直線距離÷現在速度の目安")
     return embed
+
+
+def destination_route_matches_position(aircraft, route):
+    """ADS-B Exchange互換値を地域通知と同じ単位へ直して経路を検証する。"""
+    try:
+        lat = float(aircraft["lat"])
+        lon = float(aircraft["lon"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    altitude = aircraft.get("alt_baro")
+    if not isinstance(altitude, (int, float)):
+        altitude = aircraft.get("alt_geom")
+    altitude_m = float(altitude) * 0.3048 if isinstance(altitude, (int, float)) else None
+
+    vertical_rate = aircraft.get("baro_rate")
+    if not isinstance(vertical_rate, (int, float)):
+        vertical_rate = aircraft.get("geom_rate")
+    vertical_rate_mps = (
+        float(vertical_rate) * 0.00508 if isinstance(vertical_rate, (int, float)) else None
+    )
+    return route_matches_position(
+        route,
+        lat,
+        lon,
+        track=aircraft.get("track"),
+        altitude=altitude_m,
+        vertical_rate=vertical_rate_mps,
+    )
 
 
 async def _destination_alert_dispatch_once():
@@ -2724,7 +2806,10 @@ async def _destination_alert_dispatch_once():
         if not personal_rule_enabled(rule, personal_settings, "destination"):
             continue
         rules_by_icao.setdefault(str(rule.get("icao24") or "").lower(), []).append(rule)
-    now, notified, changed, route_cache = time.time(), store.setdefault("notified", {}), False, {}
+    now = time.time()
+    notified = store.setdefault("notified", {})
+    pending = store.setdefault("pending", {})
+    changed, route_cache, seen_candidates = False, {}, set()
     for icao24, aircraft_rules in rules_by_icao.items():
         if not HEX6.fullmatch(icao24):
             continue
@@ -2732,19 +2817,39 @@ async def _destination_alert_dispatch_once():
         aircraft = next((item for item in aircraft_list if str(item.get("hex") or "").lower().lstrip("~") == icao24), None)
         if not aircraft or aircraft.get("alt_baro") == "ground":
             continue
-        callsign = str(aircraft.get("flight") or "").strip().upper()
+        callsign = str(aircraft.get("flight") or aircraft.get("callsign") or "").strip().upper()
+        evidence = {}
         if not callsign:
-            continue
+            evidence = await asyncio.to_thread(fetch_destination_callsign_evidence, icao24)
+            callsign = choose_destination_callsign("", evidence)
+            if not callsign:
+                continue
         if callsign not in route_cache:
             route_cache[callsign] = await asyncio.to_thread(fetch_route, callsign)
         route = route_cache[callsign]
-        if not route:
+        matching_rules = [
+            rule for rule in aircraft_rules
+            if route_matches_destination(route, rule.get("destination"))
+        ]
+        if not route or not matching_rules or not destination_route_matches_position(aircraft, route):
             continue
-        for rule in aircraft_rules:
-            if not route_matches_destination(route, rule.get("destination")):
-                continue
+
+        if not evidence:
+            evidence = await asyncio.to_thread(fetch_destination_callsign_evidence, icao24)
+        if choose_destination_callsign(callsign, evidence) != callsign:
+            logger.warning("目的地通知候補のコールサインが提供元間で不一致: %s", icao24)
+            continue
+
+        aircraft = dict(aircraft)
+        aircraft["flight"] = callsign
+        for rule in matching_rules:
             fingerprint = event_fingerprint(rule, aircraft, route)
             if not should_notify_destination(notified, fingerprint, now):
+                pending.pop(fingerprint, None)
+                continue
+            seen_candidates.add(fingerprint)
+            if not observe_destination_candidate(pending, fingerprint, now):
+                changed = True
                 continue
             try:
                 if rule.get("scope") == "personal":
@@ -2754,6 +2859,7 @@ async def _destination_alert_dispatch_once():
                     channel = bot.get_channel(DESTINATION_ALERT_CHANNEL_ID) or await bot.fetch_channel(DESTINATION_ALERT_CHANNEL_ID)
                     await channel.send(embed=build_destination_alert_embed(rule, aircraft, route))
                 notified[fingerprint], changed = now, True
+                pending.pop(fingerprint, None)
             except discord.Forbidden:
                 logger.warning("早期目的地通知を送信できません: rule=%s", rule.get("id"))
             except (discord.HTTPException, KeyError, TypeError, ValueError) as exc:
@@ -2761,6 +2867,11 @@ async def _destination_alert_dispatch_once():
     cleaned = prune_destination_notified(notified, now)
     if cleaned != notified:
         store["notified"], changed = cleaned, True
+    cleaned_pending = prune_destination_pending({
+        key: value for key, value in pending.items() if key in seen_candidates
+    }, now)
+    if cleaned_pending != pending:
+        store["pending"], changed = cleaned_pending, True
     if changed:
         await asyncio.to_thread(save_locked_json, DESTINATION_ALERTS_PATH, store)
 

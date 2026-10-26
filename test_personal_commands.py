@@ -275,6 +275,98 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         dispatch.assert_awaited_once()
         warning.assert_called_once()
 
+    def test_destination_callsign_rejects_provider_conflict(self):
+        self.assertEqual(
+            discord_bot.choose_destination_callsign(
+                "CAL104", {"provider-a": "CAL104", "provider-b": "CAL105"}
+            ),
+            "",
+        )
+        self.assertEqual(
+            discord_bot.choose_destination_callsign(
+                "", {"provider-a": "CAL104", "provider-b": "CAL104"}
+            ),
+            "CAL104",
+        )
+
+    def test_destination_route_rejects_wrong_direction(self):
+        route = {
+            "origin": {"latitude": 25.0797, "longitude": 121.2342},
+            "destination": {"latitude": 35.7720, "longitude": 140.3929},
+        }
+        aircraft = {
+            "lat": 30.0,
+            "lon": 130.0,
+            "alt_baro": 35000,
+            "baro_rate": 0,
+            "track": 240,
+        }
+        self.assertFalse(discord_bot.destination_route_matches_position(aircraft, route))
+        aircraft["track"] = 55
+        self.assertTrue(discord_bot.destination_route_matches_position(aircraft, route))
+
+    async def test_destination_dispatch_sends_only_after_two_valid_checks(self):
+        store = {
+            "next_id": 2,
+            "rules": [{
+                "id": 1,
+                "registration": "B-18007",
+                "icao24": "899020",
+                "type": "Boeing 777-300ER",
+                "destination": "NRT",
+                "owner_id": "123",
+                "scope": "personal",
+            }],
+            "notified": {},
+        }
+        settings = {"123": {"category_enabled": {"destination": True}}}
+        aircraft = {
+            "hex": "899020",
+            "r": "B-18007",
+            "flight": "CAL104",
+            "lat": 30.0,
+            "lon": 130.0,
+            "alt_baro": 35000,
+            "baro_rate": 0,
+            "track": 55,
+            "gs": 450,
+        }
+        route = {
+            "origin": {
+                "iata_code": "TPE", "latitude": 25.0797, "longitude": 121.2342,
+            },
+            "destination": {
+                "iata_code": "NRT", "icao_code": "RJAA",
+                "latitude": 35.7720, "longitude": 140.3929,
+            },
+            "flight_iata": "CI104",
+        }
+        recipient = AsyncMock()
+
+        def load(path, default):
+            return store if path == discord_bot.DESTINATION_ALERTS_PATH else settings
+
+        with (
+            patch.object(discord_bot, "load_locked_json", side_effect=load),
+            patch.object(discord_bot, "save_locked_json"),
+            patch.object(discord_bot, "adsb_lookup", return_value=[aircraft]),
+            patch.object(discord_bot, "fetch_route", return_value=route),
+            patch.object(
+                discord_bot,
+                "fetch_destination_callsign_evidence",
+                return_value={"provider-a": "CAL104", "provider-b": "CAL104"},
+            ),
+            patch.object(discord_bot.bot, "is_ready", return_value=True),
+            patch.object(discord_bot.bot, "is_closed", return_value=False),
+            patch.object(discord_bot.bot, "fetch_user", AsyncMock(return_value=recipient)),
+        ):
+            await discord_bot._destination_alert_dispatch_once()
+            recipient.send.assert_not_awaited()
+            await discord_bot._destination_alert_dispatch_once()
+            recipient.send.assert_awaited_once()
+        self.assertEqual(len(store["notified"]), 1)
+        self.assertEqual(store.get("pending"), {})
+
     async def test_equipment_dispatch_survives_unexpected_error(self):
         with (
             patch.object(

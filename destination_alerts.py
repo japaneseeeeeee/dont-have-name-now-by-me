@@ -5,10 +5,13 @@ import time
 
 MAX_RULES = 50
 SUPPRESS_SECONDS = 20 * 60 * 60
+CONFIRMATIONS_REQUIRED = 2
+CONFIRMATION_MAX_GAP_SECONDS = 5 * 60
+PENDING_RETENTION_SECONDS = 15 * 60
 AIRPORT_RE = re.compile(r"^[A-Z0-9]{3,4}$")
 
 def empty_store():
-    return {"next_id": 1, "rules": [], "notified": {}}
+    return {"next_id": 1, "rules": [], "notified": {}, "pending": {}}
 
 def normalize_airport(value):
     code = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
@@ -63,5 +66,37 @@ def prune_notified(notified, now=None):
             if float(stamp) >= cutoff:
                 cleaned[key] = float(stamp)
         except (TypeError, ValueError):
+            continue
+    return cleaned
+
+
+def observe_candidate(pending, fingerprint, now=None):
+    """同じ便・経路が連続して確認できた回数を保存し、通知可能ならTrueを返す。"""
+    now = time.time() if now is None else float(now)
+    previous = (pending or {}).get(fingerprint)
+    try:
+        gap = now - float((previous or {}).get("last_seen", 0))
+        continuous = 0 <= gap <= CONFIRMATION_MAX_GAP_SECONDS
+        previous_count = int((previous or {}).get("count", 0))
+    except (AttributeError, TypeError, ValueError):
+        continuous = False
+        previous_count = 0
+    count = previous_count + 1 if continuous else 1
+    pending[fingerprint] = {"count": count, "last_seen": now}
+    return count >= CONFIRMATIONS_REQUIRED
+
+
+def prune_pending(pending, now=None):
+    now = time.time() if now is None else float(now)
+    cutoff = now - PENDING_RETENTION_SECONDS
+    cleaned = {}
+    for key, value in (pending or {}).items():
+        try:
+            if float(value.get("last_seen", 0)) >= cutoff:
+                cleaned[key] = {
+                    "count": max(1, int(value.get("count", 1))),
+                    "last_seen": float(value["last_seen"]),
+                }
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
     return cleaned
