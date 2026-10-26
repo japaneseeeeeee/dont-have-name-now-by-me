@@ -104,33 +104,6 @@ class PriorityTests(unittest.TestCase):
         self.assertIn("SPECIAL", embed["title"])
         self.assertTrue(any(field["name"] == "検出理由" for field in embed["fields"]))
 
-    def test_known_special_livery_is_in_notification(self):
-        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
-        with patch("monitor.lookup_livery", return_value="記念特別塗装"):
-            embed = monitor.build_embed(
-                "abc123",
-                {"label": "JA0001", "type": "TEST", "priority": "NORMAL"},
-                aircraft,
-            )
-        fields = {field["name"]: field["value"] for field in embed["fields"]}
-        self.assertEqual(fields["🎨 特別塗装"], "記念特別塗装")
-
-    def test_special_livery_is_in_mobile_notification_content(self):
-        aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.0, 1000, False, 100, 90, 0]
-        response = Mock(status_code=204)
-        with (
-            patch("monitor.lookup_livery", return_value="記念特別塗装"),
-            patch("monitor.fetch_photo", return_value=None),
-            patch("monitor.resolve_flight_context", return_value=("TEST1", None)),
-            patch("monitor.request_with_retry", return_value=response) as request,
-        ):
-            monitor.notify_discord(
-                "abc123", {"label": "JA0001", "type": "TEST"}, aircraft,
-                "https://example.invalid/webhook", "関東",
-            )
-        payload = request.call_args.kwargs["json"]
-        self.assertIn("特別塗装：記念特別塗装", payload["content"])
-
     def test_recovery_notice_waits_for_successful_monitor_and_clears_pending(self):
         with tempfile.TemporaryDirectory() as directory:
             pending_path = os.path.join(directory, "recovery.json")

@@ -542,7 +542,7 @@ airportSchedule = {
 };
 result = await worker.cmdAirport({ airport: "NRT", aircraft: "777" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
 assert.match(result.content, /OS25.*Boeing 777（派生型不明）/);
-assert.match(result.content, /OS25.*🎨 JAL Jubilee Express/);
+assert.doesNotMatch(result.content, /🎨/);
 assert.match(result.content, /TK50.*Boeing 777-300ER/);
 result = await worker.cmdAirport({ airport: "NRT", aircraft: "77W" }, { ...env, AERODATABOX_RAPIDAPI_KEY: "test" });
 assert.doesNotMatch(result.content, /OS25/);

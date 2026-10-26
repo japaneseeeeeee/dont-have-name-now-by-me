@@ -1624,7 +1624,7 @@ async function cmdSpecial(o, env) {
 }
 
 async function cmdSpecialList(env) {
-  const [{ data }, liveries] = await Promise.all([readWatchlist(env), readLiveries(env)]);
+  const { data } = await readWatchlist(env);
   const now = Date.now() / 1000;
   const items = Object.entries(data).filter(([, value]) => {
     if (String(value?.priority || "NORMAL").toUpperCase() !== "SPECIAL") return false;
@@ -1634,8 +1634,7 @@ async function cmdSpecialList(env) {
   if (!items.length) return { content: "SPECIAL登録機はありません。" };
   return { content: `🚨 SPECIAL登録機\n${items.map(([id, value]) => {
     const label = normalize(value).label;
-    const livery = lookupLiveryName(liveries, label);
-    return `\`${label}\` (${id})${livery ? ` · 🎨 ${livery}` : ""}`;
+    return `\`${label}\` (${id})`;
   }).join("\n")}`.slice(0, 1990) };
 }
 
@@ -1740,14 +1739,13 @@ async function cmdRemove(o, env) {
 async function cmdFind(o, env) {
   const keyword = String(o.keyword || "").trim();
   if (!keyword) return { content: "⚠️ 使い方: `/find keyword:<キーワード>`" };
-  const [{ data }, liveries] = await Promise.all([readWatchlist(env), readLiveries(env)]);
+  const { data } = await readWatchlist(env);
   const upper = keyword.toUpperCase();
   const matches = [];
   for (const [icao24, value] of Object.entries(data)) {
     const { label, type } = normalize(value);
     if (label.toUpperCase().includes(upper) || icao24.toUpperCase().includes(upper)) {
-      const livery = lookupLiveryName(liveries, label);
-      matches.push(`\`${label}\` (${icao24} / ${type})${livery ? ` · 🎨 ${livery}` : ""}`);
+      matches.push(`\`${label}\` (${icao24} / ${type})`);
     }
   }
   if (matches.length === 0) return { content: `「${keyword}」に一致する機体はありません。` };
@@ -1801,10 +1799,9 @@ async function cmdInfo(o, env, interaction = null) {
   }
 
   const normalized = entry ? normalize(entry) : { label: "", type: UNKNOWN_TYPE };
-  const [details, liveAircraft, liveries] = await Promise.all([
+  const [details, liveAircraft] = await Promise.all([
     lookupAircraftDetails(icao24, env),
     adsbLookup("hex", icao24),
-    readLiveries(env),
   ]);
   const registration = (
     normalized.label && normalized.label !== "?" ? normalized.label
@@ -1812,7 +1809,6 @@ async function cmdInfo(o, env, interaction = null) {
   );
   const typeHint = String(o.type_hint || "").trim();
   const type = normalized.type !== UNKNOWN_TYPE ? normalized.type : details.type || typeHint || UNKNOWN_TYPE;
-  const liveryName = lookupLiveryName(liveries, registration);
   const priority = effectivePriority(entry);
   const hintedYear = firstYear(o.year_hint);
   const year = details.year || hintedYear;
@@ -1865,7 +1861,6 @@ async function cmdInfo(o, env, interaction = null) {
       description: entry ? "通知対象として登録されている機体です。" : "公開機体データをもとに表示しています。",
       fields: [
         { name: "機種", value: type, inline: false },
-        ...(liveryName ? [{ name: "🎨 特別塗装", value: liveryName, inline: false }] : []),
         { name: "登録情報", value: `登録記号: \`${registration}\`\nICAO24: \`${icao24}\``, inline: true },
         { name: "製造年・機齢", value: yearValue, inline: true },
         { name: "運航会社・所有者", value: details.operator || "現在の公開データでは確認できません", inline: true },
@@ -1881,13 +1876,7 @@ async function cmdInfo(o, env, interaction = null) {
 }
 
 async function cmdList(o, env, displayContext = {}) {
-  const includeLiveries = displayContext.includeLiveries !== false;
-  const [data, liveries] = await Promise.all([
-    readWatchlistForDisplay(env, displayContext),
-    includeLiveries
-      ? withTimeout(readLiveries(env), 600, "livery display timed out").catch(() => ({}))
-      : Promise.resolve({}),
-  ]);
+  const data = await readWatchlistForDisplay(env, displayContext);
   const aircraftFilter = String(o.aircraft || "").trim();
   const allItems = Object.entries(data)
     .map(([icao24, value]) => ({ icao24, ...normalize(value) }))
@@ -1906,10 +1895,7 @@ async function cmdList(o, env, displayContext = {}) {
   const encodedFilter = encodeURIComponent(aircraftFilter).slice(0, 80);
   const lines = items
     .slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
-    .map((x) => {
-      const livery = lookupLiveryName(liveries, x.label);
-      return `\`${x.label}\` (${x.icao24} / ${x.type})${livery ? ` · 🎨 ${livery}` : ""}`;
-    });
+    .map((x) => `\`${x.label}\` (${x.icao24} / ${x.type})`);
   const pageOptions = Array.from({ length: Math.min(pages, 25) }, (_, index) => ({
     label: `${index + 1}ページ`,
     value: String(index + 1),
@@ -2034,14 +2020,14 @@ async function cmdAirport(o, env) {
     return { content: `⚠️ 空港の発着予定は現在一時的に利用できません。${hint}` };
   }
   const schedule = await response.json();
-  const [{ data: watchlist }, liveries] = await Promise.all([readWatchlist(env), readLiveries(env)]);
+  const { data: watchlist } = await readWatchlist(env);
   return buildAirportMessage(code, hours, direction, schedule, watchlist, {
     airline,
     aircraft,
     showAll,
     date,
     startTime,
-  }, liveries);
+  });
 }
 
 function isValidLocalDate(value) {
@@ -2622,7 +2608,7 @@ function formatAirport(a) {
   return name ? `${name} (${code})` : code;
 }
 
-function buildFlightEmbed(ac, route, liveries = {}) {
+function buildFlightEmbed(ac, route) {
   const callsign = (ac.flight || "").trim();
   const hex = (ac.hex || "").toLowerCase();
   const reg = ac.r;
@@ -2634,8 +2620,6 @@ function buildFlightEmbed(ac, route, liveries = {}) {
     { name: "登録記号", value: reg ? `\`${reg}\`` : "不明", inline: true },
     { name: "icao24", value: `\`${hex}\``, inline: true },
   ];
-  const liveryName = lookupLiveryName(liveries, reg);
-  if (liveryName) fields.splice(1, 0, { name: "🎨 特別塗装", value: liveryName, inline: false });
   if (route) {
     const flight = route.flightIata ? `${route.flightIata} · ` : "";
     fields.push({
@@ -3190,7 +3174,7 @@ function airportStatusIcon(item) {
   return "🟡";
 }
 
-function airportFlightLine(item, kind, watchlist, liveries = {}) {
+function airportFlightLine(item, kind, watchlist) {
   const movement = kind === "arrival" ? item.arrival : item.departure;
   const opposite = kind === "arrival" ? item.departure?.airport : item.arrival?.airport;
   const scheduled = hhmmOf(scheduledMovementTime(movement));
@@ -3206,14 +3190,10 @@ function airportFlightLine(item, kind, watchlist, liveries = {}) {
   const airport = opposite?.iata || opposite?.icao || "---";
   const aircraft = airportAircraft(item, movement);
   const type = airportAircraftDisplayName(item, movement);
-  const liveryName = lookupLiveryName(
-    liveries,
-    aircraft.reg || aircraft.registration || aircraft.tailNumber || aircraft.number,
-  );
   const icon = airportStatusIcon(item);
   const gate = movement?.gate ? ` G${movement.gate}` : "";
   const badgeMovement = { ...movement, aircraft: Object.keys(aircraft).length ? aircraft : movement?.aircraft };
-  return `${icon} \`${timeText}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${liveryName ? ` · 🎨 ${liveryName}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;
+  return `${icon} \`${timeText}\` **${flight}** ${kind === "arrival" ? "←" : "→"} ${airport}${type ? ` · ${type}` : ""}${gate}${watchlistBadge(watchlist, badgeMovement)}`;
 }
 
 function splitAirportMessages(header, sections, footer) {
@@ -3233,7 +3213,7 @@ function splitAirportMessages(header, sections, footer) {
   return messages;
 }
 
-function buildAirportMessage(code, hours, direction, schedule, watchlist, filters = {}, liveries = {}) {
+function buildAirportMessage(code, hours, direction, schedule, watchlist, filters = {}) {
   const groups = [];
   if (direction !== "departure") groups.push(["到着", "arrival", schedule.arrivals || []]);
   if (direction !== "arrival") groups.push(["出発", "departure", schedule.departures || []]);
@@ -3251,7 +3231,7 @@ function buildAirportMessage(code, hours, direction, schedule, watchlist, filter
     const sorted = [...filtered].sort((a, b) => movementTime(kind === "arrival" ? a.arrival : a.departure).localeCompare(movementTime(kind === "arrival" ? b.arrival : b.departure)));
     matchedCount += sorted.length;
     const visible = filters.showAll ? sorted : sorted.slice(0, 12);
-    const lines = visible.map((item) => airportFlightLine(item, kind, watchlist, liveries));
+    const lines = visible.map((item) => airportFlightLine(item, kind, watchlist));
     const isOmitted = !filters.showAll && sorted.length > visible.length;
     hasOmittedFlights ||= isOmitted;
     const omitted = isOmitted

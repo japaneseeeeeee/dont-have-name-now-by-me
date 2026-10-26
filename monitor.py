@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from route_corrections import correct_route
-from livery import lookup_livery
 from watchlist_sync import (
     build_sync_status,
     read_json_locked,
@@ -1630,10 +1629,6 @@ def build_embed(
             "inline": False,
         },
     ]
-    livery_name = lookup_livery(label, icao24)
-    if livery_name:
-        fields.insert(1, {"name": "🎨 特別塗装", "value": livery_name, "inline": False})
-
     if route and route_matches_position(
         route, lat, lon, track=track, altitude=altitude, vertical_rate=vrate,
     ):
@@ -1717,8 +1712,6 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
     label = entry["label"]
     aircraft_type = entry["type"]
     priority = effective_priority(entry)
-    livery_name = lookup_livery(label, icao24)
-
     photo = fetch_photo(icao24)
     callsign, route_verified = resolve_flight_context(
         icao24, aircraft[1], aircraft[6], aircraft[5],
@@ -1737,7 +1730,6 @@ def notify_discord(icao24, entry, aircraft, webhook_url, region_name, repeat=Fal
             ("🚨 **SPECIAL**" if priority == "SPECIAL" else "🟠 **WATCH**" if priority == "WATCH" else "✈️")
             + f" **{label}** ({aircraft_type}) を検知"
             + ("(範囲内に継続中)" if repeat else "")
-            + (f"\n🎨 **特別塗装：{livery_name}**" if livery_name else "")
         ),
         "embeds": [embed],
     }
