@@ -317,6 +317,10 @@
     "label": "G-YMMT",
     "type": "Boeing 777-236ER"
   },
+  "405bfe": {
+    "label": "G-YMMU",
+    "type": "Boeing 777 236ER"
+  },
   "407dfc": {
     "label": "G-GBNI",
     "type": "AIRBUS A-321neo"
