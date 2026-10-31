@@ -20,7 +20,10 @@ import BUNDLED_WATCHLIST from "./watchlist.json";
  */
 
 const UA = "aircraft-alert-worker/1.0";
-const WORKER_BUILD = "2026-10-19-personal-history-eta-v15";
+// Bump this marker when the Discord interaction endpoint must be re-published.
+// It is also returned by GET so the deployed revision can be checked without
+// exposing any Discord or Cloudflare secrets.
+const WORKER_BUILD = "2026-10-31-interaction-endpoint-recovery-v16";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_FEEDBACK_SOURCE_CHANNEL_ID = "1554454760038465576";
 const DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID = "1552647426253389926";

@@ -680,7 +680,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
-assert.equal(worker.WORKER_BUILD, "2026-10-19-personal-history-eta-v15");
+assert.equal(worker.WORKER_BUILD, "2026-10-31-interaction-endpoint-recovery-v16");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
