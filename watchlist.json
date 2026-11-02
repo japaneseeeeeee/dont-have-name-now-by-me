@@ -95,7 +95,7 @@
   },
   "896453": {
     "label": "A6-EQD",
-    "type": "Airbus A380-861"
+    "type": "Boeing 777-300ER (B77W)"
   },
   "896462": {
     "label": "A6-APG",
@@ -179,7 +179,7 @@
   },
   "06a121": {
     "label": "A7-ANE",
-    "type": "Airbus A350-941"
+    "type": "Airbus A350-1041 (A35K)"
   },
   "06a144": {
     "label": "A7-APC",
@@ -263,7 +263,7 @@
   },
   "3b76ae": {
     "label": "F-RARF",
-    "type": "Airbus A400M-180"
+    "type": "Airbus A330-223 (A332)"
   },
   "3c0f0b": {
     "label": "D-AUSC",
@@ -359,11 +359,11 @@
   },
   "4bb0e8": {
     "label": "TC-LGH",
-    "type": "Boeing 777-300ER"
+    "type": "Airbus A350-941 (A359)"
   },
   "4bb108": {
     "label": "TC-LHH",
-    "type": "Boeing 777-300ER"
+    "type": "Airbus A350-941 (A359)"
   },
   "4bb148": {
     "label": "TC-LJH",
@@ -525,7 +525,7 @@
   },
   "8964a0": {
     "label": "A6-EQH",
-    "type": "Airbus A380-861"
+    "type": "Boeing 777-300ER (B77W)"
   },
   "8964b5": {
     "label": "A6-EVG",
@@ -689,7 +689,7 @@
   },
   "a7f4e7": {
     "label": "N61101",
-    "type": "不明"
+    "type": "Boeing 787-9 Dreamliner (B789)"
   },
   "a7f642": {
     "label": "N612AX",
@@ -817,7 +817,7 @@
   },
   "ab3b4d": {
     "label": "N82247",
-    "type": "不明"
+    "type": "McDonnell Douglas DC-10-30F (DC10)"
   },
   "ac01ae": {
     "label": "N873CA",
@@ -857,35 +857,35 @@
   },
   "adfeb3": {
     "label": "73-1676",
-    "type": "Boeing KC-135R"
+    "type": "Boeing E-4B (B742)"
   },
   "adfeb4": {
     "label": "73-1677",
-    "type": "Boeing KC-135R"
+    "type": "Boeing E-4B (B742)"
   },
   "adfeb5": {
     "label": "74-0787",
-    "type": "Boeing KC-135R"
+    "type": "Boeing E-4B (B742)"
   },
   "adfeb6": {
     "label": "75-0125",
-    "type": "Boeing KC-135R"
+    "type": "Boeing E-4B (B742)"
   },
   "adfeb7": {
     "label": "98-0001",
-    "type": "Boeing C-17A Globemaster III"
+    "type": "Boeing C-32A (B752)"
   },
   "adfeb8": {
     "label": "98-0002",
-    "type": "Boeing C-17A Globemaster III"
+    "type": "Boeing C-32A (B752)"
   },
   "adfeb9": {
     "label": "99-0003",
-    "type": "Boeing C-17A Globemaster III"
+    "type": "Boeing C-32A (B752)"
   },
   "adfeba": {
     "label": "99-0004",
-    "type": "Boeing C-17A Globemaster III"
+    "type": "Boeing C-32A (B752)"
   },
   "ae012f": {
     "label": "79-1950",
