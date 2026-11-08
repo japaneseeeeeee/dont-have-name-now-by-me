@@ -3594,8 +3594,8 @@ async def data_quality_check():
     notices = list(anomalies)
     if status.get("repaired"):
         notices.insert(0, "GitHub版とMac版の差を検出し、Mac版を自動修復しました")
-    if status.get("error"):
-        notices.insert(0, f"GitHub版を確認できません: {status['error'][:160]}")
+    # GitHubへの一時的な接続失敗は87秒監視側で連続回数を数える。
+    # ここで1回のタイムアウトを即時通知すると誤警報になるため、品質異常とは分離する。
     fingerprint = tuple(notices)
     if not notices or fingerprint == _last_anomaly_fingerprint:
         _last_anomaly_fingerprint = fingerprint

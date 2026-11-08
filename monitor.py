@@ -21,6 +21,7 @@ from watchlist_sync import (
     read_json_locked,
     replace_local_watchlist,
     save_sync_status,
+    watchlist_digest,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -130,10 +131,12 @@ PERSONAL_SPECIAL_EVENTS_PATH = os.path.join(BASE_DIR, "personal_special_events.j
 PERSONAL_DETECTION_HISTORY_PATH = os.path.join(BASE_DIR, "personal_detection_history.json")
 SYSTEM_ALERT_EVENTS_PATH = os.path.join(BASE_DIR, "system_alert_events.json")
 SYSTEM_ALERT_STATE_PATH = os.path.join(BASE_DIR, "system_alert_state.json")
+WATCHLIST_FETCH_HEALTH_PATH = os.path.join(BASE_DIR, "watchlist_fetch_health.json")
 RECOVERY_PENDING_PATH = os.path.join(BASE_DIR, "recovery_pending.json")
 FLIGHT_CONTEXT_STATE_PATH = os.path.join(BASE_DIR, "flight_context_state.json")
 PHOTO_CACHE_PATH = os.path.join(BASE_DIR, "photo_cache.json")
 SYSTEM_ALERT_COOLDOWN = 6 * 60 * 60
+WATCHLIST_FETCH_FAILURE_THRESHOLD = 3
 PERSONAL_HISTORY_RETENTION_SECONDS = 30 * 24 * 60 * 60
 PERSONAL_HISTORY_LIMIT_PER_USER = 100
 # launchd本体とself-hosted Actionsのcheckout先が異なっても同じロックを使う。
@@ -314,11 +317,33 @@ def load_watchlist():
         fetch_error = str(exc)
         logger.warning("共通watchlistを取得できないためローカルコピーを使用: %s", exc)
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        queue_system_alert("GitHub", "共通watchlistの取得に失敗", str(exc), status)
         raw = read_json_locked(WATCHLIST_PATH, {})
+        failure_state, should_alert = record_watchlist_fetch_failure(
+            exc,
+            status_code=status,
+            local_watchlist=raw,
+        )
+        if should_alert:
+            queue_system_alert(
+                "GitHub watchlist",
+                f"GitHub版を{WATCHLIST_FETCH_FAILURE_THRESHOLD}回連続で取得できません",
+                format_watchlist_failure_detail(failure_state),
+                status,
+            )
 
     if fetched_shared:
-        cache_shared_watchlist(raw)
+        repaired = cache_shared_watchlist(raw)
+        recovery_state = record_watchlist_fetch_success(raw, repaired=repaired)
+        if recovery_state:
+            recovered_at = float(recovery_state["recovered_at"])
+            jst = timezone(timedelta(hours=9))
+            queue_system_alert(
+                "GitHub watchlist",
+                f"GitHub版への接続が復旧しました（{datetime.fromtimestamp(recovered_at, jst):%m/%d %H:%M}）",
+                format_watchlist_recovery_detail(recovery_state),
+                severity="recovery",
+                now=recovered_at,
+            )
     else:
         save_sync_status(_watchlist_sync_status_path(), build_sync_status(
             None,
@@ -531,6 +556,115 @@ def save_shared_json(path, data):
             os.replace(tmp_path, path)
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _github_failure_kind(error, status_code=None):
+    """GitHub取得失敗を管理者向けの短い原因説明へ分類する。"""
+    text = str(error or "").lower()
+    if status_code == 429:
+        return "GitHub APIの利用回数制限（HTTP 429）"
+    if status_code == 403:
+        return "GitHub側のアクセス拒否または利用回数制限（HTTP 403）"
+    if isinstance(status_code, int) and status_code >= 500:
+        return f"GitHub側の一時障害（HTTP {status_code}）"
+    if "timed out" in text or "timeout" in text:
+        return "GitHubが制限時間内に応答しなかった通信タイムアウト"
+    if "name resolution" in text or "resolve" in text or "dns" in text:
+        return "DNS名前解決の失敗"
+    if "connection" in text or "network" in text:
+        return "GitHubまでのネットワーク接続失敗"
+    if "json" in text or "watchlist must be an object" in text:
+        return "GitHubから受信したwatchlistデータの形式異常"
+    return "GitHub版watchlistの取得または検証失敗"
+
+
+def record_watchlist_fetch_failure(error, status_code=None, local_watchlist=None, now=None):
+    """連続失敗を記録し、しきい値到達時だけ通知対象にする。"""
+    current = float(time.time() if now is None else now)
+    previous = load_shared_json(WATCHLIST_FETCH_HEALTH_PATH, {})
+    previous = previous if isinstance(previous, dict) else {}
+    count = int(previous.get("consecutive_failures") or 0) + 1
+    first_failure_at = float(previous.get("first_failure_at") or current)
+    already_alerted = bool(previous.get("alerted"))
+    should_alert = count >= WATCHLIST_FETCH_FAILURE_THRESHOLD and not already_alerted
+    local = local_watchlist if isinstance(local_watchlist, dict) else {}
+    state = {
+        "status": "unavailable",
+        "consecutive_failures": count,
+        "first_failure_at": first_failure_at,
+        "last_failure_at": current,
+        "last_error": str(error)[:500],
+        "status_code": status_code,
+        "failure_kind": _github_failure_kind(error, status_code),
+        "local_count": len(local),
+        "local_hash": watchlist_digest(local) if local else "",
+        "alerted": already_alerted or should_alert,
+    }
+    save_shared_json(WATCHLIST_FETCH_HEALTH_PATH, state)
+    return state, should_alert
+
+
+def record_watchlist_fetch_success(remote_watchlist, repaired=False, now=None):
+    """成功時に連続失敗を解除し、通知済み障害なら復旧情報を返す。"""
+    current = float(time.time() if now is None else now)
+    previous = load_shared_json(WATCHLIST_FETCH_HEALTH_PATH, {})
+    previous = previous if isinstance(previous, dict) else {}
+    recovery = None
+    if previous.get("alerted"):
+        recovery = dict(previous)
+        recovery.update({
+            "recovered_at": current,
+            "duration_seconds": max(0, current - float(previous.get("first_failure_at") or current)),
+            "remote_count": len(remote_watchlist) if isinstance(remote_watchlist, dict) else 0,
+            "remote_hash": watchlist_digest(remote_watchlist) if isinstance(remote_watchlist, dict) else "",
+            "repaired": bool(repaired),
+        })
+    healthy = {
+        "status": "healthy",
+        "consecutive_failures": 0,
+        "last_success_at": current,
+        "remote_count": len(remote_watchlist) if isinstance(remote_watchlist, dict) else 0,
+        "remote_hash": watchlist_digest(remote_watchlist) if isinstance(remote_watchlist, dict) else "",
+        "alerted": False,
+    }
+    save_shared_json(WATCHLIST_FETCH_HEALTH_PATH, healthy)
+    return recovery
+
+
+def _jst_timestamp(value):
+    jst = timezone(timedelta(hours=9))
+    return datetime.fromtimestamp(float(value), jst).strftime("%Y-%m-%d %H:%M:%S JST")
+
+
+def format_watchlist_failure_detail(state):
+    """Discordの詳細欄へ収まる、影響と継続動作を含む障害説明。"""
+    status = state.get("status_code")
+    status_line = f"\nHTTP状態: {status}" if status is not None else ""
+    digest = str(state.get("local_hash") or "")[:12] or "未計算"
+    return (
+        f"原因判定: {state.get('failure_kind') or '不明'}{status_line}\n"
+        f"連続失敗: {state.get('consecutive_failures', 0)}回\n"
+        f"最初の失敗: {_jst_timestamp(state.get('first_failure_at'))}\n"
+        f"直近の失敗: {_jst_timestamp(state.get('last_failure_at'))}\n"
+        f"実際のエラー: {str(state.get('last_error') or '不明')[:220]}\n"
+        f"現在使用中: Mac内の最終正常コピー {state.get('local_count', 0)}機（照合値 {digest}）\n"
+        "影響: 既存登録機の検知は継続します。GitHubで追加・削除した機体だけ、復旧まで反映が遅れます。\n"
+        "安全動作: Mac内データは上書きせず、自動的に約87秒ごとに再試行します。"
+    )
+
+
+def format_watchlist_recovery_detail(state):
+    """障害継続時間と同期結果を含む復旧説明。"""
+    digest = str(state.get("remote_hash") or "")[:12] or "未計算"
+    repair = "GitHub版でMac内コピーを更新しました" if state.get("repaired") else "Mac内コピーはGitHub版と一致していました"
+    return (
+        f"復旧時刻: {_jst_timestamp(state.get('recovered_at'))}\n"
+        f"障害継続: {format_elapsed(state.get('duration_seconds') or 0)}\n"
+        f"失敗回数: {state.get('consecutive_failures', 0)}回\n"
+        f"同期結果: {state.get('remote_count', 0)}機（照合値 {digest}）\n"
+        f"処理: {repair}\n"
+        "現在: GitHub版を正として通常監視へ戻り、追加・削除も再び自動反映されます。"
+    )
 
 
 def append_personal_detection_history(events, now=None):

@@ -74,6 +74,11 @@ class PriorityTests(unittest.TestCase):
                 json.dump({"old": {"label": "OLD", "type": "不明"}}, stream)
             with (
                 patch.object(monitor, "WATCHLIST_PATH", path),
+                patch.object(
+                    monitor,
+                    "WATCHLIST_FETCH_HEALTH_PATH",
+                    os.path.join(temp_dir, "watchlist_fetch_health.json"),
+                ),
                 patch.object(monitor.requests, "get", return_value=response),
             ):
                 loaded = monitor.load_watchlist()
@@ -762,6 +767,55 @@ class PriorityTests(unittest.TestCase):
             finally:
                 monitor.SYSTEM_ALERT_EVENTS_PATH = old_events
                 monitor.SYSTEM_ALERT_STATE_PATH = old_state
+
+    def test_watchlist_fetch_alerts_only_after_three_consecutive_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_path = monitor.WATCHLIST_FETCH_HEALTH_PATH
+            monitor.WATCHLIST_FETCH_HEALTH_PATH = os.path.join(directory, "health.json")
+            try:
+                local = {"abc123": {"label": "JA0001", "type": "B738"}}
+                first, alert1 = monitor.record_watchlist_fetch_failure(
+                    "Read timed out", local_watchlist=local, now=100
+                )
+                second, alert2 = monitor.record_watchlist_fetch_failure(
+                    "Read timed out", local_watchlist=local, now=187
+                )
+                third, alert3 = monitor.record_watchlist_fetch_failure(
+                    "Read timed out", local_watchlist=local, now=274
+                )
+                fourth, alert4 = monitor.record_watchlist_fetch_failure(
+                    "Read timed out", local_watchlist=local, now=361
+                )
+                self.assertEqual(first["consecutive_failures"], 1)
+                self.assertEqual(second["consecutive_failures"], 2)
+                self.assertEqual(third["consecutive_failures"], 3)
+                self.assertFalse(alert1)
+                self.assertFalse(alert2)
+                self.assertTrue(alert3)
+                self.assertFalse(alert4)
+                self.assertIn("通信タイムアウト", third["failure_kind"])
+                self.assertIn("既存登録機の検知は継続", monitor.format_watchlist_failure_detail(third))
+            finally:
+                monitor.WATCHLIST_FETCH_HEALTH_PATH = old_path
+
+    def test_watchlist_fetch_recovery_is_reported_only_after_alert(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_path = monitor.WATCHLIST_FETCH_HEALTH_PATH
+            monitor.WATCHLIST_FETCH_HEALTH_PATH = os.path.join(directory, "health.json")
+            try:
+                watchlist = {"abc123": {"label": "JA0001", "type": "B738"}}
+                monitor.record_watchlist_fetch_failure("timeout", local_watchlist=watchlist, now=100)
+                self.assertIsNone(monitor.record_watchlist_fetch_success(watchlist, now=150))
+                for stamp in (200, 287, 374):
+                    monitor.record_watchlist_fetch_failure("timeout", local_watchlist=watchlist, now=stamp)
+                recovery = monitor.record_watchlist_fetch_success(watchlist, repaired=True, now=500)
+                self.assertIsNotNone(recovery)
+                self.assertEqual(recovery["consecutive_failures"], 3)
+                self.assertEqual(recovery["duration_seconds"], 300)
+                self.assertIn("通常監視へ戻り", monitor.format_watchlist_recovery_detail(recovery))
+                self.assertIsNone(monitor.record_watchlist_fetch_success(watchlist, now=600))
+            finally:
+                monitor.WATCHLIST_FETCH_HEALTH_PATH = old_path
 
     def test_personal_special_respects_cooldown_and_setting(self):
         aircraft = ["abc123", "TEST1", None, None, None, 139.0, 35.5, 1000, False, 100, 90, 0]
