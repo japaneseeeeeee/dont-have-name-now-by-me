@@ -429,6 +429,10 @@
     "label": "HZ-HM1",
     "type": "BOEING 747-8"
   },
+  "71be40": {
+    "label": "HL7640",
+    "type": "Airbus A380 841"
+  },
   "7335a7": {
     "label": "EP-MMG",
     "type": "Airbus A340 642"
