@@ -138,12 +138,11 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
     def test_personal_control_panel_has_clear_grouped_buttons(self):
         view = discord_bot.PersonalControlPanelView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
-        self.assertEqual(buttons["全国で機体を監視"], "personal_panel:aircraft")
-        self.assertEqual(buttons["地方限定で機体を監視"], "personal_panel:region")
-        self.assertEqual(buttons["便・目的地を監視"], "personal_panel:flight_route")
-        self.assertNotIn("目的地早期通知", buttons)
-        self.assertNotIn("機材投入通知", buttons)
-        self.assertEqual(buttons["通知履歴を見る"], "personal_panel:history")
+        self.assertEqual(buttons["個人通知を設定"], "personal_panel:notifications")
+        self.assertEqual(buttons["登録・状態"], "personal_panel:overview")
+        self.assertEqual(buttons["履歴・ヘルプ"], "personal_panel:support")
+        self.assertEqual(buttons["その他"], "personal_panel:manage")
+        self.assertEqual(len(buttons), 4)
 
     def test_personal_detection_history_is_formatted_newest_first(self):
         self.store = {"123": [
@@ -169,10 +168,14 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending["duration_seconds"], 300)
         self.assertEqual(pending["reason"], "heartbeat_gap")
 
-    def test_general_menu_has_watchlist_aircraft_filter_button(self):
+    def test_general_menu_has_four_category_buttons(self):
         view = discord_bot.GeneralMenuView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
-        self.assertEqual(buttons["登録機を機種で検索"], "menu|list-filter")
+        self.assertEqual(buttons["検索・運航情報"], "menu|category-search")
+        self.assertEqual(buttons["登録・一覧"], "menu|category-watchlist")
+        self.assertEqual(buttons["ヘルプ・更新"], "menu|category-other")
+        self.assertEqual(buttons["管理者専用の設定"], "menu|admin")
+        self.assertEqual(len(buttons), 4)
 
     def test_personal_region_aliases_and_rule_count(self):
         self.assertEqual(discord_bot.normalize_personal_region("九州"), "kyushu")

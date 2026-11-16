@@ -1971,7 +1971,7 @@ async def create_personal_settings_channel(guild, member):
     )
     embed = discord.Embed(
         title="✈️ 航空機Bot 個人設定",
-        description="下のボタンから個人通知を設定できます。登録内容は本人とBot以外には表示されません。",
+        description="4つのカテゴリから操作を選べます。すべての通知機能はカテゴリ内に残っています。登録内容は本人とBot以外には表示されません。",
         color=0x5865F2,
     )
     embed.set_footer(text="個人設定パネル")
@@ -2294,7 +2294,7 @@ async def handle_personal_panel_bridge(message):
             await message.channel.send("✅ 個人設定パネルを一番下へ移動しました。", delete_after=5)
             embed = discord.Embed(
                 title="✈️ 航空機Bot 個人設定",
-                description="下のボタンから個人通知を設定できます。登録内容は本人とBot以外には表示されません。",
+                description="4つのカテゴリから操作を選べます。すべての通知機能はカテゴリ内に残っています。登録内容は本人とBot以外には表示されません。",
                 color=0x5865F2,
             )
             embed.set_footer(text="個人設定パネル")
@@ -2341,36 +2341,19 @@ class PersonalControlPanelView(discord.ui.View):
         await interaction.response.send_message("このパネルはチャンネルの所有者本人だけが操作できます。", ephemeral=True)
         return False
 
-    # 1行目から各通知の専用メニューを開く。似た操作を直接並べず、押し間違いを防ぐ。
     # Interaction EndpointはWorkerのため、ここのcallbackは永続View登録用。
-    @discord.ui.button(label="全国で機体を監視", emoji="✈️", style=discord.ButtonStyle.primary, custom_id="personal_panel:aircraft", row=0)
-    async def aircraft(self, interaction, button): pass
-    @discord.ui.button(label="地方限定で機体を監視", emoji="📍", style=discord.ButtonStyle.success, custom_id="personal_panel:region", row=0)
-    async def region(self, interaction, button): pass
-    @discord.ui.button(label="便・目的地を監視", emoji="🧭", style=discord.ButtonStyle.primary, custom_id="personal_panel:flight_route", row=0)
-    async def flight_route(self, interaction, button): pass
-    @discord.ui.button(label="空港周辺を監視", emoji="🏢", style=discord.ButtonStyle.primary, custom_id="personal_panel:airport", row=0)
-    async def airport(self, interaction, button): pass
+    # 入口を4カテゴリに絞り、全機能は次の選択メニューに残す。
+    @discord.ui.button(label="個人通知を設定", emoji="🔔", style=discord.ButtonStyle.primary, custom_id="personal_panel:notifications", row=0)
+    async def notifications(self, interaction, button): pass
 
-    @discord.ui.button(label="通知条件を確認・初期化", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:settings", row=1)
-    async def settings(self, interaction, button):
-        await interaction.response.send_message("個人通知の設定です。", view=PersonalSettingsView(interaction.user.id), ephemeral=True)
+    @discord.ui.button(label="登録・状態", emoji="📋", style=discord.ButtonStyle.primary, custom_id="personal_panel:overview", row=0)
+    async def overview(self, interaction, button): pass
 
-    @discord.ui.button(label="登録内容をまとめて確認", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="personal_panel:summary", row=1)
-    async def summary(self, interaction, button):
-        await interaction.response.send_message("👤 **現在の個人設定**\n" + personal_panel_summary(interaction.user.id), ephemeral=True)
+    @discord.ui.button(label="履歴・ヘルプ", emoji="🕘", style=discord.ButtonStyle.secondary, custom_id="personal_panel:support", row=0)
+    async def support(self, interaction, button): pass
 
-    @discord.ui.button(label="このパネルを下へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="personal_panel:refresh", row=1)
-    async def refresh(self, interaction, button): pass
-
-    @discord.ui.button(label="個人チャンネルを削除", emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="personal_panel:delete", row=1)
-    async def delete_channel(self, interaction, button): pass
-
-    @discord.ui.button(label="各ボタンの使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="personal_panel:help", row=1)
-    async def help(self, interaction, button): pass
-
-    @discord.ui.button(label="通知履歴を見る", emoji="🕘", style=discord.ButtonStyle.secondary, custom_id="personal_panel:history", row=2)
-    async def history(self, interaction, button): pass
+    @discord.ui.button(label="その他", emoji="⚙️", style=discord.ButtonStyle.secondary, custom_id="personal_panel:manage", row=0)
+    async def manage(self, interaction, button): pass
 
 
 async def refresh_personal_control_panels():
@@ -2385,15 +2368,14 @@ async def refresh_personal_control_panels():
                             and message.embeds[0].title == "✈️ 航空機Bot 個人設定"):
                         logger.info("個人設定パネルを確認: channel=%s footer=%r", channel.id, message.embeds[0].footer.text)
                         footer_text = str(message.embeds[0].footer.text or "")
+                        embed = message.embeds[0].copy()
+                        embed.description = "4つのカテゴリから操作を選べます。すべての通知機能はカテゴリ内に残っています。登録内容は本人とBot以外には表示されません。"
+                        embed.set_footer(text="個人設定パネル")
                         if footer_text == "個人設定パネル":
-                            await message.edit(view=PersonalControlPanelView())
+                            await message.edit(embed=embed, view=PersonalControlPanelView())
                         elif footer_text == "personal-panel-v3":
-                            embed = message.embeds[0].copy()
-                            embed.set_footer(text="個人設定パネル")
                             await message.edit(embed=embed, view=PersonalControlPanelView())
                         else:
-                            embed = message.embeds[0].copy()
-                            embed.set_footer(text="個人設定パネル")
                             new_message = await channel.send(embed=embed, view=PersonalControlPanelView())
                             try:
                                 await new_message.pin(reason="個人設定パネルを常に表示するため")
@@ -2448,24 +2430,13 @@ class GeneralMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="機体を検索して登録", emoji="🔍", style=discord.ButtonStyle.primary, custom_id="menu|aircraft-search", row=0)
+    @discord.ui.button(label="検索・運航情報", emoji="🔍", style=discord.ButtonStyle.primary, custom_id="menu|category-search", row=0)
     async def search(self, interaction, button): pass
-    @discord.ui.button(label="1機の詳しい情報", emoji="🛩️", style=discord.ButtonStyle.secondary, custom_id="menu|info", row=0)
-    async def info(self, interaction, button): pass
-    @discord.ui.button(label="便名で飛行中を検索", emoji="🛫", style=discord.ButtonStyle.primary, custom_id="menu|flight", row=0)
-    async def flight(self, interaction, button): pass
-    @discord.ui.button(label="空港の発着予定", emoji="🏢", style=discord.ButtonStyle.secondary, custom_id="menu|airport", row=0)
-    async def airport(self, interaction, button): pass
-
-    @discord.ui.button(label="登録機の全一覧", emoji="📋", style=discord.ButtonStyle.secondary, custom_id="menu|list", row=1)
-    async def list_aircraft(self, interaction, button): pass
-    @discord.ui.button(label="登録機を機種で検索", emoji="🔎", style=discord.ButtonStyle.primary, custom_id="menu|list-filter", row=1)
-    async def filter_aircraft(self, interaction, button): pass
-    @discord.ui.button(label="各ボタンの使い方", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|help", row=1)
+    @discord.ui.button(label="登録・一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="menu|category-watchlist", row=0)
+    async def watchlist(self, interaction, button): pass
+    @discord.ui.button(label="ヘルプ・更新", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|category-other", row=0)
     async def help(self, interaction, button): pass
-    @discord.ui.button(label="このメニューを下へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="menu|refresh", row=1)
-    async def refresh(self, interaction, button): pass
-    @discord.ui.button(label="管理者専用の設定", emoji="⚙️", style=discord.ButtonStyle.danger, custom_id="menu|admin", row=1)
+    @discord.ui.button(label="管理者専用の設定", emoji="⚙️", style=discord.ButtonStyle.danger, custom_id="menu|admin", row=0)
     async def admin(self, interaction, button): pass
 
 
@@ -2478,7 +2449,10 @@ async def refresh_general_menu_panel():
                 async for message in channel.history(limit=50):
                     if (message.author.id == bot.user.id
                             and "航空機通知Botメニュー" in str(message.content or "")):
-                        await message.edit(view=GeneralMenuView())
+                        await message.edit(
+                            content="✈️ **航空機通知Botメニュー**\n目的に近いカテゴリを選んでください。機能は次の画面に整理されています。入力内容と結果は、基本的に実行した本人だけに表示されます。",
+                            view=GeneralMenuView(),
+                        )
                         logger.info("一般コマンドパネルを更新: channel=%s message=%s", channel.id, message.id)
                         break
             except discord.HTTPException as exc:

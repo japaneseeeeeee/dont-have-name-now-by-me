@@ -35,6 +35,23 @@ const filterButtonPayload = await filterButtonResponse.json();
 assert.equal(filterButtonPayload.type, 9);
 assert.equal(filterButtonPayload.data.custom_id, "menu_modal|list-filter");
 
+const searchCategoryResponse = await worker.handleMenuButton({
+  data: { custom_id: "menu|category-search" },
+}, {}, {});
+const searchCategoryPayload = await searchCategoryResponse.json();
+assert.equal(searchCategoryPayload.type, 4);
+assert.equal(searchCategoryPayload.data.flags, 64);
+assert.match(JSON.stringify(searchCategoryPayload.data.components), /menu\|select/);
+assert.match(JSON.stringify(searchCategoryPayload.data.components), /aircraft-search/);
+assert.match(JSON.stringify(searchCategoryPayload.data.components), /airport/);
+
+const selectedInfoResponse = await worker.handleMenuButton({
+  data: { custom_id: "menu|select", values: ["info"] },
+}, {}, {});
+const selectedInfoPayload = await selectedInfoResponse.json();
+assert.equal(selectedInfoPayload.type, 9);
+assert.equal(selectedInfoPayload.data.custom_id, "menu_modal|info");
+
 // メニューの入力系ボタンは、外部APIを待たずDiscordへ有効なモーダルを即返す。
 // 行数・入力欄数もDiscordの制限内であることを全ボタンについて保証する。
 for (const action of ["aircraft-search", "info", "flight", "airport", "list-filter"]) {
@@ -655,15 +672,20 @@ registrationLookupStatus = 200;
 
 const menu = worker.cmdMenu();
 assert.match(menu.content, /航空機通知Botメニュー/);
-assert.match(JSON.stringify(menu.components), /空港の発着予定/);
-assert.match(JSON.stringify(menu.components), /登録機を機種で検索/);
+assert.match(JSON.stringify(menu.components), /検索・運航情報/);
+assert.match(JSON.stringify(menu.components), /登録・一覧/);
+assert.equal(menu.components.flatMap((row) => row.components).length, 4);
+assert.doesNotMatch(JSON.stringify(menu.components), /空港の発着予定/);
+assert.doesNotMatch(JSON.stringify(menu.components), /登録機を機種で検索/);
 assert.doesNotMatch(JSON.stringify(menu.components), /日付を指定して発着を見る/);
 assert.doesNotMatch(JSON.stringify(menu.components), /航空会社で発着を絞る/);
 assert.match(worker.adminPanel().content, /管理画面/);
 assert.match(JSON.stringify(worker.adminPanel().components), /watchlist同期/);
+assert.equal(worker.adminPanel().components.length, 2);
+assert.ok(worker.adminPanel().components.every((row) => row.components[0].type === 3));
 const syncStatusResponse = worker.handleAdminButton({
   member: { permissions: "8", user: { id: "123456789" } },
-  data: { custom_id: "admin|watchlist-status" },
+  data: { custom_id: "admin|select-view", values: ["watchlist-status"] },
 }, {}, {});
 const syncStatusPayload = await syncStatusResponse.json();
 assert.equal(syncStatusPayload.type, 4);
@@ -680,7 +702,7 @@ const listFilterCommand = worker.menuModalToCommand({
 }, "list-filter");
 assert.equal(listFilterCommand.data.name, "list");
 assert.deepEqual(listFilterCommand.data.options, [{ name: "aircraft", value: "77W" }]);
-assert.equal(worker.WORKER_BUILD, "2026-10-31-interaction-endpoint-recovery-v16");
+assert.equal(worker.WORKER_BUILD, "2026-11-16-category-menu-ui-v17");
 Object.assign(watchlist, {
   a34001: { label: "A340-300-TEST", type: "Airbus A340 313E" },
   a34002: { label: "A340-600-TEST", type: "Airbus A340 642" },
@@ -775,11 +797,22 @@ assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|history/);
 
 response = worker.handlePersonalPanelButton({
   user: { id: "123" },
-  data: { custom_id: "personal_panel:history" },
+  data: { custom_id: "personal_panel:notifications" },
   message: { id: "panel-message" },
 });
 responseBody = await response.json();
-assert.match(responseBody.data.content, /__PERSONAL_PANEL__\|123\|history/);
+assert.match(responseBody.data.content, /個人通知を設定/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_panel:select/);
+assert.match(JSON.stringify(responseBody.data.components), /flight_route/);
+
+response = worker.handlePersonalPanelButton({
+  user: { id: "123" },
+  data: { custom_id: "personal_panel:select", values: ["region"] },
+  message: { id: "panel-message" },
+});
+responseBody = await response.json();
+assert.match(responseBody.data.content, /地方限定で機体を監視/);
+assert.match(JSON.stringify(responseBody.data.components), /personal_action\|region_add/);
 
 response = worker.handlePersonalPanelAction({
   user: { id: "123" },

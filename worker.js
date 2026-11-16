@@ -23,7 +23,7 @@ const UA = "aircraft-alert-worker/1.0";
 // Bump this marker when the Discord interaction endpoint must be re-published.
 // It is also returned by GET so the deployed revision can be checked without
 // exposing any Discord or Cloudflare secrets.
-const WORKER_BUILD = "2026-10-31-interaction-endpoint-recovery-v16";
+const WORKER_BUILD = "2026-11-16-category-menu-ui-v17";
 const DISCORD_API = "https://discord.com/api/v10";
 const DEFAULT_FEEDBACK_SOURCE_CHANNEL_ID = "1554454760038465576";
 const DEFAULT_FEEDBACK_DESTINATION_CHANNEL_ID = "1552647426253389926";
@@ -980,24 +980,14 @@ async function runCommand(interaction, env) {
 
 function cmdMenu() {
   return {
-    content: "✈️ **航空機通知Botメニュー**\n調べたい項目をボタンから選んでください。入力内容と結果は、基本的に実行した本人だけに表示されます。",
+    content: "✈️ **航空機通知Botメニュー**\n目的に近いカテゴリを選んでください。機能は次の画面に整理されています。入力内容と結果は、基本的に実行した本人だけに表示されます。",
     components: [
       {
         type: 1,
         components: [
-          { type: 2, style: 1, custom_id: "menu|aircraft-search", emoji: { name: "🔍" }, label: "機体を検索して登録" },
-          { type: 2, style: 2, custom_id: "menu|info", emoji: { name: "🛩️" }, label: "1機の詳しい情報" },
-          { type: 2, style: 1, custom_id: "menu|flight", emoji: { name: "🛫" }, label: "便名で飛行中を検索" },
-          { type: 2, style: 2, custom_id: "menu|airport", emoji: { name: "🏢" }, label: "空港の発着予定" },
-        ],
-      },
-      {
-        type: 1,
-        components: [
-          { type: 2, style: 2, custom_id: "menu|list", emoji: { name: "📋" }, label: "登録機の全一覧" },
-          { type: 2, style: 1, custom_id: "menu|list-filter", emoji: { name: "🔎" }, label: "登録機を機種で検索" },
-          { type: 2, style: 2, custom_id: "menu|help", emoji: { name: "📖" }, label: "各ボタンの使い方" },
-          { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "このメニューを下へ移動" },
+          { type: 2, style: 1, custom_id: "menu|category-search", emoji: { name: "🔍" }, label: "検索・運航情報" },
+          { type: 2, style: 1, custom_id: "menu|category-watchlist", emoji: { name: "📋" }, label: "登録・一覧" },
+          { type: 2, style: 2, custom_id: "menu|category-other", emoji: { name: "📖" }, label: "ヘルプ・更新" },
           { type: 2, style: 4, custom_id: "menu|admin", emoji: { name: "⚙️" }, label: "管理者専用の設定" },
         ],
       },
@@ -1006,7 +996,52 @@ function cmdMenu() {
 }
 
 async function handleMenuButton(interaction, env, ctx) {
-  const action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  let action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  if (action === "select") action = String(interaction.data?.values?.[0] || "");
+  const categoryMenus = {
+    "category-search": {
+      content: "🔍 **検索・運航情報**\n利用する機能を選んでください。",
+      placeholder: "検索・運航機能を選択",
+      options: [
+        ["aircraft-search", "機体を検索して登録", "登録記号・便名・機種から検索", "🔍"],
+        ["info", "1機の詳しい情報", "登録記号またはICAO24の詳細", "🛩️"],
+        ["flight", "便名で飛行中を検索", "現在飛行中の便を検索", "🛫"],
+        ["airport", "空港の発着予定", "到着・出発便を表示", "🏢"],
+      ],
+    },
+    "category-watchlist": {
+      content: "📋 **登録・一覧**\n表示方法を選んでください。",
+      placeholder: "登録機の表示方法を選択",
+      options: [
+        ["list", "登録機の全一覧", "サーバーの登録機を全件表示", "📋"],
+        ["list-filter", "登録機を機種で検索", "ICAO・IATAコードや機種名で絞る", "🔎"],
+      ],
+    },
+    "category-other": {
+      content: "📖 **ヘルプ・更新**\n実行する操作を選んでください。",
+      placeholder: "ヘルプまたは更新を選択",
+      options: [
+        ["help", "機能の使い方", "各機能と入力例を表示", "📖"],
+        ["refresh", "メニューを下へ移動", "管理者向けのパネル更新", "🔄"],
+      ],
+    },
+  };
+  if (categoryMenus[action]) {
+    const menu = categoryMenus[action];
+    return json({ type: 4, data: { flags: 64, content: menu.content, components: [{
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: "menu|select",
+        placeholder: menu.placeholder,
+        min_values: 1,
+        max_values: 1,
+        options: menu.options.map(([value, label, description, emoji]) => ({
+          value, label, description, emoji: { name: emoji },
+        })),
+      }],
+    }] } });
+  }
   if (action === "admin") {
     return isAdministrator(interaction)
       ? json({ type: 4, data: { flags: 64, ...adminPanel() } })
@@ -1055,23 +1090,25 @@ async function safeHandleMenuButton(interaction, env, ctx, handler = handleMenuB
 
 function adminPanel() {
   return {
-    content: "⚙️ **航空機通知Bot 管理画面**\n変更したい項目を選んでください。この画面と操作結果は管理者本人だけに表示されます。",
+    content: "⚙️ **航空機通知Bot 管理画面**\n操作の種類を選んでください。この画面と操作結果は管理者本人だけに表示されます。",
     components: [
       { type: 1, components: [
-        { type: 2, style: 3, custom_id: "admin|add", emoji: { name: "➕" }, label: "機体を追加" },
-        { type: 2, style: 4, custom_id: "admin|remove", emoji: { name: "🗑️" }, label: "機体を削除" },
-        { type: 2, style: 1, custom_id: "admin|priority", emoji: { name: "⭐" }, label: "通知レベルを変更" },
+        { type: 3, custom_id: "admin|select-change", placeholder: "登録内容を変更", min_values: 1, max_values: 1, options: [
+          { value: "add", label: "機体を追加", description: "サーバーのwatchlistへ登録", emoji: { name: "➕" } },
+          { value: "remove", label: "機体を削除", description: "watchlistから登録を削除", emoji: { name: "🗑️" } },
+          { value: "priority", label: "通知レベルを変更", description: "NORMAL・WATCH・SPECIALを設定", emoji: { name: "⭐" } },
+          { value: "special", label: "期間限定SPECIALを設定", description: "指定期間だけSPECIALに変更", emoji: { name: "🚨" } },
+          { value: "nationwide", label: "全国通知を設定", description: "日本周辺チャンネルへの通知を変更", emoji: { name: "🗾" } },
+        ] },
       ] },
       { type: 1, components: [
-        { type: 2, style: 1, custom_id: "admin|special", emoji: { name: "🚨" }, label: "期間限定SPECIALを設定" },
-        { type: 2, style: 2, custom_id: "admin|nationwide", emoji: { name: "🗾" }, label: "全国通知を設定" },
-      ] },
-      { type: 1, components: [
-        { type: 2, style: 2, custom_id: "admin|list", emoji: { name: "📋" }, label: "登録機を見る" },
-        { type: 2, style: 2, custom_id: "admin|special-list", emoji: { name: "🔎" }, label: "SPECIAL機を見る" },
-        { type: 2, style: 1, custom_id: "admin|watchlist-status", emoji: { name: "🔄" }, label: "watchlist同期" },
-        { type: 2, style: 2, custom_id: "admin|status", emoji: { name: "🟢" }, label: "Botの稼働を確認" },
-        { type: 2, style: 2, custom_id: "admin|help", emoji: { name: "📖" }, label: "ボタンの説明" },
+        { type: 3, custom_id: "admin|select-view", placeholder: "確認・ヘルプ", min_values: 1, max_values: 1, options: [
+          { value: "list", label: "登録機を見る", description: "watchlistを表示", emoji: { name: "📋" } },
+          { value: "special-list", label: "SPECIAL機を見る", description: "現在SPECIALの機体を表示", emoji: { name: "🔎" } },
+          { value: "watchlist-status", label: "watchlist同期", description: "GitHub版とMac版の同期状態を確認", emoji: { name: "🔄" } },
+          { value: "status", label: "Botの稼働を確認", description: "主要機能の状態を表示", emoji: { name: "🟢" } },
+          { value: "help", label: "管理機能の説明", description: "各操作の説明を表示", emoji: { name: "📖" } },
+        ] },
       ] },
     ],
   };
@@ -1106,7 +1143,8 @@ function handleAdminButton(interaction, env, ctx) {
   if (!isAdministrator(interaction)) {
     return json({ type: 4, data: { flags: 64, content: "⛔ 管理者だけが使用できます。" } });
   }
-  const action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  let action = String(interaction.data.custom_id || "").split("|")[1] || "";
+  if (action.startsWith("select")) action = String(interaction.data?.values?.[0] || "");
   if (action === "help") {
     return json({ type: 4, data: { flags: 64, content:
       "📖 **管理画面のボタン説明**\n" +
@@ -1389,7 +1427,60 @@ async function processLifecycleButton(interaction, env, spec) {
 }
 
 function handlePersonalPanelButton(interaction) {
-  const action = String(interaction.data.custom_id || "").split(":")[1] || "";
+  let action = String(interaction.data.custom_id || "").split(":")[1] || "";
+  if (action === "select") action = String(interaction.data?.values?.[0] || "");
+  const categoryMenus = {
+    notifications: {
+      content: "🔔 **個人通知を設定**\n設定する通知の種類を選んでください。",
+      placeholder: "通知の種類を選択",
+      options: [
+        ["aircraft", "機体通知", "登録機を全国で検知したら通知", "✈️"],
+        ["region", "地域指定通知", "登録機を指定地方で検知したら通知", "📍"],
+        ["flight_route", "便・目的地通知", "登録機の行き先または便の機材を通知", "🧭"],
+        ["airport", "空港周辺通知", "指定空港の周辺で検知したら通知", "🏢"],
+      ],
+    },
+    overview: {
+      content: "📋 **登録・状態**\n確認または変更する項目を選んでください。",
+      placeholder: "登録内容または通知条件を選択",
+      options: [
+        ["summary", "登録内容をまとめて確認", "登録数と通知状態を表示", "📋"],
+        ["settings", "通知条件を確認・初期化", "現在の設定確認と絞り込み解除", "⚙️"],
+      ],
+    },
+    support: {
+      content: "🕘 **履歴・ヘルプ**\n表示する内容を選んでください。",
+      placeholder: "履歴または使い方を選択",
+      options: [
+        ["history", "通知履歴を見る", "最近届いた個人通知を表示", "🕘"],
+        ["help", "各機能の使い方", "個人設定の説明を表示", "📖"],
+      ],
+    },
+    manage: {
+      content: "⚙️ **その他の操作**\n実行する操作を選んでください。",
+      placeholder: "パネル操作を選択",
+      options: [
+        ["refresh", "パネルを下へ移動", "最新の位置へパネルを移動", "🔄"],
+        ["delete", "個人チャンネルを削除", "個人通知データもすべて削除", "🗑️"],
+      ],
+    },
+  };
+  if (categoryMenus[action]) {
+    const menu = categoryMenus[action];
+    return json({ type: 4, data: { flags: 64, content: menu.content, components: [{
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: "personal_panel:select",
+        placeholder: menu.placeholder,
+        min_values: 1,
+        max_values: 1,
+        options: menu.options.map(([value, label, description, emoji]) => ({
+          value, label, description, emoji: { name: emoji },
+        })),
+      }],
+    }] } });
+  }
   if (action === "launcher_help") {
     return json({ type: 4, data: { flags: 64, content:
       "📖 **個人設定を作るパネル**\n" +
