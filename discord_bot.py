@@ -2518,8 +2518,10 @@ class GeneralMenuView(discord.ui.View):
     async def search(self, interaction, button): pass
     @discord.ui.button(label="登録・一覧", emoji="📋", style=discord.ButtonStyle.primary, custom_id="menu|category-watchlist", row=0)
     async def watchlist(self, interaction, button): pass
-    @discord.ui.button(label="ヘルプ・更新", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|category-other", row=0)
+    @discord.ui.button(label="ヘルプ", emoji="📖", style=discord.ButtonStyle.secondary, custom_id="menu|category-other", row=0)
     async def help(self, interaction, button): pass
+    @discord.ui.button(label="最新位置へ移動", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="menu|refresh", row=0)
+    async def refresh(self, interaction, button): pass
     @discord.ui.button(label="管理者専用の設定", emoji="⚙️", style=discord.ButtonStyle.danger, custom_id="menu|admin", row=0)
     async def admin(self, interaction, button): pass
 

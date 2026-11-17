@@ -174,14 +174,15 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending["duration_seconds"], 300)
         self.assertEqual(pending["reason"], "heartbeat_gap")
 
-    def test_general_menu_has_four_category_buttons(self):
+    def test_general_menu_keeps_refresh_button_visible(self):
         view = discord_bot.GeneralMenuView()
         buttons = {item.label: item.custom_id for item in view.children if item.custom_id}
         self.assertEqual(buttons["検索・運航情報"], "menu|category-search")
         self.assertEqual(buttons["登録・一覧"], "menu|category-watchlist")
-        self.assertEqual(buttons["ヘルプ・更新"], "menu|category-other")
+        self.assertEqual(buttons["ヘルプ"], "menu|category-other")
+        self.assertEqual(buttons["最新位置へ移動"], "menu|refresh")
         self.assertEqual(buttons["管理者専用の設定"], "menu|admin")
-        self.assertEqual(len(buttons), 4)
+        self.assertEqual(len(buttons), 5)
 
     def test_personal_region_aliases_and_rule_count(self):
         self.assertEqual(discord_bot.normalize_personal_region("九州"), "kyushu")

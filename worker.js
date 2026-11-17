@@ -987,7 +987,8 @@ function cmdMenu() {
         components: [
           { type: 2, style: 1, custom_id: "menu|category-search", emoji: { name: "🔍" }, label: "検索・運航情報" },
           { type: 2, style: 1, custom_id: "menu|category-watchlist", emoji: { name: "📋" }, label: "登録・一覧" },
-          { type: 2, style: 2, custom_id: "menu|category-other", emoji: { name: "📖" }, label: "ヘルプ・更新" },
+          { type: 2, style: 2, custom_id: "menu|category-other", emoji: { name: "📖" }, label: "ヘルプ" },
+          { type: 2, style: 2, custom_id: "menu|refresh", emoji: { name: "🔄" }, label: "最新位置へ移動" },
           { type: 2, style: 4, custom_id: "menu|admin", emoji: { name: "⚙️" }, label: "管理者専用の設定" },
         ],
       },
@@ -1018,11 +1019,10 @@ async function handleMenuButton(interaction, env, ctx) {
       ],
     },
     "category-other": {
-      content: "📖 **ヘルプ・更新**\n実行する操作を選んでください。",
-      placeholder: "ヘルプまたは更新を選択",
+      content: "📖 **ヘルプ**\n確認する項目を選んでください。",
+      placeholder: "ヘルプを選択",
       options: [
         ["help", "機能の使い方", "各機能と入力例を表示", "📖"],
-        ["refresh", "メニューを下へ移動", "管理者向けのパネル更新", "🔄"],
       ],
     },
   };
