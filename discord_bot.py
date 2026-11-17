@@ -129,6 +129,7 @@ PERSONAL_SPECIAL_LIMIT = 20
 PERSONAL_REGION_LIMIT = 20
 PERSONAL_DESTINATION_LIMIT = 20
 PERSONAL_AIRPORT_LIMIT = 10
+BULK_INPUT_LIMIT = 20
 PERSONAL_AIRPORTS = ("HND", "NRT", "CTS", "ITM", "KIX", "NGO", "FUK", "OKA")
 PERSONAL_REGION_ALIASES = {
     "北海道": "hokkaido", "hokkaido": "hokkaido",
@@ -1496,6 +1497,30 @@ def normalize_personal_region(value):
     return PERSONAL_REGION_ALIASES.get(text) or PERSONAL_REGION_ALIASES.get(text.lower())
 
 
+def split_bulk_values(value, limit=BULK_INPUT_LIMIT):
+    """改行・空白・カンマ区切りを、順序を保った重複なしの一覧にする。"""
+    values = []
+    seen = set()
+    for item in re.split(r"[\s,、，]+", str(value or "").strip()):
+        item = item.strip()
+        key = item.upper()
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        values.append(item)
+        if len(values) >= limit:
+            break
+    return values
+
+
+async def resolve_personal_aircraft_batch(value):
+    targets = split_bulk_values(value)
+    resolved = await asyncio.gather(*(
+        asyncio.to_thread(resolve_personal_aircraft, target) for target in targets
+    ))
+    return list(zip(targets, resolved))
+
+
 def personal_region_rule_count(config):
     return sum(
         len(set(value.get("regions") or []))
@@ -2062,28 +2087,34 @@ async def handle_personal_panel_bridge(message):
             enabled = toggle_personal_category(user_id, category)
             result = f"✅ **{label}** を **{'ON' if enabled else 'OFF'}** にしました。"
         elif operation == "aircraft_add" and args:
-            aircraft = args[0]
             priority = (args[1] if len(args) > 1 else "NORMAL").upper()
             if priority not in {"NORMAL", "SPECIAL"}:
                 result = "⚠️ 通知レベルは NORMAL または SPECIAL で指定してください。"
             else:
-                resolved = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
-                if resolved is None:
-                    result = f"⚠️ `{aircraft}` の機体を確認できませんでした。"
-                else:
+                settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+                config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
+                registered = config.get("aircraft") or {}
+                unique_aircraft = set(registered) | set(config.get("region_alerts") or {})
+                lines, changed = [], False
+                for target, resolved in await resolve_personal_aircraft_batch(args[0]):
+                    if resolved is None:
+                        lines.append(f"⚠️ `{target}`：確認できませんでした。")
+                        continue
                     icao24, label, type_name = resolved
-                    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-                    config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
-                    registered = config.get("aircraft") or {}
-                    unique_aircraft = set(registered) | set(config.get("region_alerts") or {})
-                    if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
-                        result = f"⚠️ 個人watchlistは{PERSONAL_SPECIAL_LIMIT}機までです。"
+                    if icao24 in registered:
+                        lines.append(f"ℹ️ `{label}`：登録済みです。")
+                    elif icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
+                        lines.append(f"⚠️ `{label}`：上限{PERSONAL_SPECIAL_LIMIT}機に達しています。")
                     else:
                         registered[icao24] = {"label": label, "type": type_name, "priority": priority}
-                        config["aircraft"] = registered
-                        settings[str(user_id)] = config
-                        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                        result = f"✅ `{label}` ({icao24} / {type_name}) を **{priority}** で登録しました。"
+                        unique_aircraft.add(icao24)
+                        changed = True
+                        lines.append(f"✅ `{label}` ({icao24}) を **{priority}** で登録。")
+                if changed:
+                    config["aircraft"] = registered
+                    settings[str(user_id)] = config
+                    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                result = "✈️ **全国監視の一括登録結果**\n" + "\n".join(lines)
         elif operation == "aircraft_list":
             config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
             registered = config.get("aircraft") or {}
@@ -2096,56 +2127,64 @@ async def handle_personal_panel_bridge(message):
             state = personal_status_label(personal_category_enabled(config, "aircraft"))
             result = (f"✈️ **全国で機体を監視｜{state}**\n" + "\n".join(lines)) if lines else f"✈️ 全国監視は{state}｜登録機はありません。"
         elif operation == "aircraft_remove" and args:
-            target = args[0].strip().upper()
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
             config = settings.get(str(user_id)) or {}
             registered = config.get("aircraft") or {}
-            found = next((icao24 for icao24, value in registered.items()
-                          if icao24.upper() == target or str(value.get("label") or "").upper() == target), None)
-            if found is None:
-                result = f"⚠️ `{target}` は個人機体通知に見つかりませんでした。"
-            else:
-                label = registered[found].get("label") or found
-                del registered[found]
+            lines, changed = [], False
+            for raw_target in split_bulk_values(args[0]):
+                target = raw_target.upper()
+                found = next((icao24 for icao24, value in registered.items()
+                              if icao24.upper() == target or str(value.get("label") or "").upper() == target), None)
+                if found is None:
+                    lines.append(f"⚠️ `{raw_target}`：見つかりません。")
+                else:
+                    label = registered[found].get("label") or found
+                    del registered[found]
+                    changed = True
+                    lines.append(f"🗑️ `{label}` ({found}) を解除。")
+            if changed:
                 config["aircraft"] = registered
                 settings[str(user_id)] = config
                 save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                result = f"🗑️ `{label}` ({found}) の個人機体通知を解除しました。"
+            result = "✈️ **全国監視の一括削除結果**\n" + "\n".join(lines)
         elif operation == "region_add" and len(args) >= 2:
-            aircraft, raw_region = args[0], args[1]
+            raw_region = args[1]
             region_key = normalize_personal_region(raw_region)
             if region_key is None:
                 result = "⚠️ 地方名は 北海道・東北・関東・中部・近畿・中国・四国・九州・沖縄 から指定してください。"
             else:
-                resolved = await asyncio.to_thread(resolve_personal_aircraft, aircraft)
-                if resolved is None:
-                    result = f"⚠️ `{aircraft}` の機体を確認できませんでした。"
-                else:
+                settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
+                config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
+                alerts = config.get("region_alerts") or {}
+                config["region_alerts"] = alerts
+                unique_aircraft = set(config.get("aircraft") or {}) | set(alerts)
+                lines, changed = [], False
+                for target, resolved in await resolve_personal_aircraft_batch(args[0]):
+                    if resolved is None:
+                        lines.append(f"⚠️ `{target}`：確認できませんでした。")
+                        continue
                     icao24, label, type_name = resolved
-                    settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
-                    config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
-                    alerts = config.get("region_alerts") or {}
-                    unique_aircraft = set(config.get("aircraft") or {}) | set(alerts)
                     entry = dict(alerts.get(icao24) or {})
                     regions = list(dict.fromkeys(entry.get("regions") or []))
                     if icao24 not in unique_aircraft and len(unique_aircraft) >= PERSONAL_SPECIAL_LIMIT:
-                        result = f"⚠️ 個人通知に登録できる機体は合計{PERSONAL_SPECIAL_LIMIT}機までです。"
+                        lines.append(f"⚠️ `{label}`：上限{PERSONAL_SPECIAL_LIMIT}機に達しています。")
                     elif region_key not in regions and personal_region_rule_count(config) >= PERSONAL_REGION_LIMIT:
-                        result = f"⚠️ 機体＋地方通知は{PERSONAL_REGION_LIMIT}件までです。"
+                        lines.append(f"⚠️ `{label}`：地方通知の上限{PERSONAL_REGION_LIMIT}件に達しています。")
                     elif region_key in regions:
-                        result = f"ℹ️ `{label}` × **{PERSONAL_REGION_LABELS[region_key]}** は登録済みです。"
+                        lines.append(f"ℹ️ `{label}`：登録済みです。")
                     else:
                         regions.append(region_key)
                         alerts[icao24] = {
                             "label": label, "type": type_name, "regions": regions,
                         }
-                        config["region_alerts"] = alerts
-                        settings[str(user_id)] = config
-                        save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                        result = (
-                            f"✅ `{label}`を **{PERSONAL_REGION_LABELS[region_key]}** で検知した時の"
-                            "個人DM通知を登録しました。"
-                        )
+                        unique_aircraft.add(icao24)
+                        changed = True
+                        lines.append(f"✅ `{label}`を **{PERSONAL_REGION_LABELS[region_key]}** に登録。")
+                if changed:
+                    config["region_alerts"] = alerts
+                    settings[str(user_id)] = config
+                    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                result = f"📍 **{PERSONAL_REGION_LABELS[region_key]}の一括登録結果**\n" + "\n".join(lines)
         elif operation == "region_list":
             config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
             alerts = config.get("region_alerts") or {}
@@ -2158,25 +2197,34 @@ async def handle_personal_panel_bridge(message):
             state = personal_status_label(personal_category_enabled(config, "region"))
             result = (f"📍 **地方限定で機体を監視｜{state}**\n" + "\n".join(lines)) if lines else f"📍 地方限定監視は{state}｜登録はありません。"
         elif operation == "region_remove" and len(args) >= 2:
-            target = args[0].strip().upper()
             region_key = normalize_personal_region(args[1])
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
             config = settings.get(str(user_id)) or {}
             alerts = config.get("region_alerts") or {}
-            found = next((
-                icao24 for icao24, value in alerts.items()
-                if icao24.upper() == target or _normalize_reg(value.get("label", "")) == _normalize_reg(target)
-            ), None)
             if region_key is None:
                 result = "⚠️ 地方名を確認してください。"
-            elif found is None or not remove_personal_region_rule(config, found, region_key):
-                result = f"⚠️ `{target}` × **{PERSONAL_REGION_LABELS[region_key]}** は見つかりませんでした。"
             else:
-                settings[str(user_id)] = config
-                save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                result = f"🗑️ `{target}` × **{PERSONAL_REGION_LABELS[region_key]}** の地方通知を解除しました。"
+                lines, changed = [], False
+                for raw_target in split_bulk_values(args[0]):
+                    target = raw_target.upper()
+                    found = next((
+                        icao24 for icao24, value in alerts.items()
+                        if icao24.upper() == target or _normalize_reg(value.get("label", "")) == _normalize_reg(target)
+                    ), None)
+                    if found is None or not remove_personal_region_rule(config, found, region_key):
+                        lines.append(f"⚠️ `{raw_target}`：見つかりません。")
+                    else:
+                        changed = True
+                        lines.append(f"🗑️ `{raw_target}`を **{PERSONAL_REGION_LABELS[region_key]}** から解除。")
+                if changed:
+                    settings[str(user_id)] = config
+                    save_locked_json(PERSONAL_SPECIALS_PATH, settings)
+                result = f"📍 **{PERSONAL_REGION_LABELS[region_key]}の一括削除結果**\n" + "\n".join(lines)
         elif operation == "destination_add" and len(args) >= 2:
-            result = await create_personal_destination_rule(user_id, args[0], args[1])
+            lines = []
+            for aircraft in split_bulk_values(args[0]):
+                lines.append(await create_personal_destination_rule(user_id, aircraft, args[1]))
+            result = "🌍 **行き先監視の一括登録結果**\n" + "\n".join(lines)
         elif operation == "destination_list":
             _, rules = personal_destination_rules(user_id)
             config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
@@ -2184,38 +2232,53 @@ async def handle_personal_panel_bridge(message):
             result = (f"🌍 **登録機の行き先を監視｜{state}**\n" + "\n".join(
                 f"ID `{rule['id']}`｜`{rule['registration']}` → `{rule['destination']}`" for rule in rules
             )) if rules else f"🌍 行き先監視は{state}｜設定はありません。"
-        elif operation == "destination_remove" and args and args[0].isdigit():
-            target_id = int(args[0])
+        elif operation == "destination_remove" and args:
+            target_ids = {
+                int(value) for value in split_bulk_values(args[0]) if value.isdigit()
+            }
             store, rules = personal_destination_rules(user_id)
-            rule = next((item for item in rules if item.get("id") == target_id), None)
-            if rule is None:
-                result = f"⚠️ ID `{target_id}` は見つかりませんでした。"
-            else:
+            found = [rule for rule in rules if rule.get("id") in target_ids]
+            for rule in found:
                 store["rules"].remove(rule)
+            if found:
                 save_locked_json(DESTINATION_ALERTS_PATH, store)
-                result = f"🗑️ `{rule['registration']}` → `{rule['destination']}` を解除しました。"
+            found_ids = {rule.get("id") for rule in found}
+            lines = [
+                f"🗑️ ID `{rule['id']}`：`{rule['registration']}` → `{rule['destination']}` を解除。"
+                for rule in found
+            ]
+            lines.extend(
+                f"⚠️ ID `{target_id}`：見つかりません。"
+                for target_id in sorted(target_ids - found_ids)
+            )
+            result = "🌍 **行き先監視の一括削除結果**\n" + ("\n".join(lines) or "⚠️ 登録IDを数字で入力してください。")
         elif operation == "airport_add" and args:
-            code = args[0].upper()
             try:
                 radius = max(10, min(int(args[1] if len(args) > 1 and args[1] else "50"), 200))
             except ValueError:
                 radius = 0
-            if code not in PERSONAL_AIRPORTS:
-                result = "⚠️ 対応空港: " + " / ".join(PERSONAL_AIRPORTS)
-            elif not radius:
+            if not radius:
                 result = "⚠️ 半径は10〜200kmの数字で入力してください。"
             else:
                 settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
                 config = settings.get(str(user_id)) or {"enabled": True, "aircraft": {}}
                 airports = config.get("airports") or {}
-                if code not in airports and len(airports) >= PERSONAL_AIRPORT_LIMIT:
-                    result = f"⚠️ 空港ウォッチは{PERSONAL_AIRPORT_LIMIT}空港までです。"
-                else:
-                    airports[code] = {"radius_km": radius}
+                lines, changed = [], False
+                for raw_code in split_bulk_values(args[0]):
+                    code = raw_code.upper()
+                    if code not in PERSONAL_AIRPORTS:
+                        lines.append(f"⚠️ `{code}`：未対応です。")
+                    elif code not in airports and len(airports) >= PERSONAL_AIRPORT_LIMIT:
+                        lines.append(f"⚠️ `{code}`：上限{PERSONAL_AIRPORT_LIMIT}空港に達しています。")
+                    else:
+                        airports[code] = {"radius_km": radius}
+                        changed = True
+                        lines.append(f"✅ `{code}`を半径{radius}kmで登録。")
+                if changed:
                     config["airports"] = airports
                     settings[str(user_id)] = config
                     save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                    result = f"✅ `{code}`を半径{radius}kmで空港ウォッチへ追加しました。"
+                result = "🏢 **空港ウォッチの一括登録結果**\n" + "\n".join(lines)
         elif operation == "airport_list":
             config = load_locked_json(PERSONAL_SPECIALS_PATH, {}).get(str(user_id)) or {}
             airports = config.get("airports") or {}
@@ -2224,31 +2287,42 @@ async def handle_personal_panel_bridge(message):
                 f"`{code}`｜半径{value.get('radius_km', 50)}km" for code, value in sorted(airports.items())
             )) if airports else f"🏢 空港周辺監視は{state}｜登録空港はありません。"
         elif operation == "airport_remove" and args:
-            code = args[0].strip().upper()
             settings = load_locked_json(PERSONAL_SPECIALS_PATH, {})
             config = settings.get(str(user_id)) or {}
             airports = config.get("airports") or {}
-            if airports.pop(code, None) is None:
-                result = f"⚠️ `{code}` は空港ウォッチに見つかりませんでした。"
-            else:
+            lines, changed = [], False
+            for raw_code in split_bulk_values(args[0]):
+                code = raw_code.upper()
+                if airports.pop(code, None) is None:
+                    lines.append(f"⚠️ `{code}`：見つかりません。")
+                else:
+                    changed = True
+                    lines.append(f"🗑️ `{code}`を解除。")
+            if changed:
                 config["airports"] = airports
                 settings[str(user_id)] = config
                 save_locked_json(PERSONAL_SPECIALS_PATH, settings)
-                result = f"🗑️ `{code}` の空港ウォッチを解除しました。"
+            result = "🏢 **空港ウォッチの一括削除結果**\n" + "\n".join(lines)
         elif operation == "equipment_add" and len(args) >= 2:
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
             current = equipment_rules_for(store, user_id, "personal")
-            if len(current) >= EQUIPMENT_ALERT_LIMIT:
-                result = f"⚠️ 機材通知は{EQUIPMENT_ALERT_LIMIT}件までです。"
-            else:
-                rule, created = add_rule(store, owner_id=user_id, scope="personal", flight=args[0], equipment=args[1])
+            lines, changed = [], False
+            for flight in split_bulk_values(args[0]):
+                if len(current) >= EQUIPMENT_ALERT_LIMIT:
+                    lines.append(f"⚠️ `{flight}`：上限{EQUIPMENT_ALERT_LIMIT}件に達しています。")
+                    continue
+                rule, created = add_rule(store, owner_id=user_id, scope="personal", flight=flight, equipment=args[1])
                 if not rule["flight"] or not rule["equipment"]:
-                    result = "⚠️ 便名と機材コードを確認してください。"
+                    lines.append(f"⚠️ `{flight}`：便名と機材コードを確認してください。")
                 elif created:
-                    save_locked_json(EQUIPMENT_ALERTS_PATH, store)
-                    result = f"✅ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` を登録しました。"
+                    current.append(rule)
+                    changed = True
+                    lines.append(f"✅ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` を登録。")
                 else:
-                    result = f"ℹ️ ID `{rule['id']}` は登録済みです。"
+                    lines.append(f"ℹ️ ID `{rule['id']}`：登録済みです。")
+            if changed:
+                save_locked_json(EQUIPMENT_ALERTS_PATH, store)
+            result = "🔔 **便名＋機種の一括登録結果**\n" + "\n".join(lines)
         elif operation == "equipment_list":
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
             rules = equipment_rules_for(store, user_id, "personal")
@@ -2257,17 +2331,27 @@ async def handle_personal_panel_bridge(message):
             result = (f"🔔 **便名に入る機種を監視｜{state}**\n" + "\n".join(
                 f"ID `{rule['id']}`｜`{rule['flight']}` × `{rule['equipment']}`" for rule in rules
             )) if rules else f"🔔 便名＋機種監視は{state}｜設定はありません。"
-        elif operation == "equipment_remove" and args and args[0].isdigit():
-            target_id = int(args[0])
+        elif operation == "equipment_remove" and args:
+            target_ids = {
+                int(value) for value in split_bulk_values(args[0]) if value.isdigit()
+            }
             store = load_locked_json(EQUIPMENT_ALERTS_PATH, empty_store())
             rules = equipment_rules_for(store, user_id, "personal")
-            rule = next((item for item in rules if item.get("id") == target_id), None)
-            if rule is None:
-                result = f"⚠️ ID `{target_id}` は見つかりませんでした。"
-            else:
+            found = [rule for rule in rules if rule.get("id") in target_ids]
+            for rule in found:
                 store["rules"].remove(rule)
+            if found:
                 save_locked_json(EQUIPMENT_ALERTS_PATH, store)
-                result = f"🗑️ `{rule['flight']}` × `{rule['equipment']}` を解除しました。"
+            found_ids = {rule.get("id") for rule in found}
+            lines = [
+                f"🗑️ ID `{rule['id']}`：`{rule['flight']}` × `{rule['equipment']}` を解除。"
+                for rule in found
+            ]
+            lines.extend(
+                f"⚠️ ID `{target_id}`：見つかりません。"
+                for target_id in sorted(target_ids - found_ids)
+            )
+            result = "🔔 **便名＋機種の一括削除結果**\n" + ("\n".join(lines) or "⚠️ 登録IDを数字で入力してください。")
         elif operation == "settings_toggle":
             result = "ℹ️ 全体一括ON/OFFは廃止しました。各通知メニューの機能別ON/OFFボタンから変更してください。"
         elif operation == "filters_reset":

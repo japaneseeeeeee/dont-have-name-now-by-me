@@ -922,8 +922,13 @@ assert.equal(liveries.JA339J, undefined);
 assert.match(editedOriginalPayload.content, /塗装情報だけを削除/);
 assert.match(airportFollowupPayloads[0].content, /__LIFECYCLE__\|123\|livery\|remove\|JA339J/);
 
-result = await worker.cmdRemove({ target: "JA0001" }, env);
-assert.match(result.content, /削除しました/);
+watchlist.abc124 = { label: "JA0002", type: "TEST" };
+watchlist.abc125 = { label: "JA0003", type: "TEST" };
+result = await worker.cmdRemove({ target: "JA0001, JA0002\nabc125" }, env);
+assert.match(result.content, /一括削除結果/);
+assert.match(result.content, /JA0001/);
+assert.match(result.content, /JA0002/);
+assert.match(result.content, /JA0003/);
 assert.equal(Object.keys(watchlist).length, 0);
 
 console.log("All server command contract tests passed.");

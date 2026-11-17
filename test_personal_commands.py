@@ -50,6 +50,12 @@ class PersonalCommandTests(unittest.IsolatedAsyncioTestCase):
     def _save(self, path, value):
         self.store = value
 
+    def test_bulk_input_accepts_spaces_commas_and_newlines(self):
+        self.assertEqual(
+            discord_bot.split_bulk_values("JA001, ja002\nJA003、JA001"),
+            ["JA001", "ja002", "JA003"],
+        )
+
     async def test_normal_watch_add_list_and_remove(self):
         resolved = Mock(return_value=("abc123", "JA0001", "B77W"))
         with patch.object(discord_bot, "resolve_personal_aircraft", resolved):

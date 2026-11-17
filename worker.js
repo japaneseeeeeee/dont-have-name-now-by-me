@@ -1116,12 +1116,12 @@ function adminPanel() {
 
 function adminModal(action) {
   const definitions = {
-    add: { title: "機体を追加", rows: [
-      textInput("tail", "登録記号", "例: JA784A", true, 20),
+    add: { title: "機体を追加（複数可）", rows: [
+      textInput("tail", "登録記号（空白・カンマ区切り）", "例: JA784A, JA01XJ, JA02XJ", true, 500),
       textInput("icao24", "ICAO24（省略可）", "例: 867F7C", false, 6),
       textInput("type", "機種（省略可）", "例: Boeing 787-8", false, 60),
     ] },
-    remove: { title: "機体を削除", rows: [textInput("target", "登録記号またはICAO24", "例: JA784A", true, 20)] },
+    remove: { title: "機体を削除（複数可）", rows: [textInput("target", "登録記号・ICAO24（空白・カンマ区切り）", "例: JA784A, JA01XJ, 867F7C", true, 500)] },
     priority: { title: "通知レベルを変更", rows: [
       textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
       textInput("level", "通知レベル", "NORMAL / WATCH / SPECIAL", true, 7),
@@ -1217,43 +1217,57 @@ function textInput(customId, label, placeholder, required = true, maxLength = 10
   }] };
 }
 
+function splitBulkValues(value, limit = 20) {
+  const values = [];
+  const seen = new Set();
+  for (const item of String(value || "").trim().split(/[\s,、，]+/u)) {
+    const cleaned = item.trim();
+    const key = cleaned.toUpperCase();
+    if (!cleaned || seen.has(key)) continue;
+    seen.add(key);
+    values.push(cleaned);
+    if (values.length >= limit) break;
+  }
+  return values;
+}
+
 function personalModal(action) {
   const definitions = {
-    aircraft_add: { title: "全国監視に機体を追加", rows: [
-      textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
+    aircraft_add: { title: "全国監視に機体を一括追加", rows: [
+      textInput("aircraft", "機体（空白・カンマ区切り）", "例: JA784A, JA01XJ, JA02XJ", true, 500),
       textInput("level", "通知レベル", "NORMAL または SPECIAL", true, 7),
     ] },
-    aircraft_remove: { title: "全国監視から機体を削除", rows: [
-      textInput("aircraft", "登録記号またはICAO24", "例: JA784A", true, 20),
+    aircraft_remove: { title: "全国監視から機体を一括削除", rows: [
+      textInput("aircraft", "機体（空白・カンマ区切り）", "例: JA784A, JA01XJ, JA02XJ", true, 500),
     ] },
-    region_add: { title: "地方指定の機体を追加", rows: [
-      textInput("aircraft", "登録記号またはICAO24", "例: JA738B", true, 20),
+    region_add: { title: "地方指定の機体を一括追加", rows: [
+      textInput("aircraft", "機体（空白・カンマ区切り）", "例: JA738B, JA01XJ", true, 500),
       textInput("region", "通知する地方", "例: 九州 / 関東 / 北海道", true, 20),
     ] },
-    region_remove: { title: "地方指定の登録を削除", rows: [
-      textInput("aircraft", "登録記号またはICAO24", "例: JA738B", true, 20),
+    region_remove: { title: "地方指定の登録を一括削除", rows: [
+      textInput("aircraft", "機体（空白・カンマ区切り）", "例: JA738B, JA01XJ", true, 500),
       textInput("region", "解除する地方", "例: 九州", true, 20),
     ] },
-    destination_add: { title: "登録機＋到着空港を追加", rows: [
-      textInput("aircraft", "登録記号またはICAO24", "例: A7-BBA", true, 20),
+    destination_add: { title: "登録機＋到着空港を一括追加", rows: [
+      textInput("aircraft", "機体（空白・カンマ区切り）", "例: A7-BBA, A7-BBC", true, 500),
       textInput("destination", "目的空港", "例: NRT / RJAA", true, 4),
     ] },
-    destination_remove: { title: "行き先の設定を削除", rows: [
-      textInput("rule_id", "登録ID", "例: 1", true, 8),
+    destination_remove: { title: "行き先の設定を一括削除", rows: [
+      textInput("rule_id", "登録ID（空白・カンマ区切り）", "例: 1, 2, 3", true, 200),
     ] },
-    airport_add: { title: "監視する空港を追加", rows: [
-      textInput("airport", "空港コード", "例: HND / NRT / CTS", true, 3),
+    airport_add: { title: "監視する空港を一括追加", rows: [
+      textInput("airport", "空港コード（空白・カンマ区切り）", "例: HND, NRT, CTS", true, 100),
       textInput("radius", "通知半径（km）", "例: 50", false, 3),
     ] },
-    airport_remove: { title: "空港周辺の監視を解除", rows: [
-      textInput("airport", "空港コード", "例: HND / NRT / CTS", true, 3),
+    airport_remove: { title: "空港周辺の監視を一括解除", rows: [
+      textInput("airport", "空港コード（空白・カンマ区切り）", "例: HND, NRT, CTS", true, 100),
     ] },
-    equipment_add: { title: "便名＋機種を追加", rows: [
-      textInput("flight", "便名", "例: JL12", true, 12),
+    equipment_add: { title: "便名＋機種を一括追加", rows: [
+      textInput("flight", "便名（空白・カンマ区切り）", "例: JL12, JL14, JL16", true, 300),
       textInput("equipment", "機材コード", "例: B77W", true, 12),
     ] },
-    equipment_remove: { title: "便名＋機種の設定を削除", rows: [
-      textInput("rule_id", "登録ID", "例: 1", true, 8),
+    equipment_remove: { title: "便名＋機種の設定を一括削除", rows: [
+      textInput("rule_id", "登録ID（空白・カンマ区切り）", "例: 1, 2, 3", true, 200),
     ] },
   };
   const definition = definitions[action];
@@ -1771,10 +1785,46 @@ async function cmdNationwide(o, env) {
 // ============ コマンド ============
 
 async function cmdAdd(o, env, interaction) {
-  const tail = String(o.tail || "").trim().toUpperCase();
+  const tails = splitBulkValues(o.tail).map((value) => value.toUpperCase());
+  const tail = tails[0] || "";
   let icao24 = o.icao24 ? String(o.icao24).trim() : null;
   let typeName = o.type ? String(o.type).trim() : null;
   if (!tail) return { content: "⚠️ 使い方: `/add tail:<登録記号>`" };
+
+  if (tails.length > 1) {
+    if (icao24) {
+      return { content: "⚠️ 複数登録ではICAO24欄を空欄にしてください。登録記号から自動取得します。" };
+    }
+    const resolved = await Promise.all(tails.map(async (registration) => {
+      const hex = await lookupIcao24(registration);
+      if (!hex) return { registration, error: "ICAO24を確認できませんでした" };
+      const aircraftType = typeName || (await lookupAircraftType(hex)) || UNKNOWN_TYPE;
+      return { registration, icao24: hex.toLowerCase(), type: aircraftType };
+    }));
+    const valid = resolved.filter((item) => item.icao24);
+    let outcome = { changed: false, added: [], existing: [] };
+    if (valid.length) {
+      outcome = await updateWatchlist(env, (wl) => {
+        const added = [];
+        const existing = [];
+        for (const item of valid) {
+          if (wl[item.icao24] !== undefined) {
+            existing.push(normalize(wl[item.icao24]).label);
+          } else {
+            wl[item.icao24] = { label: item.registration, type: item.type };
+            added.push(item);
+          }
+        }
+        return { changed: added.length > 0, added, existing };
+      }, `watchlist: bulk add ${tails.length} aircraft`);
+    }
+    const lines = [
+      ...outcome.added.map((item) => `✅ \`${item.registration}\` (${item.icao24} / ${item.type}) を追加。`),
+      ...outcome.existing.map((label) => `ℹ️ \`${label}\`：登録済みです。`),
+      ...resolved.filter((item) => item.error).map((item) => `⚠️ \`${item.registration}\`：${item.error}。`),
+    ];
+    return { content: `✈️ **watchlist一括登録結果**\n${lines.join("\n")}` };
+  }
 
   // icao24の欄に機種名が書かれた場合(例: icao24=Boeing type=777)は、機種として扱う
   if (icao24 && !HEX6.test(icao24)) {
@@ -1806,8 +1856,35 @@ async function cmdAdd(o, env, interaction) {
 }
 
 async function cmdRemove(o, env) {
-  const key = String(o.target || "").trim();
+  const targets = splitBulkValues(o.target);
+  const key = targets[0] || "";
   if (!key) return { content: "⚠️ 使い方: `/remove target:<登録記号 または icao24>`" };
+
+  if (targets.length > 1) {
+    const outcome = await updateWatchlist(env, (wl) => {
+      const removed = [];
+      const missing = [];
+      for (const target of targets) {
+        const lower = target.toLowerCase();
+        const id = wl[lower] !== undefined
+          ? lower
+          : Object.keys(wl).find((icao24) => normalize(wl[icao24]).label.toUpperCase() === target.toUpperCase());
+        if (!id) {
+          missing.push(target);
+          continue;
+        }
+        const { label } = normalize(wl[id]);
+        delete wl[id];
+        removed.push({ label, icao24: id });
+      }
+      return { changed: removed.length > 0, removed, missing };
+    }, `watchlist: bulk remove ${targets.length} aircraft`);
+    const lines = [
+      ...outcome.removed.map((item) => `🗑️ \`${item.label}\` (${item.icao24}) を削除。`),
+      ...outcome.missing.map((target) => `⚠️ \`${target}\`：見つかりません。`),
+    ];
+    return { content: `✈️ **watchlist一括削除結果**\n${lines.join("\n")}` };
+  }
 
   const outcome = await updateWatchlist(env, (wl) => {
     const lower = key.toLowerCase();
